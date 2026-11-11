@@ -1,8 +1,10 @@
 import hashlib
 import json
+import shutil
 import tarfile
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -76,7 +78,9 @@ def test_resumed_stage_is_not_archived_again():
     assert not is_resumed_stage(job, "geometry")
 
 
-def test_download_checks_bytes_and_preserves_duplicate_basenames(tmp_path):
+def test_download_checks_bytes_and_preserves_duplicate_basenames(tmp_path, monkeypatch):
+    # The 8 GiB headroom guard must not make this test depend on the runner's disk.
+    monkeypatch.setattr(shutil, "disk_usage", lambda _path: SimpleNamespace(free=10**12))
     source = tmp_path / "source"
     source.mkdir()
     original = source / "a.png"
