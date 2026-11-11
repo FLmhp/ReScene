@@ -5,7 +5,9 @@ RUN corepack enable && corepack prepare pnpm@10.18.3 --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps ./apps
 COPY packages ./packages
-RUN pnpm install --frozen-lockfile --filter rescene-web...
+# A filtered install does not give workspace packages their own dependencies,
+# which breaks next build when it compiles @rescene/viewer sources.
+RUN pnpm install --frozen-lockfile
 COPY apps/web ./apps/web
 ARG NEXT_PUBLIC_API_URL=https://api.rescene.xyz
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
