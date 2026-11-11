@@ -20,6 +20,22 @@ if (!version || !/^\d+\.\d+\.\d+$/.test(version)) {
   process.exit(1);
 }
 
+function runCheck() {
+  try {
+    console.log(execFileSync(process.execPath, [join(root, 'scripts/check-versions.mjs')], { cwd: root, encoding: 'utf8' }).trim());
+  } catch (error) {
+    console.error(error.stdout || error.message);
+    process.exit(1);
+  }
+}
+
+if (read('VERSION').trim() === version) {
+  // Re-running must not inflate android.versionCode, which only moves forward.
+  console.log(`VERSION is already ${version}; nothing to bump`);
+  runCheck();
+  process.exit(0);
+}
+
 /** Rewrite one JSON file while keeping its two-space layout and trailing newline. */
 function bumpJson(path, mutate) {
   const data = JSON.parse(read(path));
@@ -77,15 +93,6 @@ const appJson = bumpJson('apps/mobile/app.json', (data) => {
 });
 const versionCode = appJson.expo.android?.versionCode;
 
-try {
-  const summary = execFileSync(process.execPath, [join(root, 'scripts/check-versions.mjs')], {
-    cwd: root,
-    encoding: 'utf8',
-  });
-  console.log(summary.trim());
-} catch (error) {
-  console.error(error.stdout || error.message);
-  process.exit(1);
-}
+runCheck();
 
 console.log(`Bumped to ${version}${versionCode ? ` (Android versionCode ${versionCode})` : ''}`);
