@@ -1,235 +1,162 @@
 # ReScene 开发与发布指南
 
-本文面向在本仓库修改代码、验证或发布构建的开发者。用户操作见 [用户手册](docs/用户手册.md)，生产部署与回滚见 [单 5090 系统部署与运维](docs/单5090系统部署与运维.md)。
+本文面向贡献者和发布人员。用户操作见 [用户手册](docs/用户手册.md)，生产部署、备份和回滚见 [部署与运维](docs/单5090系统部署与运维.md)。以下命令均在仓库根目录执行。
 
-## 1. 环境
+## 开发环境
 
-| 组件 | 版本/要求 |
-|---|---|
-| Python | 3.11 |
-| Node.js | 22 |
-| pnpm | 10.18.3（`packageManager` 锁定） |
-| Rust | stable，含 `rustfmt`、`clippy` |
-| Windows 桌面 | Visual Studio Build Tools（C++ 桌面开发）、Windows SDK、NSIS |
-| Android | JDK 21、Android SDK platform 36 / build-tools 36、NDK 27、CMake |
-| GPU 引擎 | CUDA 12.x，RTX 5090/A100；普通开发机可不装 GPU 依赖 |
+普通 API/Web 开发可使用 CPU。CI 使用 Python 3.11、Node.js 22、pnpm 10.18.3；Python 包支持 3.11–3.13。安装 [uv](https://docs.astral.sh/uv/) 后创建虚拟环境并安装依赖：
 
-安装 Python 依赖：
+Windows PowerShell：
 
 ```powershell
 py -3.11 -m venv .venv
-uv pip install --python .venv\Scripts\python.exe -e ".[dev,api,worker]"
-```
-
-安装 Node 依赖：
-
-```powershell
+uv pip install --python .venv/Scripts/python.exe -c infra/api/constraints.txt -e ".[dev,api,worker]" scipy
+. .venv/Scripts/Activate.ps1
 pnpm install --frozen-lockfile
 ```
 
-## 2. 目录与所有权
-
-| 路径 | 作用 |
-|---|---|
-| `src/rescene/` | 引擎：预处理、VGGT/COLMAP 几何、3DGS、评估、导出 |
-| `src/rescene_api/` | FastAPI：认证、项目、上传、任务、Worker、分享 |
-| `src/rescene_worker/` | GPU Worker：租约、心跳、阶段、checkpoint、产物 |
-| `packages/schemas` | Zod 契约；API 响应字段以它为准 |
-| `packages/api-client` | 类型化 API/SSE 客户端 |
-| `packages/uploader` | STS multipart、PostObject、进度和校验 |
-| `packages/viewer` | three.js + Spark 查看器 |
-| `packages/workbench` | Web/桌面共享工作台 |
-| `packages/design-tokens` | 颜色、间距、字号 |
-| `apps/web` | Next.js 工作台、Viewer、分享页 |
-| `apps/desktop` | Tauri 2 桌面壳与 Rust 缓存命令 |
-| `apps/mobile` | Expo/React Native Android 客户端 |
-| `apps/miniapp` | Taro 微信小程序 |
-| `configs/` | 数据集、候选、路线和标定配置 |
-| `scripts/` | 运维、标定、发布、源清单脚本 |
-
-共享契约只能在 `packages/schemas` 和 `packages/api-client` 修改；不要在各端复制响应形状。
-
-## 3. 本地修改流程
-
-1. 先读对应模块和测试；导出符号变更前先查全部引用。
-2. 只改与任务相关的文件，复用现有模式；不要顺手重构。
-3. 改后端响应时同步 `packages/schemas`、客户端和消费端。
-4. 新增公开 API 时补类型和权限测试；不要用前端隐藏按钮代替服务端授权。
-5. 不提交 `.env`、`infra/secrets/`、`worker.env`、keystore、签名密码、模型权重、运行数据或缓存。
-
-## 4. 质量门禁
-
-提交前运行与改动范围匹配的检查：
-
-```powershell
-.venv\Scripts\python.exe -m ruff format --check src tests scripts
-.venv\Scripts\python.exe -m ruff check src tests scripts
-.venv\Scripts\python.exe -m mypy --follow-imports=skip src/rescene_api/schemas.py
-.venv\Scripts\python.exe -m pytest -q
-
-pnpm check:versions
-pnpm -r typecheck
-pnpm -r test
-pnpm --filter rescene-web build
-pnpm --filter @rescene/desktop build
-pnpm --filter @rescene/mobile export
-pnpm --filter @rescene/miniapp build:weapp
-```
-
-Windows 桌面壳：
-
-```powershell
-cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
-cargo clippy --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
-```
-
-完整本地质量命令：
-
-```powershell
-pnpm quality
-```
-
-CI 的 `python` 任务还使用 PostgreSQL 16 服务；`workspace` 任务覆盖四端类型检查和构建；`desktop-shell` 在 Windows 上跑 Rust 检查和桌面前端构建；`commit-messages` 用 `scripts/check-commits.mjs` 校验提交信息。GPU 实验不在普通 CI runner 执行，不能把 CI 绿当作算法证据。
-
-`main` 分支保护：仓库当前是私有免费套餐，GitHub 对该组合直接拒绝分支保护（`PUT /branches/main/protection` 返回 403 “Upgrade to GitHub Pro”），因此四个检查是人工门禁。升级到 Pro/Team 或转为公开仓库后，用下面的请求开启：
+Linux/macOS：
 
 ```bash
-gh api -X PUT repos/<owner>/<repo>/branches/main/protection --input - <<'JSON'
-{"required_status_checks":{"strict":true,"contexts":["python","workspace","desktop-shell","commit-messages"]},"enforce_admins":false,"required_pull_request_reviews":null,"restrictions":null,"allow_force_pushes":false,"allow_deletions":false}
-JSON
+python3.11 -m venv .venv
+uv pip install --python .venv/bin/python -c infra/api/constraints.txt -e '.[dev,api,worker]' scipy
+source .venv/bin/activate
+pnpm install --frozen-lockfile
 ```
 
-## 5. 版本与源身份
+桌面原生检查还需要 Rust stable、rustfmt、clippy 和平台依赖；Android 原生构建需要 JDK 21 和 Android SDK。GPU 重建需要单独配置 CUDA、模型和 Worker，见部署文档。
 
-- `VERSION` 是唯一版本事实源。
-- Python 包、API、Node 包、Tauri、Android 版本必须与 `VERSION` 一致，由 `node scripts/check-versions.mjs` 校验。
-- 改版本只走一个入口，它会同步所有元数据、把 Android `versionCode` 加一并立刻复验：
+### 本地 API 和 Web
+
+开发数据库放在已忽略的 `.cache/dev`，不要使用默认根目录 `rescene.db`。Windows PowerShell：
 
 ```powershell
-node scripts/bump-version.mjs 0.3.0
+New-Item -ItemType Directory -Force .cache/dev | Out-Null
+$env:RESCENE_DATABASE_URL = "sqlite:///.cache/dev/rescene.db"
+$env:RESCENE_PUBLIC_WEB_URL = "http://localhost:3000"
+.venv/Scripts/python.exe -m uvicorn rescene_api.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-- 版本变更同步 `CHANGELOG.md`：`scripts/release-notes.mjs` 只截取 `## <VERSION>` 段作为 GitHub Release 说明，缺段直接失败。
-- 提交信息遵循 Conventional Commits：`<type>(<scope>)?: <subject>`，类型限 `feat`、`fix`、`docs`、`style`、`refactor`、`perf`、`test`、`build`、`ci`、`chore`、`revert`；`Merge ` 开头的合并提交豁免。本地钩子与 CI 使用同一正则：
+Linux/macOS：
 
-```powershell
+```bash
+mkdir -p .cache/dev
+export RESCENE_DATABASE_URL=sqlite:///.cache/dev/rescene.db
+export RESCENE_PUBLIC_WEB_URL=http://localhost:3000
+.venv/bin/python -m uvicorn rescene_api.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+在另一个终端执行 `pnpm --filter rescene-web dev`，访问 `http://localhost:3000` 并自行注册账号。开发默认密钥只适合本机回环环境，不能用于公开部署。上传和 STS 依赖 OSS 配置，重建任务依赖 GPU Worker；启动 API 和 Web 不等于验证了完整链路。
+
+### 其他客户端
+
+| 客户端 | 开发命令 | 说明 |
+|---|---|---|
+| 桌面前端 | `pnpm --filter @rescene/desktop dev` | 只启动 Vite，不启动原生窗口 |
+| 桌面应用 | `pnpm --filter @rescene/desktop tauri dev` | 启动 Tauri 原生窗口，需要 Rust 和平台依赖 |
+| Android | `pnpm --filter @rescene/mobile start` | 启动 Expo 开发服务；设备或模拟器需另行配置 |
+| 微信小程序 | `pnpm --filter @rescene/miniapp dev:weapp` | 监听构建，使用微信开发者工具打开产物 |
+
+原生构建依赖和 CI 配置见 [release.yml](.github/workflows/release.yml)、[桌面构建脚本](scripts/build-desktop-release.sh)及 [Android 构建脚本](scripts/build-android-release.ps1)。
+
+## 分支、提交和 PR
+
+1. 从最新目标分支创建工作分支，限定变更范围。检查相关模块、测试和调用方。
+2. 修改 API 时先确定服务端权限、请求与响应及数据迁移，再同步 `packages/schemas`、`packages/api-client` 和 Web、桌面、Android、小程序调用方，补充权限、契约和迁移测试。UI 隐藏按钮不能代替服务端鉴权；破坏性变更要说明客户端兼容和部署顺序。
+3. 按改动范围运行下述检查，在 PR 中记录实际命令、结果和未验证项；涉及数据迁移时说明备份、恢复与回滚限制。更新相关文档，不提交凭据、`.env`、`infra/secrets/`、keystore、模型权重、运行数据或缓存。
+4. 提交信息使用 Conventional Commits：`<type>(<scope>)?: <subject>`，允许 `feat`、`fix`、`docs`、`style`、`refactor`、`perf`、`test`、`build`、`ci`、`chore`、`revert`；`Merge ` 开头的合并提交豁免。可启用本地钩子并检查提交范围：
+
+```bash
 git config core.hooksPath .githooks
 node scripts/check-commits.mjs --range HEAD~1..HEAD
 ```
 
-- 发布源清单：
+向目标分支提交 PR，请审阅者检查权限、兼容性、迁移和证据；本地钩子可被绕过，不能代替 CI 和审阅。
 
-```powershell
-node scripts/source-manifest.mjs > source-manifest.json
-```
+## 检查
 
-清单只包含项目自有源码、配置、文档和指定根文件，排除缓存、构建产物、秘密和模型。仓库没有 Git 历史时，源清单哈希就是可核验的源身份，不要伪造 commit。
-
-## 6. 构建与发布
-
-### Web/API 镜像
+选择与改动相应的检查；下面的完整质量命令要求当前终端已激活 `.venv`，以便其中的 `python` 指向虚拟环境：
 
 ```bash
-docker compose --env-file infra/.env -f infra/compose.yaml build api web
-docker compose --env-file infra/.env -f infra/compose.yaml up -d db api web
+pnpm quality
 ```
 
-生产发布只做定向构建、定向启动和健康检查；禁止整机重启、批量重启其他容器或 `docker system prune`。回滚和备份步骤见部署文档。
-
-### Windows
-
-```powershell
-.\scripts\build-windows-release.ps1
-```
-
-脚本默认注入 `https://api.rescene.xyz` 与 `https://app.rescene.xyz`；非生产构建用 `RELEASE_API_URL` / `RELEASE_WEB_URL` 覆盖。产物：`apps/desktop/src-tauri/target/*/release/bundle/nsis/*.exe`。无商业代码签名证书时安装包为 unsigned，必须明确 SmartScreen 风险，不得声称可信签名。
-
-### Linux / macOS
-
-Linux 与 macOS 安装包由同一脚本在目标系统上构建：
+它依次执行版本一致性检查、Ruff 格式与 lint、API 请求 schema 的 mypy、pytest、所有 workspace 的 typecheck 和 test；不包含原生 Rust 检查、各端构建或镜像构建。也可分别运行：
 
 ```bash
-./scripts/build-desktop-release.sh
+pnpm check:versions
+python -m ruff format --check src tests scripts
+python -m ruff check src tests scripts
+python -m mypy --follow-imports=skip src/rescene_api/schemas.py
+python -m pytest -q
+pnpm -r typecheck
+pnpm -r test
 ```
 
-- Linux：`--target x86_64-unknown-linux-gnu --bundles deb,appimage`，产物在 `apps/desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/{deb,appimage}/`。
-- macOS：`--target universal-apple-darwin --bundles dmg`，产物在 `apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/`。
-- 其他系统脚本会提示改用 `scripts/build-windows-release.ps1` 并以 1 退出。
+Python/API 改动至少运行相关测试和 Python 检查；共享契约改动还需覆盖各调用端的类型和测试；桌面壳改动需运行 Rust 检查。按受影响的平台运行构建，配置要求以工作流为准。`pnpm quality` 不启动 CI 的 PostgreSQL 服务，本地 SQLite 结果不能替代 PostgreSQL 测试。
 
-Linux 构建需要 `libwebkit2gtk-4.1-dev`、`libappindicator3-dev`、`librsvg2-dev`、`patchelf`、`libxdo-dev`、`libssl-dev` 与 `build-essential`；macOS 需要 `rustup target add aarch64-apple-darwin x86_64-apple-darwin`。
+按需执行的命令示例（共享包变更还需检查受影响的消费端）：
 
-仓库没有 Apple 与商业 Windows 证书：Linux deb/AppImage 与 macOS dmg 均为 unsigned，macOS 首次打开需右键「打开」或 `xattr -d com.apple.quarantine`，不得声称产物已签名。
+| 范围 | 命令 |
+|---|---|
+| API 客户端 | `pnpm --filter @rescene/api-client typecheck` 和 `pnpm --filter @rescene/api-client test` |
+| 共享工作台 | `pnpm --filter @rescene/workbench typecheck` 和 `pnpm --filter @rescene/workbench test` |
+| Web | `pnpm --filter rescene-web typecheck` 和 `pnpm --filter rescene-web build` |
+| 桌面前端 | `pnpm --filter @rescene/desktop typecheck` 和 `pnpm --filter @rescene/desktop build` |
+| Android | `pnpm --filter @rescene/mobile typecheck` 和 `pnpm --filter @rescene/mobile export` |
+| 小程序 | `pnpm --filter @rescene/miniapp typecheck`，生产模式构建见下方环境变量 |
 
-### Android
+小程序生产模式编译需要三个变量，以下 POSIX 示例只用于编译验证，不能用于正式发布：
 
-签名材料通过 `~/.rescene/android-signing.env` 或 CI secrets 提供，不进入仓库：
-
-```text
-RESCENE_ANDROID_KEYSTORE_PATH
-RESCENE_ANDROID_KEYSTORE_PASSWORD
-RESCENE_ANDROID_KEY_ALIAS
-RESCENE_ANDROID_KEY_PASSWORD
+```bash
+TARO_APP_API_URL=https://api.example.com TARO_APP_WEB_URL=https://app.example.com TARO_APP_WECHAT_APP_ID=wx0123456789abcdef pnpm --filter @rescene/miniapp build:weapp
 ```
 
-构建：
+PowerShell 可先分别用 `$env:TARO_APP_API_URL`、`$env:TARO_APP_WEB_URL`、`$env:TARO_APP_WECHAT_APP_ID` 设置相同示例值，再运行 `pnpm --filter @rescene/miniapp build:weapp`。示例 AppID、域名和编译成功不代表具备小程序发布资格。
 
-```powershell
-$env:EXPO_PUBLIC_API_URL = "https://api.rescene.xyz"
-$env:EXPO_PUBLIC_WEB_URL = "https://app.rescene.xyz"
-.\scripts\build-android-release.ps1
+[check.yml](.github/workflows/check.yml) 定义五个检查：
+
+| 检查 | 覆盖 |
+|---|---|
+| `python` | Python 检查和测试，含 PostgreSQL 16 服务 |
+| `workspace` | 版本、类型、测试及 Web、桌面前端、移动端导出、小程序构建；小程序使用示例配置 |
+| `desktop-shell` | Windows 桌面前端构建、Rust fmt 和 clippy |
+| `commit-messages` | PR 或 push 范围内的提交标题 |
+| `images` | API 和 Web Docker 镜像构建 |
+
+例如桌面壳检查可运行：
+
+```bash
+cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
+cargo clippy --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
-脚本执行已生成的 Android release 构建，产物在 `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`。安装后用 `apksigner verify --print-certs` 校验签名。
+这些检查和代码审阅是合并前的人工门禁，不代表 GitHub 已配置分支保护或强制检查；以仓库实际设置为准。CI 不执行 GPU 实验或安装包实机验证，绿色状态不能代替这些证据。
 
-Android 原生工程由 prebuild 生成。不要执行 `expo prebuild --clean` 删除已有原生改动；签名配置由 `apps/mobile/withAndroidReleaseSigning.js` 注入。
+## 版本、源身份与发布
 
-### 小程序
+`VERSION` 是版本事实源。选定尚未发布的新版本后，用唯一入口同步元数据并增加 Android `versionCode`，不要再次使用已发布的版本：
 
-```powershell
-pnpm --filter @rescene/miniapp build:weapp
+```bash
+node scripts/bump-version.mjs <新版本号>
 ```
 
-`dist` 用微信开发者工具导入。`project.config.json` 的 `touristappid` 只用于本地构建；正式发布需要真实 AppID、Secret、业务域名和审核，不能把构建成功当作发布完成。
+将 `<新版本号>` 替换为例如 `0.3.1`（确认未发布后），同步更新 `CHANGELOG.md` 中对应的 `## <版本号>` 段；发布说明脚本找不到该段会失败。版本检查为 `pnpm check:versions`。版本变更后重新安装可编辑 Python 包，避免本地包元数据仍为旧版本。
 
-## 7. 发布产物与校验
+发布前确认源 commit、检查结果、迁移与回滚方案；tag 必须为 `v` 加 `VERSION`，并指向已审阅的发布 commit。已发布 tag 不可移动或复用；修复应提交新 commit、使用新版本和新 tag。源身份、发布产物与部署身份应分别记录：commit/tag 和 `source-manifest.json` 说明源码；`release-manifest.json` 记录源清单及各产物的大小和 SHA-256；部署记录还需记录实际镜像或安装包摘要、配置、数据库迁移状态和环境。源清单仅包含脚本白名单选中的源码树、文件类型及根文件，不包含所有仓库文件，也不是完整源码快照；其哈希不等同于线上运行状态或代码签名。
 
-发布目录包含：
+[release.yml](.github/workflows/release.yml) 支持手动运行及 `v*` tag 触发；只有 tag 运行会创建 GitHub Release。发布环境需配置 HTTPS 的 `RELEASE_API_URL` 和 `RELEASE_WEB_URL`，桌面 API origin 还须符合 CSP。工作流生成 Windows x64 NSIS、Linux x64 deb/AppImage、macOS universal dmg，以及源清单和发布清单；Android APK 仅在 `RELEASE_ANDROID_SIGNING=true` 且签名材料齐全时生成。工作流没有生成独立的 `SHA256SUMS`，请按发布清单中的哈希核对实际下载文件。最终资产集合以成功的运行和 Release 为准，不把构建计划当成已发布证据。
 
-- Windows NSIS EXE；
-- Linux `deb` 与 `AppImage`；
-- macOS universal `dmg`；
-- release 签名 Android APK（仅在 `vars.RELEASE_ANDROID_SIGNING=true` 时构建）；
-- `source-manifest.json`；
-- `release-manifest.json`；
-- `SHA256SUMS`；
-- 版本、大小、源清单哈希和已知限制。
+Windows 签名为可选：证书和密码都未配置时产物未签名，只配置一项会失败；配置两项后工作流签名并验证。macOS 工作流生成未签名 dmg；只对来源及哈希已核实的单个文件按系统提示处理，不要全局关闭安全检查。Android 发布必须配置 keystore 和密码，工作流校验签名及包信息；不要把签名材料提交到仓库。小程序构建成功不等于已通过平台审核或发布。
 
-生成发布清单：
+本地桌面安装包可在对应系统运行 `scripts/build-windows-release.ps1` 或 `scripts/build-desktop-release.sh`，默认指向生产 URL，非生产构建须明确设置 `RELEASE_API_URL` 和 `RELEASE_WEB_URL`。Android 本地构建见 `scripts/build-android-release.ps1`。安装、登录、上传、任务和 Viewer 等实机结果应逐项记录；未验证或未签名的部分须写入发布说明。
 
-```powershell
-node scripts/source-manifest.mjs > release/source-manifest.json
-node scripts/release-manifest.mjs --source-manifest release/source-manifest.json `
-  release/ReScene_0.2.1_x64-setup.exe `
-  release/ReScene-0.2.1.apk > release/release-manifest.json
-```
+发布与部署按以下顺序留存证据：
 
-校验下载产物和任务产物：
+1. 确认审阅通过的源 commit、版本和不可移动的发布 tag。
+2. 检查对应发布工作流结果与实际 Release 资产，不将预期产物视为已交付。
+3. 下载产物，按发布清单核对大小和哈希；适用时验证签名并记录签名状态。
+4. 按平台记录安装、启动及必要业务流程的实机结果，注明未覆盖项。
+5. 部署单独执行并记录实际部署身份，确认数据库迁移兼容、备份及回滚方案。
 
-```powershell
-.venv\Scripts\python.exe scripts\verify_release_artifacts.py --api-url https://api.rescene.xyz --token-file <token-file> --project-id <uuid> <job-id>
-```
-
-该命令对失败任务、缺失产物、大小/SHA-256 不符或必需指标缺失返回非零退出码。
-
-## 8. 发布检查表
-
-- [ ] `VERSION`、`CHANGELOG.md` 和全部版本元数据一致。
-- [ ] Python/Node/Rust 检查和测试通过。
-- [ ] Web、桌面、移动端、小程序构建通过。
-- [ ] Windows 安装、覆盖更新、启动、Viewer、卸载实测。
-- [ ] Linux deb/AppImage 与 macOS dmg 由 tag 触发的 CI 产出，`gh release view` 资产清单齐全。
-- [ ] Android release APK 签名校验、安装、登录、上传、任务、Viewer 实测。
-- [ ] 公网 `/`、`/viewer`、`/share/<token>`、`/health/ready` 逐路由检查。
-- [ ] 分享下载和撤销实测。
-- [ ] 安装包、APK、源清单、发布清单和 SHA256SUMS 同版本归档。
-- [ ] 微信小程序外部资格缺失时在发布说明中明确标注，不写“已完成”。
+部署前核对目标环境、备份和迁移兼容性；回滚代码或镜像不自动撤销数据库迁移。按 [部署与运维](docs/单5090系统部署与运维.md) 制定恢复步骤，记录执行人、时间、部署摘要和健康检查证据，避免影响其他服务。生产任务产物可使用 `scripts/verify_release_artifacts.py` 核验；它验证任务产物，不替代安装包签名与部署验证。

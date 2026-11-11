@@ -14,8 +14,8 @@
 |---|---|---|
 | `web-workbench.webp` | 公网 Web `https://app.rescene.xyz` | 验收-厨房项目、素材、三条路线与任务记录 |
 | `web-viewer.webp` | Web Viewer | 真实重建场景的 WebGL 渲染 |
-| `web-admin-console.png` | Web 桌面视口 1280×800 | 管理控制台：用户目录、公告、全局操作日志 |
-| `web-mobile-drawer.png` | Web 移动视口 390×844 | 抽屉导航与移动端布局 |
+| `web-admin-console.png` | 本地 Web 桌面视口 | 管理控制台：用户目录、公告、全局操作日志 |
+| `web-mobile-drawer.png` | 本地 Web 移动视口 390×844 | 抽屉导航与移动端布局 |
 | `windows-workbench.png` | Windows 安装版 | 同一账号下的项目与任务记录 |
 | `windows-installed.png` | Windows 安装版 | 安装完成界面 |
 | `android-login.png` | Android release APK | 邮箱会话登录 |
@@ -24,7 +24,7 @@
 | `android-back.png` | Android release APK | 系统返回后的项目页 |
 | `miniapp-login-required.png` | 微信开发者工具 | 工程可打开；未登录时无法启动模拟器，故不把该端标为真机发布 |
 
-微信小程序的生产发布仍受真实 AppID/Secret、业务域名和隐私审核资格限制；本目录不以欢迎页冒充小程序业务截图。
+微信小程序使用邮箱密码登录，正式发布仍需真实 AppID、合规的请求/上传及业务域名配置和平台审核；本目录不以欢迎页冒充小程序业务截图。
 
 ## 发布清单
 
