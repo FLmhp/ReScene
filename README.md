@@ -10,6 +10,8 @@ ReScene 将图片或视频重建为 3D Gaussian Splatting 场景，提供团队 
 
 截至 2026-11-10，0.2.1 已部署。公网服务器运行 Caddy、Next.js、FastAPI 和独立 PostgreSQL，AutoDL RTX 5090 Worker 主动领取任务，GPU 并发为 1。浏览器和 Worker 直接读写阿里云北京私有 OSS。Windows 与 Android 安装包、SHA-256 和版本清单见 [0.2.1 发布说明](docs/0.2.1发布说明.md)，下载入口为 <https://app.rescene.xyz/downloads/0.2.1/>。微信小程序工程和契约已完成，但真实 AppID/Secret、业务域名与审核资格仍是正式发布的外部前提。
 
+0.3.0 的桌面端已同时构建 Windows NSIS、Linux `deb`/`AppImage` 与 macOS universal `dmg`：推送 `v0.3.0` 标签后由 CI 构建，产物和每个文件的 SHA-256 见 [v0.3.0 Release](https://github.com/FLmhp/ReScene/releases/tag/v0.3.0) 中的 `release-manifest.json`。Linux 与 macOS 产物未签名，安装步骤见 [用户手册](docs/用户手册.md)；仓库为私有，Release 仅协作者可见。
+
 - **端到端验收**覆盖图片与视频输入、断点上传、租约过期后从 OSS 恢复、运行中取消、历史任务切换、SPZ 解码与 WebGL 渲染、签名下载和分享撤销。
 - **产物与恢复**已验证四个验收任务的 PLY、SPZ、指标和报告发布，以及从 OSS 重新加载 checkpoint。5090 离线运行包已在空目录通过校验和 CUDA 冒烟测试。PostgreSQL 备份已在隔离库恢复 8 条任务记录。
 - **OSS 生命周期**已从控制台确认开启版本控制，`rescene-retention` 已启用，清理超过 1 天的未完成上传碎片、超过 7 天的历史版本及过期删除标记。据管理员确认，已补齐 PostgreSQL 周备份规则，前缀为 `projects/system/backups/postgresql/weekly/`，当前版本保留 56 天，转为历史版本后沿用全桶 7 天规则。
