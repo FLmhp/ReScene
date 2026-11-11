@@ -56,3 +56,6 @@ apps/desktop/src-tauri/target/
 apps/mobile/android/
 # Local codebase index
 .codebase-memory/
+
+# Next regenerates this on dev/build; committing it makes dev and prod builds fight over it
+apps/web/next-env.d.ts
