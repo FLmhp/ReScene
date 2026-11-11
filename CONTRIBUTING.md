@@ -89,7 +89,15 @@ cargo clippy --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --all-ta
 pnpm quality
 ```
 
-CI 的 `python` 任务还使用 PostgreSQL 16 服务；`workspace` 任务覆盖四端类型检查和构建；`desktop-shell` 在 Windows 上跑 Rust 检查和桌面前端构建。GPU 实验不在普通 CI runner 执行，不能把 CI 绿当作算法证据。
+CI 的 `python` 任务还使用 PostgreSQL 16 服务；`workspace` 任务覆盖四端类型检查和构建；`desktop-shell` 在 Windows 上跑 Rust 检查和桌面前端构建；`commit-messages` 用 `scripts/check-commits.mjs` 校验提交信息。GPU 实验不在普通 CI runner 执行，不能把 CI 绿当作算法证据。
+
+`main` 分支保护：仓库当前是私有免费套餐，GitHub 对该组合直接拒绝分支保护（`PUT /branches/main/protection` 返回 403 “Upgrade to GitHub Pro”），因此四个检查是人工门禁。升级到 Pro/Team 或转为公开仓库后，用下面的请求开启：
+
+```bash
+gh api -X PUT repos/<owner>/<repo>/branches/main/protection --input - <<'JSON'
+{"required_status_checks":{"strict":true,"contexts":["python","workspace","desktop-shell","commit-messages"]},"enforce_admins":false,"required_pull_request_reviews":null,"restrictions":null,"allow_force_pushes":false,"allow_deletions":false}
+JSON
+```
 
 ## 5. 版本与源身份
 
