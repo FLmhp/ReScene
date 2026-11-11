@@ -9,6 +9,7 @@ runs/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 *.pyc
 .downloads/
 # Local credentials, signing material, and production data
@@ -40,6 +41,8 @@ node_modules/
 *.tsbuildinfo
 coverage/
 apps/mobile/.expo/
+# Taro downloads its SWC plugin here; it is a build cache, not source
+**/.swc/
 **/local.properties
 **/.gradle/
 **/.cxx/
