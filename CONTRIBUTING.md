@@ -48,6 +48,12 @@ export RESCENE_PUBLIC_WEB_URL=http://localhost:3000
 
 在另一个终端执行 `pnpm --filter rescene-web dev`，访问 `http://localhost:3000` 并自行注册账号。开发默认密钥只适合本机回环环境，不能用于公开部署。上传和 STS 依赖 OSS 配置，重建任务依赖 GPU Worker；启动 API 和 Web 不等于验证了完整链路。
 
+### 独立官网
+
+`apps/site` 是静态 Vite 页面，不依赖 API、登录态或 GPU。开发使用 `pnpm --filter @rescene/site dev`（127.0.0.1:4320），生产构建为 `pnpm --filter @rescene/site build`，本地预览为 `pnpm --filter @rescene/site preview`（127.0.0.1:4321）。若 Windows 保留了该端口，可临时传入 `--port 14321`，不修改仓库默认端口。版本由根 `VERSION` 在构建时注入；修改后运行官网 typecheck/build，并在浏览器验证桌面、手机、无 JavaScript 导航与 FAQ。
+
+官网只公开品牌素材和清洗后的演示账号截图；不得复制整个 `artifacts`、生产账号、私有分享链接或安装包。公网发布与工作台升级独立，见部署文档第 15 节。
+
 ### 其他客户端
 
 | 客户端 | 开发命令 | 说明 |
@@ -119,7 +125,7 @@ PowerShell 可先分别用 `$env:TARO_APP_API_URL`、`$env:TARO_APP_WEB_URL`、`
 | 检查 | 覆盖 |
 |---|---|
 | `python` | Python 检查和测试，含 PostgreSQL 16 服务 |
-| `workspace` | 版本、类型、测试及 Web、桌面前端、移动端导出、小程序构建；小程序使用示例配置 |
+| `workspace` | 版本、类型、测试及官网、Web、桌面前端、移动端导出、小程序构建；小程序使用示例配置 |
 | `desktop-shell` | Windows 桌面前端构建、Rust fmt 和 clippy |
 | `commit-messages` | PR 或 push 范围内的提交标题 |
 | `images` | API 和 Web Docker 镜像构建 |

@@ -77,6 +77,7 @@ jobs:
       - run: pnpm -r typecheck
       - run: pnpm -r test
       - run: pnpm --filter rescene-web build
+      - run: pnpm --filter @rescene/site build
       - run: pnpm --filter @rescene/desktop build
       - run: pnpm --filter @rescene/mobile export
       - run: pnpm --filter @rescene/miniapp build:weapp

@@ -7,6 +7,7 @@
 <p align="center">从图片与视频，到可浏览、下载和分享的 3D Gaussian Splatting 场景。</p>
 
 <p align="center">
+  <a href="https://rescene.xyz/">项目主页</a> ·
   <a href="https://app.rescene.xyz">在线工作台</a> ·
   <a href="https://github.com/FLmhp/ReScene/releases/tag/v0.3.0">下载 0.3.0</a> ·
   <a href="docs/用户手册.md">用户手册</a> ·
@@ -63,7 +64,7 @@ flowchart LR
 
 | 目录 | 职责 |
 |---|---|
-| `apps/` | Web、桌面、Android、小程序入口 |
+| `apps/` | 独立静态官网、Web 工作台、桌面、Android、小程序入口 |
 | `packages/` | 契约、API 客户端、上传器、查看器、工作台与设计变量 |
 | `src/rescene/` | 预处理、几何、3DGS 优化、评测与导出 |
 | `src/rescene_api/` · `src/rescene_worker/` | 控制面与 GPU 任务执行 |
