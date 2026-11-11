@@ -55,6 +55,10 @@ try {
   }
   check('apps/desktop/src-tauri/tauri.conf.json', json('apps/desktop/src-tauri/tauri.conf.json').version);
   check('apps/desktop/src-tauri/Cargo.toml', match(section(read('apps/desktop/src-tauri/Cargo.toml'), 'package'), /^\s*version\s*=\s*["']([^"']+)["']/m, 'Rust package version'));
+  const cargoLock = read('apps/desktop/src-tauri/Cargo.lock');
+  const lockEntry = cargoLock.split(/\r?\n\[\[package\]\]\r?\n/).find((block) => /^name = "rescene-desktop"$/m.test(block));
+  if (!lockEntry) throw new Error('Cargo.lock has no rescene-desktop package');
+  check('apps/desktop/src-tauri/Cargo.lock', match(lockEntry, /^version = ["']([^"']+)["']$/m, 'Cargo.lock package version'));
   const expo = json('apps/mobile/app.json').expo;
   check('apps/mobile/app.json expo.version', expo.version);
   if (expo.android?.versionCode !== undefined && (!Number.isSafeInteger(expo.android.versionCode) || expo.android.versionCode < 1)) {

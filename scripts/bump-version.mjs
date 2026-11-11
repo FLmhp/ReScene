@@ -62,6 +62,31 @@ function bumpTomlSection(text, table, key, value) {
   throw new Error(`Missing ${key} in [${table}]`);
 }
 
+/** Cargo.lock pins the workspace crate version; `cargo --locked` rejects drift. */
+function bumpCargoLock(text, crate, value) {
+  const lines = text.split(/\r?\n/);
+  let inPackage = false;
+  let matched = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (line === '[[package]]') {
+      inPackage = true;
+      matched = false;
+      continue;
+    }
+    if (!inPackage) continue;
+    if (line === `name = "${crate}"`) {
+      matched = true;
+      continue;
+    }
+    if (matched && /^version = /.test(line)) {
+      lines[index] = `version = "${value}"`;
+      return lines.join('\n');
+    }
+  }
+  throw new Error(`Missing ${crate} in Cargo.lock`);
+}
+
 write('VERSION', `${version}\n`);
 
 bumpJson('package.json', (data) => {
@@ -84,6 +109,10 @@ bumpJson('apps/desktop/src-tauri/tauri.conf.json', (data) => {
 write(
   'apps/desktop/src-tauri/Cargo.toml',
   bumpTomlSection(read('apps/desktop/src-tauri/Cargo.toml'), 'package', 'version', version),
+);
+write(
+  'apps/desktop/src-tauri/Cargo.lock',
+  bumpCargoLock(read('apps/desktop/src-tauri/Cargo.lock'), 'rescene-desktop', version),
 );
 
 const appJson = bumpJson('apps/mobile/app.json', (data) => {
