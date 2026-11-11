@@ -8,9 +8,7 @@ ReScene 将图片或视频重建为 3D Gaussian Splatting 场景，提供团队 
 
 > 本轮执行勘误：下述历史标定不能作为新候选晋级基线。旧冻结帧统计存在 symlink 路径匹配失效，部分验证/holdout 表的冻结帧总数为 0；gsplat 按注册排序位置划分的验证集也不等于源图冻结名单。历史高斯 PLY 若缺少 trainer→COLMAP 变换，不能直接套用 COLMAP→GT 变换解读几何 F1。原始实验数据保留，v3 实验单独记录修正口径后的结果。
 
-截至 2026-11-10，0.2.1 已部署。公网服务器运行 Caddy、Next.js、FastAPI 和独立 PostgreSQL，AutoDL RTX 5090 Worker 主动领取任务，GPU 并发为 1。浏览器和 Worker 直接读写阿里云北京私有 OSS。Windows 与 Android 安装包、SHA-256 和版本清单见 [0.2.1 发布说明](docs/0.2.1发布说明.md)，下载入口为 <https://app.rescene.xyz/downloads/0.2.1/>。微信小程序工程和契约已完成，但真实 AppID/Secret、业务域名与审核资格仍是正式发布的外部前提。
-
-0.3.0 的桌面端已同时构建 Windows NSIS、Linux `deb`/`AppImage` 与 macOS universal `dmg`：推送 `v0.3.0` 标签后由 CI 构建，产物和每个文件的 SHA-256 见 [v0.3.0 Release](https://github.com/FLmhp/ReScene/releases/tag/v0.3.0) 中的 `release-manifest.json`。Linux 与 macOS 产物未签名，安装步骤见 [用户手册](docs/用户手册.md)；仓库为私有，Release 仅协作者可见。
+截至 2026-11-11，0.3.0 已部署到公网。公网服务器运行 Caddy、Next.js、FastAPI 和独立 PostgreSQL，数据库迁移版本 `0006`；AutoDL RTX 5090 Worker 主动领取任务，GPU 并发为 1。浏览器和 Worker 直接读写阿里云北京私有 OSS。桌面端安装包（Windows NSIS、Linux deb/AppImage、macOS universal dmg）与 SHA-256 见 [v0.3.0 Release](https://github.com/FLmhp/ReScene/releases/tag/v0.3.0)，0.2.1 的下载入口仍为 <https://app.rescene.xyz/downloads/0.2.1/>。微信小程序工程和契约已完成，但真实 AppID/Secret、业务域名与审核资格仍是正式发布的外部前提。部署记录见[系统部署与运维](docs/单5090系统部署与运维.md)。
 
 - **端到端验收**覆盖图片与视频输入、断点上传、租约过期后从 OSS 恢复、运行中取消、历史任务切换、SPZ 解码与 WebGL 渲染、签名下载和分享撤销。
 - **产物与恢复**已验证四个验收任务的 PLY、SPZ、指标和报告发布，以及从 OSS 重新加载 checkpoint。5090 离线运行包已在空目录通过校验和 CUDA 冒烟测试。PostgreSQL 备份已在隔离库恢复 8 条任务记录。
