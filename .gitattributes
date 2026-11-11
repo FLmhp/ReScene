@@ -1,4 +1,6 @@
 * text=auto
+# pyproject reads this file verbatim as the package version; a CR would leak into it
+VERSION text eol=lf
 *.sh text eol=lf
 workerctl text eol=lf
 *.py text eol=lf
