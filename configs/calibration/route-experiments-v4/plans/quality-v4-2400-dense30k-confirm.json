@@ -1,0 +1,14 @@
+[
+  {
+    "name": "quality-v4-2400-dense30k-r2",
+    "profile": "quality",
+    "repeat": 2,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/quality/quality-v4-2400-dense30k.json"
+  },
+  {
+    "name": "quality-v4-2400-dense30k-r3",
+    "profile": "quality",
+    "repeat": 3,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/quality/quality-v4-2400-dense30k.json"
+  }
+]

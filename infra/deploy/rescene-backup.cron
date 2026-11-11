@@ -1,0 +1,2 @@
+17 3 * * * root (cd /opt/rescene && /usr/bin/docker compose --env-file infra/.env -f infra/compose.yaml --profile tools run --rm backup) >>/opt/rescene/infra/backups/backup.log 2>&1 || /usr/bin/logger -p daemon.err -t rescene-backup "daily PostgreSQL backup failed"
+47 3 * * 0 root (cd /opt/rescene && /usr/bin/docker compose --env-file infra/.env -f infra/compose.yaml --profile tools run --rm backup-upload) >>/opt/rescene/infra/backups/backup.log 2>&1 || /usr/bin/logger -p daemon.err -t rescene-backup "weekly PostgreSQL OSS upload failed"

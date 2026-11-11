@@ -1,0 +1,38 @@
+[
+  {
+    "name": "fast-original-r1",
+    "profile": "fast",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/fast-original.json"
+  },
+  {
+    "name": "fast-original-r2",
+    "profile": "fast",
+    "repeat": 2,
+    "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/fast-original.json"
+  },
+  {
+    "name": "fast-original-r3",
+    "profile": "fast",
+    "repeat": 3,
+    "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/fast-original.json"
+  },
+  {
+    "name": "balanced-original-r1",
+    "profile": "balanced",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/balanced-original.json"
+  },
+  {
+    "name": "balanced-original-r2",
+    "profile": "balanced",
+    "repeat": 2,
+    "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/balanced-original.json"
+  },
+  {
+    "name": "balanced-original-r3",
+    "profile": "balanced",
+    "repeat": 3,
+    "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/balanced-original.json"
+  }
+]

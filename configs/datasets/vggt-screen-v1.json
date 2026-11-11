@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "license_target": "academic-noncommercial",
+  "description": "Pinned VGGT example scenes for A100 route calibration and held-out validation.",
+  "scenes": [
+    {
+      "id": "golden-kitchen",
+      "dataset": "vggt-example",
+      "split": "calibration",
+      "input": "/home/loch/ReScene/data/golden-kitchen/images"
+    },
+    {
+      "id": "vggt-fern",
+      "dataset": "vggt-example",
+      "split": "calibration",
+      "input": "/home/loch/ReScene/data/vggt-fern/images"
+    },
+    {
+      "id": "vggt-flower",
+      "dataset": "vggt-example",
+      "split": "test",
+      "input": "/home/loch/ReScene/data/vggt-flower/images"
+    },
+    {
+      "id": "eth3d-playground",
+      "dataset": "eth3d",
+      "split": "test",
+      "input": "/home/loch/ReScene/data/eth3d-playground/playground/images/dslr_images_undistorted"
+    }
+  ]
+}

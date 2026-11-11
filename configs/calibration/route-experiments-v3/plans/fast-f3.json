@@ -1,0 +1,5 @@
+[
+  {"name": "f3-budget-48-r1", "profile": "fast", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/f3-48.json"},
+  {"name": "f3-budget-64-r1", "profile": "fast", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/f3-64.json"},
+  {"name": "f3-budget-80-r1", "profile": "fast", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/f3-80.json"}
+]

@@ -1,0 +1,11 @@
+{
+  "profile": "fast",
+  "candidate_id": "f1-packed",
+  "group": "F1",
+  "dataset": "vggt-example",
+  "scene_id": "golden-kitchen",
+  "scene": "/root/ReScene/data/golden-kitchen/images",
+  "validation": {"every": 8},
+  "overrides": {"gsplat_packed": true},
+  "purpose": "F1: packed training at the unchanged 7000-step FAST schedule and identical geometry."
+}

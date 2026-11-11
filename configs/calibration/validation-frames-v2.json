@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "every": 8,
+  "manifests": [
+    "configs/datasets/route-validation-v2.json",
+    "configs/datasets/route-holdout-v2.json"
+  ],
+  "scenes": {
+    "vggt-fern": {
+      "source": "/root/ReScene/data/vggt-fern/images",
+      "frame_count": 20,
+      "frames": [
+        {
+          "source": "/root/ReScene/data/vggt-fern/images/000.png",
+          "basename": "000.png"
+        },
+        {
+          "source": "/root/ReScene/data/vggt-fern/images/008.png",
+          "basename": "008.png"
+        },
+        {
+          "source": "/root/ReScene/data/vggt-fern/images/016.png",
+          "basename": "016.png"
+        }
+      ]
+    },
+    "vggt-flower": {
+      "source": "/root/ReScene/data/vggt-flower/images",
+      "frame_count": 25,
+      "frames": [
+        {
+          "source": "/root/ReScene/data/vggt-flower/images/000.png",
+          "basename": "000.png"
+        },
+        {
+          "source": "/root/ReScene/data/vggt-flower/images/008.png",
+          "basename": "008.png"
+        },
+        {
+          "source": "/root/ReScene/data/vggt-flower/images/016.png",
+          "basename": "016.png"
+        },
+        {
+          "source": "/root/ReScene/data/vggt-flower/images/024.png",
+          "basename": "024.png"
+        }
+      ]
+    },
+    "eth3d-playground": {
+      "source": "/root/ReScene/data/eth3d-playground/dslr_images_undistorted",
+      "frame_count": 38,
+      "frames": [
+        {
+          "source": "/root/ReScene/data/eth3d-playground/dslr_images_undistorted/DSC_0567.JPG",
+          "basename": "DSC_0567.JPG"
+        },
+        {
+          "source": "/root/ReScene/data/eth3d-playground/dslr_images_undistorted/DSC_0575.JPG",
+          "basename": "DSC_0575.JPG"
+        },
+        {
+          "source": "/root/ReScene/data/eth3d-playground/dslr_images_undistorted/DSC_0583.JPG",
+          "basename": "DSC_0583.JPG"
+        },
+        {
+          "source": "/root/ReScene/data/eth3d-playground/dslr_images_undistorted/DSC_0591.JPG",
+          "basename": "DSC_0591.JPG"
+        },
+        {
+          "source": "/root/ReScene/data/eth3d-playground/dslr_images_undistorted/DSC_0599.JPG",
+          "basename": "DSC_0599.JPG"
+        }
+      ]
+    },
+    "eth3d-courtyard": {
+      "source": "/root/ReScene/data/eth3d-courtyard/dslr_images_undistorted",
+      "frame_count": 38,
+      "frames": [
+        {
+          "source": "/root/ReScene/data/eth3d-courtyard/dslr_images_undistorted/DSC_0286.JPG",
+          "basename": "DSC_0286.JPG"
+        },
+        {
+          "source": "/root/ReScene/data/eth3d-courtyard/dslr_images_undistorted/DSC_0294.JPG",
+          "basename": "DSC_0294.JPG"
+        },
+        {
+          "source": "/root/ReScene/data/eth3d-courtyard/dslr_images_undistorted/DSC_0302.JPG",
+          "basename": "DSC_0302.JPG"
+        },
+        {
+          "source": "/root/ReScene/data/eth3d-courtyard/dslr_images_undistorted/DSC_0310.JPG",
+          "basename": "DSC_0310.JPG"
+        },
+        {
+          "source": "/root/ReScene/data/eth3d-courtyard/dslr_images_undistorted/DSC_0318.JPG",
+          "basename": "DSC_0318.JPG"
+        }
+      ]
+    },
+    "eth3d-office": {
+      "source": "/root/ReScene/data/eth3d-office/dslr_images_undistorted",
+      "frame_count": 26,
+      "frames": [
+        {
+          "source": "/root/ReScene/data/eth3d-office/dslr_images_undistorted/DSC_0219.JPG",
+          "basename": "DSC_0219.JPG"
+        },
+        {
+          "source": "/root/ReScene/data/eth3d-office/dslr_images_undistorted/DSC_0231.JPG",
+          "basename": "DSC_0231.JPG"
+        },
+        {
+          "source": "/root/ReScene/data/eth3d-office/dslr_images_undistorted/DSC_0242.JPG",
+          "basename": "DSC_0242.JPG"
+        },
+        {
+          "source": "/root/ReScene/data/eth3d-office/dslr_images_undistorted/DSC_0254.JPG",
+          "basename": "DSC_0254.JPG"
+        }
+      ]
+    }
+  }
+}

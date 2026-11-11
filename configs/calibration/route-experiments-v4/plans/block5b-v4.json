@@ -1,0 +1,14 @@
+[
+  {
+    "name": "quality-facade-v4-original-r1",
+    "profile": "quality",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/baselines/quality-facade-v4.json"
+  },
+  {
+    "name": "quality-v4-pinhole-facade-r1",
+    "profile": "quality",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/quality/quality-v4-pinhole-facade.json"
+  }
+]

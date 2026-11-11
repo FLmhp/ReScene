@@ -1,0 +1,8 @@
+[
+  {"name": "balanced-synced-c1", "profile": "balanced", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/balanced-original.json"},
+  {"name": "balanced-synced-c2", "profile": "balanced", "repeat": 2, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/balanced-original.json"},
+  {"name": "balanced-synced-c3", "profile": "balanced", "repeat": 3, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/balanced-original.json"},
+  {"name": "quality-synced-c1", "profile": "quality", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/quality-original.json"},
+  {"name": "quality-synced-c2", "profile": "quality", "repeat": 2, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/quality-original.json"},
+  {"name": "quality-synced-c3", "profile": "quality", "repeat": 3, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/quality-original.json"}
+]

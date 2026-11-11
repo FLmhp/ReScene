@@ -1,0 +1,26 @@
+[
+  {
+    "name": "fast-fern-v4-original-r1",
+    "profile": "fast",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/baselines/fast-fern-v4.json"
+  },
+  {
+    "name": "fast-v4-3500-fern-r1",
+    "profile": "fast",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/fast/fast-v4-3500-fern.json"
+  },
+  {
+    "name": "fast-flower-v4-original-r1",
+    "profile": "fast",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/baselines/fast-flower-v4.json"
+  },
+  {
+    "name": "fast-v4-3500-flower-r1",
+    "profile": "fast",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/fast/fast-v4-3500-flower.json"
+  }
+]

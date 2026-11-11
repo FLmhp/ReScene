@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "license_target": "academic-noncommercial",
+  "description": "Fast candidate screening before public datasets finish downloading.",
+  "scenes": [
+    {
+      "id": "golden-kitchen",
+      "dataset": "vggt-example",
+      "split": "calibration",
+      "input": "/home/loch/ReScene/data/golden-kitchen/images"
+    },
+    {
+      "id": "golden-kitchen-holdout",
+      "dataset": "vggt-example",
+      "split": "test",
+      "input": "/home/loch/ReScene/data/golden-kitchen/images"
+    }
+  ]
+}

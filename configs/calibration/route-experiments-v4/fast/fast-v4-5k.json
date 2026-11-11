@@ -1,0 +1,13 @@
+{
+  "profile": "fast",
+  "candidate_id": "fast-v4-5k",
+  "group": "F4",
+  "dataset": "vggt-example",
+  "scene_id": "golden-kitchen",
+  "scene": "/root/ReScene/data/golden-kitchen/images",
+  "validation": {
+    "every": 8
+  },
+  "steps": 5000,
+  "purpose": "F4: 5000-step FAST schedule, same geometry and validation sources; three repeats."
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "license_target": "academic-noncommercial",
+  "description": "ETH3D holdout scenes never used for candidate screening.",
+  "scenes": [
+    {
+      "id": "eth3d-courtyard",
+      "dataset": "eth3d",
+      "split": "test",
+      "input": "/root/ReScene/data/eth3d-courtyard/dslr_images_undistorted"
+    },
+    {
+      "id": "eth3d-office",
+      "dataset": "eth3d",
+      "split": "test",
+      "input": "/root/ReScene/data/eth3d-office/dslr_images_undistorted"
+    }
+  ]
+}

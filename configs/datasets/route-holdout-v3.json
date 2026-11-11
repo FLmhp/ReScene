@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "reserved_at": "2026-11-10",
+  "purpose": "Single-use scene-level holdout. Never run screening or tuning on this scene; evaluate only after candidates are frozen.",
+  "license_target": "academic-noncommercial",
+  "license": "CC BY-NC-SA 4.0",
+  "source": "https://www.eth3d.net/datasets",
+  "scenes": [
+    {
+      "id": "eth3d-electro",
+      "dataset": "ETH3D high-res multi-view training",
+      "split": "holdout",
+      "images_archive": "https://www.eth3d.net/data/electro_dslr_undistorted.7z",
+      "ground_truth_archive": "https://www.eth3d.net/data/electro_dslr_scan_eval.7z",
+      "input": "/root/autodl-tmp/rescene/datasets/eth3d/electro/electro/images/dslr_images_undistorted",
+      "calibration": "/root/autodl-tmp/rescene/datasets/eth3d/electro/electro/dslr_calibration_undistorted",
+      "ground_truth": "/root/autodl-tmp/rescene/datasets/eth3d/electro/electro/dslr_scan_eval",
+      "archive_sha256": {
+        "images": "0d2bc31fec0032b8fb20703abba8e45ef7a395c13d2d3476adc1f4dd4ffd7d8b",
+        "ground_truth": "5ca10a73e7da0e3c511e255bba5656cca4c372dc00c1417c97b75228a5bb3bac"
+      },
+      "expected_images": 45,
+      "environment": "outdoor",
+      "history": "Never used in ReScene calibration before this freeze."
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "fast": [
+      {"id": "baseline", "estimated_minutes": 4, "overrides": {}}
+    ],
+    "balanced": [
+      {"id": "baseline", "estimated_minutes": 10, "overrides": {}}
+    ],
+    "quality": [
+      {"id": "baseline", "estimated_minutes": 15, "overrides": {}}
+    ]
+  }
+}

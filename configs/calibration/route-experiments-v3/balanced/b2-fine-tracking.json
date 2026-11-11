@@ -1,0 +1,11 @@
+{
+  "profile": "balanced",
+  "candidate_id": "b2-fine-tracking",
+  "group": "B2",
+  "dataset": "vggt-example",
+  "scene_id": "golden-kitchen",
+  "scene": "/root/ReScene/data/golden-kitchen/images",
+  "validation": {"every": 8},
+  "overrides": {"vggt_fine_tracking": true},
+  "purpose": "B2: upstream VGGSfM fine tracking on versus the pinned adapter default off, same query budget."
+}

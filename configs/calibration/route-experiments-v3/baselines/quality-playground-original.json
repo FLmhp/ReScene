@@ -1,0 +1,10 @@
+{
+  "profile": "quality",
+  "candidate_id": "quality-original-playground",
+  "group": "baseline",
+  "dataset": "eth3d",
+  "scene_id": "eth3d-playground",
+  "scene": "/root/ReScene/data/eth3d-playground/dslr_images_undistorted",
+  "validation": {"every": 8},
+  "purpose": "QUALITY production defaults on eth3d-playground; comparator for q2/q3 cross-scene candidates."
+}

@@ -1,0 +1,17 @@
+{
+  "profile": "balanced",
+  "candidate_id": "balanced-v4-fine-4096-12q",
+  "group": "B4",
+  "dataset": "vggt-example",
+  "scene_id": "golden-kitchen",
+  "scene": "/root/ReScene/data/golden-kitchen/images",
+  "validation": {
+    "every": 8
+  },
+  "overrides": {
+    "vggt_fine_tracking": true,
+    "vggt_max_query_points": 4096,
+    "vggt_query_frames": 12
+  },
+  "purpose": "B4: fine tracking, 4096 query points, 12 query frames."
+}

@@ -1,0 +1,229 @@
+{
+  "schema_version": 1,
+  "screen": "calibration/route-screen-v2/leaderboard.json",
+  "profiles": {
+    "fast": {
+      "screen": {
+        "profile": "fast",
+        "scene_id": "golden-kitchen",
+        "candidates": [
+          {
+            "candidate_id": "steps5k",
+            "passed": true,
+            "reason": "faster",
+            "improved": [
+              "lpips"
+            ],
+            "regressed": [],
+            "time_ratio": 0.7522136973784985,
+            "dense_point_count": null,
+            "baseline_dense_point_count": null,
+            "mesh_vertex_count": null,
+            "baseline_mesh_vertex_count": null
+          }
+        ],
+        "winner": "steps5k",
+        "render_winner": null,
+        "geometry_winner": null,
+        "reason": "fastest_without_regression"
+      },
+      "validation": {
+        "passed": false,
+        "scenes": [
+          {
+            "scene_id": "eth3d-playground",
+            "status": "regressed",
+            "improved": [],
+            "regressed": [
+              "ssim"
+            ],
+            "time_ratio": 0.8173769102030973,
+            "dense_point_count": null,
+            "baseline_dense_point_count": null,
+            "mesh_vertex_count": null,
+            "baseline_mesh_vertex_count": null
+          },
+          {
+            "scene_id": "vggt-fern",
+            "status": "pass",
+            "improved": [
+              "psnr"
+            ],
+            "regressed": [],
+            "time_ratio": 0.7358800494099714,
+            "dense_point_count": null,
+            "baseline_dense_point_count": null,
+            "mesh_vertex_count": null,
+            "baseline_mesh_vertex_count": null
+          },
+          {
+            "scene_id": "vggt-flower",
+            "status": "pass",
+            "improved": [],
+            "regressed": [],
+            "time_ratio": 0.8052517720244445,
+            "dense_point_count": null,
+            "baseline_dense_point_count": null,
+            "mesh_vertex_count": null,
+            "baseline_mesh_vertex_count": null
+          }
+        ],
+        "improved_scenes": 3
+      },
+      "holdout": {
+        "passed": false,
+        "scenes": [
+          {
+            "scene_id": "eth3d-courtyard",
+            "status": "pass",
+            "improved": [
+              "psnr",
+              "ssim"
+            ],
+            "regressed": [],
+            "time_ratio": 0.7615302956439333,
+            "dense_point_count": null,
+            "baseline_dense_point_count": null,
+            "mesh_vertex_count": null,
+            "baseline_mesh_vertex_count": null
+          },
+          {
+            "scene_id": "eth3d-office",
+            "status": "regressed",
+            "improved": [],
+            "regressed": [
+              "psnr",
+              "lpips"
+            ],
+            "time_ratio": 0.7626109004900792,
+            "dense_point_count": null,
+            "baseline_dense_point_count": null,
+            "mesh_vertex_count": null,
+            "baseline_mesh_vertex_count": null
+          }
+        ],
+        "improved_scenes": 2
+      },
+      "promoted": false
+    },
+    "balanced": {
+      "screen": {
+        "profile": "balanced",
+        "scene_id": "golden-kitchen",
+        "candidates": [
+          {
+            "candidate_id": "appearance",
+            "passed": false,
+            "reason": "quality[regressed:psnr,ssim,lpips] speed[regressed:psnr,ssim,lpips]",
+            "improved": [],
+            "regressed": [
+              "psnr",
+              "ssim",
+              "lpips"
+            ],
+            "time_ratio": 1.5676423756700815,
+            "dense_point_count": null,
+            "baseline_dense_point_count": null,
+            "mesh_vertex_count": null,
+            "baseline_mesh_vertex_count": null
+          },
+          {
+            "candidate_id": "steps30k",
+            "passed": false,
+            "reason": "quality[regressed:psnr,ssim,lpips] speed[regressed:psnr,ssim,lpips]",
+            "improved": [],
+            "regressed": [
+              "psnr",
+              "ssim",
+              "lpips"
+            ],
+            "time_ratio": 1.4252242449976116,
+            "dense_point_count": null,
+            "baseline_dense_point_count": null,
+            "mesh_vertex_count": null,
+            "baseline_mesh_vertex_count": null
+          }
+        ],
+        "winner": "baseline",
+        "render_winner": null,
+        "geometry_winner": null,
+        "reason": "baseline_retained"
+      },
+      "validation": null,
+      "holdout": null,
+      "promoted": false
+    },
+    "quality": {
+      "screen": {
+        "profile": "quality",
+        "scene_id": "golden-kitchen",
+        "candidates": [
+          {
+            "candidate_id": "depth-appearance",
+            "passed": true,
+            "reason": "geometry_enhancement",
+            "improved": [],
+            "regressed": [],
+            "time_ratio": 1.4482458627848438,
+            "dense_point_count": 155866.0,
+            "baseline_dense_point_count": 156864.0,
+            "mesh_vertex_count": 73721.0,
+            "baseline_mesh_vertex_count": 64853.0
+          },
+          {
+            "candidate_id": "mvs1200",
+            "passed": false,
+            "reason": "regressed:psnr",
+            "improved": [
+              "lpips"
+            ],
+            "regressed": [
+              "psnr"
+            ],
+            "time_ratio": 1.0114007540987051,
+            "dense_point_count": 156622.0,
+            "baseline_dense_point_count": 156864.0,
+            "mesh_vertex_count": 69520.0,
+            "baseline_mesh_vertex_count": 64853.0
+          },
+          {
+            "candidate_id": "poisson12",
+            "passed": false,
+            "reason": "regressed:psnr",
+            "improved": [],
+            "regressed": [
+              "psnr"
+            ],
+            "time_ratio": 1.0081098869552125,
+            "dense_point_count": 156254.0,
+            "baseline_dense_point_count": 156864.0,
+            "mesh_vertex_count": 320634.0,
+            "baseline_mesh_vertex_count": 64853.0
+          },
+          {
+            "candidate_id": "steps30k",
+            "passed": false,
+            "reason": "regressed:ssim,lpips",
+            "improved": [],
+            "regressed": [
+              "ssim",
+              "lpips"
+            ],
+            "time_ratio": 1.3099051600096625,
+            "dense_point_count": 161487.0,
+            "baseline_dense_point_count": 156864.0,
+            "mesh_vertex_count": 62699.0,
+            "baseline_mesh_vertex_count": 64853.0
+          }
+        ],
+        "winner": "baseline",
+        "render_winner": null,
+        "geometry_winner": "depth-appearance",
+        "reason": "geometry_recommendation"
+      },
+      "validation": null,
+      "holdout": null,
+      "promoted": false
+    }
+  }
+}

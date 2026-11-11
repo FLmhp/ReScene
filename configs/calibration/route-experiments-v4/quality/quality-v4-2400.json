@@ -1,0 +1,15 @@
+{
+  "profile": "quality",
+  "candidate_id": "quality-v4-2400",
+  "group": "Q4",
+  "dataset": "eth3d",
+  "scene_id": "eth3d-playground",
+  "scene": "/root/ReScene/data/eth3d-playground/dslr_images_undistorted",
+  "validation": {
+    "every": 8
+  },
+  "overrides": {
+    "preprocess_max_side": 2400
+  },
+  "purpose": "Q4: 2400 preprocessing long side; three repeats against the playground baseline."
+}

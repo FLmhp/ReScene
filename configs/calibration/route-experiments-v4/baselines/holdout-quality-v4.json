@@ -1,0 +1,18 @@
+{
+  "profile": "quality",
+  "candidate_id": "quality-v4-original-holdout",
+  "group": "holdout-v4",
+  "dataset": "eth3d-electro",
+  "scene_id": "eth3d-electro",
+  "scene": "/root/autodl-tmp/rescene/datasets/eth3d/electro/electro/images/dslr_images_undistorted",
+  "validation": {
+    "sources": [
+      0,
+      8,
+      16,
+      24,
+      40
+    ]
+  },
+  "purpose": "v4 QUALITY holdout baseline on eth3d-electro with the frozen five validation sources."
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "name": "balanced-v4-fine-4096-12q-30k-r2",
+    "profile": "balanced",
+    "repeat": 2,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/balanced/balanced-v4-fine-4096-12q-30k.json"
+  },
+  {
+    "name": "balanced-v4-fine-4096-12q-30k-r3",
+    "profile": "balanced",
+    "repeat": 3,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/balanced/balanced-v4-fine-4096-12q-30k.json"
+  }
+]

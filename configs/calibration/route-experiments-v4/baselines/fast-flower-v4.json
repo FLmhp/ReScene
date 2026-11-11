@@ -1,0 +1,12 @@
+{
+  "profile": "fast",
+  "candidate_id": "fast-flower-v4-original",
+  "group": "cross-scene-v4",
+  "dataset": "vggt-example",
+  "scene_id": "vggt-flower",
+  "scene": "/root/ReScene/data/vggt-flower/images",
+  "validation": {
+    "every": 8
+  },
+  "purpose": "v4 FAST cross-scene baseline on vggt-flower."
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "license_target": "academic-noncommercial",
+  "description": "Kitchen-only screening scene with 25 VGGT example images.",
+  "scenes": [
+    {
+      "id": "golden-kitchen",
+      "dataset": "vggt-example",
+      "split": "calibration",
+      "input": "/root/ReScene/data/golden-kitchen/images"
+    }
+  ]
+}

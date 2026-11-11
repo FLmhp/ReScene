@@ -1,0 +1,15 @@
+{
+  "profile": "balanced",
+  "candidate_id": "balanced-v4-fine",
+  "group": "B4",
+  "dataset": "vggt-example",
+  "scene_id": "golden-kitchen",
+  "scene": "/root/ReScene/data/golden-kitchen/images",
+  "validation": {
+    "every": 8
+  },
+  "overrides": {
+    "vggt_fine_tracking": true
+  },
+  "purpose": "B4: VGGSfM fine tracking enabled; three repeats as the BALANCED v4 control."
+}

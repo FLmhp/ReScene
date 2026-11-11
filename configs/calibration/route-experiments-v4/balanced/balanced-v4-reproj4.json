@@ -1,0 +1,16 @@
+{
+  "profile": "balanced",
+  "candidate_id": "balanced-v4-reproj4",
+  "group": "B4",
+  "dataset": "vggt-example",
+  "scene_id": "golden-kitchen",
+  "scene": "/root/ReScene/data/golden-kitchen/images",
+  "validation": {
+    "every": 8
+  },
+  "overrides": {
+    "vggt_fine_tracking": true,
+    "vggt_max_reprojection_error": 4.0
+  },
+  "purpose": "B4: fine tracking with a 4.0 px reprojection-error bound."
+}

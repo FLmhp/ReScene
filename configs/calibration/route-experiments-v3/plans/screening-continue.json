@@ -1,0 +1,9 @@
+[
+  {"name": "screen-q1-pinhole-b", "profile": "quality", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/q1-pinhole.json"},
+  {"name": "screen-q2-2400", "profile": "quality", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/q2-resolution-2400.json"},
+  {"name": "screen-q3-dense-init", "profile": "quality", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/q3-dense-init.json"},
+  {"name": "screen-b1-2048", "profile": "balanced", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/b1-query-2048.json"},
+  {"name": "screen-b1-4096", "profile": "balanced", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/b1-query-4096.json"},
+  {"name": "screen-b2-fine", "profile": "balanced", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/b2-fine-tracking.json"},
+  {"name": "screen-b2-reproj4", "profile": "balanced", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/b2-reproj-4.json"}
+]

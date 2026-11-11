@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1242" height="2436" viewBox="0 0 1242 2436" role="img" aria-label="ReScene">
+  <rect width="1242" height="2436" fill="#111318"/>
+  <g transform="translate(207.4 760.9) scale(0.8077)">
+    <g fill="none" stroke="#9bb8ff" stroke-width="46" stroke-linejoin="round">
+      <path d="M252 634V348l260-150 260 150v286L512 784 252 634Z"/>
+      <path d="m252 348 260 150 260-150M512 498v286"/>
+    </g>
+    <circle cx="512" cy="498" r="48" fill="#f4f5f7"/>
+  </g>
+</svg>

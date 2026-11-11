@@ -1,0 +1,10 @@
+{
+  "profile": "fast",
+  "candidate_id": "fast-original",
+  "group": "F2-cross-scene",
+  "dataset": "vggt-fern",
+  "scene_id": "vggt-fern",
+  "scene": "/root/ReScene/data/vggt-fern/images",
+  "validation": {"every": 8},
+  "purpose": "FAST production baseline on vggt-fern."
+}

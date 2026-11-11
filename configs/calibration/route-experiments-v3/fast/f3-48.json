@@ -1,0 +1,11 @@
+{
+  "profile": "fast",
+  "candidate_id": "f3-48",
+  "group": "F3",
+  "dataset": "ETH3D high-res multi-view test",
+  "scene_id": "eth3d-bridge",
+  "scene": "/root/autodl-tmp/rescene/datasets/eth3d/bridge/bridge/images/dslr_images_undistorted",
+  "validation": {"every": 12},
+  "overrides": {"max_frames": 48},
+  "purpose": "F3: 48-view budget on a 110-image scene with fixed held-out source IDs and resolution."
+}

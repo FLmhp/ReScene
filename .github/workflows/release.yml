@@ -1,0 +1,356 @@
+name: Release validation
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  source-manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/check-versions.mjs
+      - run: node scripts/source-manifest.mjs > "$RUNNER_TEMP/source-manifest.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-manifest
+          path: ${{ runner.temp }}/source-manifest.json
+          if-no-files-found: error
+
+  windows-nsis:
+    runs-on: windows-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check tag against VERSION
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$((Get-Content VERSION -Raw).Trim())") {
+            throw 'Release tag does not match VERSION'
+          }
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/check-versions.mjs
+      - name: Validate release URLs
+        shell: pwsh
+        env:
+          VITE_API_URL: ${{ vars.RELEASE_API_URL }}
+          VITE_WEB_URL: ${{ vars.RELEASE_WEB_URL }}
+        run: |
+          foreach ($name in @('VITE_API_URL', 'VITE_WEB_URL')) {
+            $url = $null
+            if (-not [Uri]::TryCreate([Environment]::GetEnvironmentVariable($name), [UriKind]::Absolute, [ref]$url) -or $url.Scheme -ne 'https') {
+              throw "$name must be an absolute HTTPS URL"
+            }
+            if ($name -eq 'VITE_API_URL' -and $url.GetLeftPart([UriPartial]::Authority) -ne 'https://api.rescene.xyz') {
+              throw 'VITE_API_URL origin must match the desktop CSP: https://api.rescene.xyz'
+            }
+          }
+      - name: Build x64 NSIS installer
+        env:
+          VITE_API_URL: ${{ vars.RELEASE_API_URL }}
+          VITE_WEB_URL: ${{ vars.RELEASE_WEB_URL }}
+        run: pnpm --filter @rescene/desktop tauri build --target x86_64-pc-windows-msvc --bundles nsis
+      - name: Sign installer when a certificate is configured
+        id: signing
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $installers = @(Get-ChildItem apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
+          if (-not $env:WINDOWS_CERTIFICATE_BASE64 -and -not $env:WINDOWS_CERTIFICATE_PASSWORD) {
+            Write-Warning 'No Windows signing certificate configured; the installer is unsigned.'
+            'artifact=windows-nsis-x64-unsigned' >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if (-not $env:WINDOWS_CERTIFICATE_BASE64 -or -not $env:WINDOWS_CERTIFICATE_PASSWORD) {
+            throw 'Both WINDOWS_CERTIFICATE_BASE64 and WINDOWS_CERTIFICATE_PASSWORD are required to sign'
+          }
+          $certificate = Join-Path $env:RUNNER_TEMP 'rescene-signing.pfx'
+          try {
+            [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signtool) { throw 'Windows signtool not found' }
+            & $signtool.FullName sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f $certificate /p $env:WINDOWS_CERTIFICATE_PASSWORD $installers[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw 'Installer signing failed' }
+            & $signtool.FullName verify /pa /all /tw $installers[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw 'Installer signature verification failed' }
+            'artifact=windows-nsis-x64-signed' >> $env:GITHUB_OUTPUT
+          } finally {
+            Remove-Item $certificate -Force -ErrorAction SilentlyContinue
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.signing.outputs.artifact }}
+          path: apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+  linux-desktop:
+    runs-on: ubuntu-22.04
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check tag against VERSION
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$(tr -d '\r\n' < VERSION)" ]]; then
+            echo 'Release tag does not match VERSION' >&2
+            exit 1
+          fi
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux WebKitGTK bundling dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev libssl-dev build-essential
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/check-versions.mjs
+      - name: Validate release URLs
+        env:
+          VITE_API_URL: ${{ vars.RELEASE_API_URL }}
+          VITE_WEB_URL: ${{ vars.RELEASE_WEB_URL }}
+        run: |
+          node -e 'for (const name of ["VITE_API_URL", "VITE_WEB_URL"]) { let url; try { url = new URL(process.env[name]); } catch { throw new Error(`${name} must be an absolute HTTPS URL`); } if (url.protocol !== "https:") throw new Error(`${name} must be an absolute HTTPS URL`); if (name === "VITE_API_URL" && url.origin !== "https://api.rescene.xyz") throw new Error("VITE_API_URL origin must match the desktop CSP: https://api.rescene.xyz"); }'
+      - name: Build x64 deb and AppImage
+        env:
+          VITE_API_URL: ${{ vars.RELEASE_API_URL }}
+          VITE_WEB_URL: ${{ vars.RELEASE_WEB_URL }}
+        run: |
+          pnpm --filter @rescene/desktop tauri build --target x86_64-unknown-linux-gnu --bundles deb,appimage
+          test -n "$(find apps/desktop/src-tauri/target -path '*/bundle/deb/*.deb' -type f)" || { echo 'No .deb installer was produced' >&2; exit 1; }
+          test -n "$(find apps/desktop/src-tauri/target -path '*/bundle/appimage/*.AppImage' -type f)" || { echo 'No .AppImage installer was produced' >&2; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-desktop
+          path: |
+            apps/desktop/src-tauri/target/**/bundle/deb/*
+            apps/desktop/src-tauri/target/**/bundle/appimage/*
+          if-no-files-found: error
+
+  macos-desktop:
+    runs-on: macos-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check tag against VERSION
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$(tr -d '\r\n' < VERSION)" ]]; then
+            echo 'Release tag does not match VERSION' >&2
+            exit 1
+          fi
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Add universal macOS Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/check-versions.mjs
+      - name: Validate release URLs
+        env:
+          VITE_API_URL: ${{ vars.RELEASE_API_URL }}
+          VITE_WEB_URL: ${{ vars.RELEASE_WEB_URL }}
+        run: |
+          node -e 'for (const name of ["VITE_API_URL", "VITE_WEB_URL"]) { let url; try { url = new URL(process.env[name]); } catch { throw new Error(`${name} must be an absolute HTTPS URL`); } if (url.protocol !== "https:") throw new Error(`${name} must be an absolute HTTPS URL`); if (name === "VITE_API_URL" && url.origin !== "https://api.rescene.xyz") throw new Error("VITE_API_URL origin must match the desktop CSP: https://api.rescene.xyz"); }'
+      - name: Build unsigned universal dmg (no Apple certificate is configured)
+        env:
+          VITE_API_URL: ${{ vars.RELEASE_API_URL }}
+          VITE_WEB_URL: ${{ vars.RELEASE_WEB_URL }}
+        run: |
+          pnpm --filter @rescene/desktop tauri build --target universal-apple-darwin --bundles dmg
+          test -n "$(find apps/desktop/src-tauri/target -path '*/bundle/dmg/*.dmg' -type f)" || { echo 'No .dmg installer was produced' >&2; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-desktop
+          path: apps/desktop/src-tauri/target/**/bundle/dmg/*
+          if-no-files-found: error
+
+  android:
+    if: vars.RELEASE_ANDROID_SIGNING == 'true'
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check tag against VERSION
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$(tr -d '\r\n' < VERSION)" ]]; then
+            echo 'Release tag does not match VERSION' >&2
+            exit 1
+          fi
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/check-versions.mjs
+      - name: Validate release URLs
+        env:
+          EXPO_PUBLIC_API_URL: ${{ vars.RELEASE_API_URL }}
+          EXPO_PUBLIC_WEB_URL: ${{ vars.RELEASE_WEB_URL }}
+        run: |
+          node -e 'for (const name of ["EXPO_PUBLIC_API_URL", "EXPO_PUBLIC_WEB_URL"]) { let url; try { url = new URL(process.env[name]); } catch { throw new Error(`${name} must be an absolute HTTPS URL`); } if (url.protocol !== "https:") throw new Error(`${name} must be an absolute HTTPS URL`); }'
+      - name: Require Android signing inputs
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          RESCENE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RESCENE_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          RESCENE_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          for name in ANDROID_KEYSTORE_BASE64 RESCENE_ANDROID_KEYSTORE_PASSWORD RESCENE_ANDROID_KEY_ALIAS RESCENE_ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then echo "$name is required" >&2; exit 1; fi
+          done
+      - name: Install Android build tools
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Build and verify signed Android APK
+        working-directory: apps/mobile
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          RESCENE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RESCENE_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          RESCENE_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          EXPO_PUBLIC_API_URL: ${{ vars.RELEASE_API_URL }}
+          EXPO_PUBLIC_WEB_URL: ${{ vars.RELEASE_WEB_URL }}
+        run: |
+          set -euo pipefail
+          export RESCENE_ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/rescene-release.keystore"
+          trap 'rm -f "$RESCENE_ANDROID_KEYSTORE_PATH"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RESCENE_ANDROID_KEYSTORE_PATH"
+          pnpm exec expo prebuild --platform android --no-install
+          (cd android && ./gradlew :app:assembleRelease)
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          test -f "$apk"
+          apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          test -x "$apksigner"
+          verification=$("$apksigner" verify --verbose --print-certs "$apk")
+          printf '%s\n' "$verification"
+          expected=$(keytool -exportcert -alias "$RESCENE_ANDROID_KEY_ALIAS" -keystore "$RESCENE_ANDROID_KEYSTORE_PATH" -storepass:env RESCENE_ANDROID_KEYSTORE_PASSWORD | openssl dgst -sha256)
+          actual=$(printf '%s\n' "$verification" | grep 'Signer #1 certificate SHA-256 digest:' | cut -d: -f2 | tr -d ' ')
+          expected=${expected##* }
+          [[ "${actual,,}" == "${expected,,}" ]] || { echo 'Android APK signer does not match keystore' >&2; exit 1; }
+          aapt2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          badging=$("$aapt2" dump badging "$apk")
+          package_name=$(printf '%s\n' "$badging" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+          version_name=$(printf '%s\n' "$badging" | sed -n "s/^package:.* versionName='\([^']*\)'.*/\1/p")
+          version_code=$(printf '%s\n' "$badging" | sed -n "s/^package:.* versionCode='\([^']*\)'.*/\1/p")
+          [[ "$package_name" == 'app.rescene.mobile' ]] || { echo "Unexpected package: $package_name" >&2; exit 1; }
+          [[ "$version_name" == "$(tr -d '\r\n' < "$GITHUB_WORKSPACE/VERSION")" ]] || { echo "Unexpected versionName: $version_name" >&2; exit 1; }
+          [[ "$version_code" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid versionCode: $version_code" >&2; exit 1; }
+          native_code=$(printf '%s\n' "$badging" | sed -n 's/^native-code: //p')
+          [[ -z "$native_code" || "$native_code" == *arm64-v8a* ]] || { echo "Missing arm64-v8a ABI: $native_code" >&2; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk-signed
+          path: apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
+  release-manifest:
+    needs: [source-manifest, windows-nsis, linux-desktop, macos-desktop, android]
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: source-manifest
+          path: release-inputs/source
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: windows-nsis-x64-*
+          path: release-inputs/artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-desktop
+          path: release-inputs/artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-desktop
+          path: release-inputs/artifacts
+      - uses: actions/download-artifact@v4
+        if: vars.RELEASE_ANDROID_SIGNING == 'true'
+        with:
+          name: android-apk-signed
+          path: release-inputs/artifacts
+      - name: Hash release artifacts
+        run: |
+          node scripts/release-manifest.mjs --source-manifest release-inputs/source/source-manifest.json release-inputs/artifacts/* > "$RUNNER_TEMP/release-manifest.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: ${{ runner.temp }}/release-manifest.json
+          if-no-files-found: error
+
+  github-release:
+    needs: [release-manifest, windows-nsis, linux-desktop, macos-desktop]
+    if: always() && startsWith(github.ref, 'refs/tags/v') && needs.release-manifest.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*'
+          path: release-assets
+          merge-multiple: true
+      - name: Compose release notes from CHANGELOG.md
+        run: node scripts/release-notes.mjs > "$RUNNER_TEMP/notes.md"
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "ReScene $(tr -d '\r\n' < VERSION)" --notes-file "$RUNNER_TEMP/notes.md" release-assets/*
+

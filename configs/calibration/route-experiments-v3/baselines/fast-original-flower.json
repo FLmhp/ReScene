@@ -1,0 +1,10 @@
+{
+  "profile": "fast",
+  "candidate_id": "fast-original",
+  "group": "F2-cross-scene",
+  "dataset": "vggt-flower",
+  "scene_id": "vggt-flower",
+  "scene": "/root/ReScene/data/vggt-flower/images",
+  "validation": {"every": 8},
+  "purpose": "FAST production baseline on vggt-flower."
+}

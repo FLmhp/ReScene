@@ -1,0 +1,10 @@
+{
+  "profile": "fast",
+  "candidate_id": "fast-original",
+  "group": "baseline",
+  "dataset": "vggt-example",
+  "scene_id": "golden-kitchen",
+  "scene": "/root/ReScene/data/golden-kitchen/images",
+  "validation": {"every": 8},
+  "purpose": "Cold original FAST production configuration; 3 repeats for noise and tolerance."
+}

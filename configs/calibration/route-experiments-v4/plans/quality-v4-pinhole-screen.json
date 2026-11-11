@@ -1,0 +1,8 @@
+[
+  {
+    "name": "quality-v4-pinhole-r1",
+    "profile": "quality",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/quality/quality-v4-pinhole.json"
+  }
+]

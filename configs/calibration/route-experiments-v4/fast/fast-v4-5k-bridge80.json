@@ -1,0 +1,16 @@
+{
+  "profile": "fast",
+  "candidate_id": "fast-v4-5k-bridge80",
+  "group": "F4",
+  "dataset": "ETH3D high-res multi-view test",
+  "scene_id": "eth3d-bridge",
+  "scene": "/root/autodl-tmp/rescene/datasets/eth3d/bridge/bridge/images/dslr_images_undistorted",
+  "validation": {
+    "every": 12
+  },
+  "steps": 5000,
+  "overrides": {
+    "max_frames": 80
+  },
+  "purpose": "F4: 5000-step FAST at the 80-view bridge budget."
+}

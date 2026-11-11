@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "threshold": 0.02,
+  "rows": [
+    {
+      "run_id": "route-holdout-v2-balanced-baseline-eth3d-courtyard",
+      "profile": "balanced",
+      "candidate_id": "baseline",
+      "scene_id": "eth3d-courtyard",
+      "point_accuracy": 0.00591149,
+      "point_completeness": 0.00113623,
+      "point_fscore": 0.0019061,
+      "point_metric_method": "eth3d_official"
+    },
+    {
+      "run_id": "route-holdout-v2-balanced-baseline-eth3d-office",
+      "profile": "balanced",
+      "candidate_id": "baseline",
+      "scene_id": "eth3d-office",
+      "point_accuracy": 0.0653655,
+      "point_completeness": 0.00503341,
+      "point_fscore": 0.00934705,
+      "point_metric_method": "eth3d_official"
+    },
+    {
+      "run_id": "route-holdout-v2-fast-baseline-eth3d-courtyard",
+      "profile": "fast",
+      "candidate_id": "baseline",
+      "scene_id": "eth3d-courtyard",
+      "point_accuracy": 0.00486433,
+      "point_completeness": 0.000430202,
+      "point_fscore": 0.000790493,
+      "point_metric_method": "eth3d_official"
+    },
+    {
+      "run_id": "route-holdout-v2-fast-baseline-eth3d-office",
+      "profile": "fast",
+      "candidate_id": "baseline",
+      "scene_id": "eth3d-office",
+      "point_accuracy": 0.0458065,
+      "point_completeness": 0.00828528,
+      "point_fscore": 0.0140324,
+      "point_metric_method": "eth3d_official"
+    },
+    {
+      "run_id": "route-holdout-v2-fast-steps5k-eth3d-courtyard",
+      "profile": "fast",
+      "candidate_id": "steps5k",
+      "scene_id": "eth3d-courtyard",
+      "point_accuracy": 0.00490732,
+      "point_completeness": 0.00036291,
+      "point_fscore": 0.000675839,
+      "point_metric_method": "eth3d_official"
+    },
+    {
+      "run_id": "route-holdout-v2-fast-steps5k-eth3d-office",
+      "profile": "fast",
+      "candidate_id": "steps5k",
+      "scene_id": "eth3d-office",
+      "point_accuracy": 0.0482978,
+      "point_completeness": 0.00824682,
+      "point_fscore": 0.0140881,
+      "point_metric_method": "eth3d_official"
+    },
+    {
+      "run_id": "route-holdout-v2-quality-baseline-eth3d-courtyard",
+      "profile": "quality",
+      "candidate_id": "baseline",
+      "scene_id": "eth3d-courtyard",
+      "point_accuracy": 0.768429,
+      "point_completeness": 0.182755,
+      "point_fscore": 0.295283,
+      "point_metric_method": "eth3d_official"
+    },
+    {
+      "run_id": "route-holdout-v2-quality-baseline-eth3d-office",
+      "profile": "quality",
+      "candidate_id": "baseline",
+      "scene_id": "eth3d-office",
+      "point_accuracy": 0.230902,
+      "point_completeness": 0.0553544,
+      "point_fscore": 0.0893006,
+      "point_metric_method": "eth3d_official"
+    }
+  ],
+  "skipped": []
+}

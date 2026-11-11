@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "fast": [
+      {"id": "baseline", "estimated_minutes": 4, "overrides": {}},
+      {"id": "coverage48", "estimated_minutes": 3, "overrides": {"max_frames": 48}},
+      {"id": "detail10k", "estimated_minutes": 5, "overrides": {"gsplat_steps": 10000}},
+      {"id": "packed48", "estimated_minutes": 5, "overrides": {"max_frames": 48, "gsplat_packed": true}}
+    ],
+    "balanced": [
+      {"id": "baseline", "estimated_minutes": 14, "overrides": {}},
+      {"id": "steps20k", "estimated_minutes": 10, "overrides": {"gsplat_steps": 20000}},
+      {
+        "id": "query1024",
+        "estimated_minutes": 9,
+        "overrides": {"gsplat_steps": 20000, "vggt_max_query_points": 1024}
+      },
+      {"id": "appearance", "estimated_minutes": 12, "overrides": {"gsplat_steps": 20000, "gsplat_app_opt": true}}
+    ],
+    "quality": [
+      {"id": "baseline", "estimated_minutes": 18, "overrides": {}},
+      {"id": "steps20k", "estimated_minutes": 14, "overrides": {"gsplat_steps": 20000}},
+      {"id": "opencv", "estimated_minutes": 18, "overrides": {"colmap_camera_model": "OPENCV"}},
+      {
+        "id": "depth-appearance",
+        "estimated_minutes": 20,
+        "overrides": {"gsplat_depth_loss": true, "gsplat_app_opt": true}
+      }
+    ]
+  }
+}

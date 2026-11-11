@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=${RESCENE_ROOT:-/root/ReScene}
+DATA=${RESCENE_DATA_ROOT:-/root/autodl-tmp/rescene}
+STATE=$DATA/state
+LOGS=$DATA/logs
+PID=$STATE/worker.pid
+LOCK=$STATE/worker.lock
+DRAIN=$STATE/drain
+ENV_FILE=$ROOT/worker.env
+mkdir -p "$STATE" "$LOGS"
+
+load_env() {
+  [[ -f "$ENV_FILE" ]] || { echo "Missing $ENV_FILE" >&2; exit 2; }
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+  export RESCENE_ROOT=$ROOT RESCENE_WORK_ROOT=$DATA/jobs RESCENE_DRAIN_FILE=$DRAIN
+  export TORCH_HOME="$DATA/cache/torch"
+  export OMP_NUM_THREADS=12 MKL_NUM_THREADS=12 OPENBLAS_NUM_THREADS=12 NUMEXPR_NUM_THREADS=12
+  export LD_LIBRARY_PATH="$DATA/runtime/system-libs/usr/lib/x86_64-linux-gnu:$ROOT/.venv/lib/python3.11/site-packages/nvidia/cuda_runtime/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+}
+
+running() {
+  [[ -f "$PID" ]] && [[ $(ps -p "$(<"$PID")" -o args= 2>/dev/null) == "flock -n $LOCK "* ]]
+}
+
+case "${1:-status}" in
+  bootstrap) cd "$ROOT"; exec bash scripts/bootstrap_5090.sh ;;
+  start)
+    load_env
+    [[ -f "$RESCENE_WORKER_TOKEN_FILE" ]] || { echo "Worker token file is missing" >&2; exit 2; }
+    running && { echo "Worker already running: $(<"$PID")"; exit 0; }
+    gpu=$(nvidia-smi --query-gpu=name,compute_cap,memory.total --format=csv,noheader,nounits | head -n1)
+    if [[ ! "$gpu" =~ RTX\ 5090,\ 12\.0,\ ([0-9]+) ]] || (( BASH_REMATCH[1] < 31744 )); then
+      echo "Expected RTX 5090 with CC 12.0 and at least 31 GiB VRAM" >&2
+      exit 3
+    fi
+    rm -f "$DRAIN"
+    cd "$ROOT"
+    nohup setsid flock -n "$LOCK" taskset -c 0-11 .venv/bin/python -m rescene_worker.main >>"$LOGS/worker.log" 2>&1 &
+    echo $! >"$PID"
+    sleep 1
+    running || { echo "Worker failed to start; see $LOGS/worker.log" >&2; exit 1; }
+    echo "Worker started: $(<"$PID")"
+    ;;
+  drain) touch "$DRAIN"; echo "Worker draining; the active job will finish" ;;
+  stop)
+    touch "$DRAIN"
+    if running; then kill -TERM -- "-$(<"$PID")" 2>/dev/null || kill -TERM "$(<"$PID")"; fi
+    flock -w 25 "$LOCK" true || { echo "Worker is still shutting down" >&2; exit 1; }
+    rm -f "$PID"
+    echo "Worker stopped"
+    ;;
+  status)
+    if running; then echo "running pid=$(<"$PID") drain=$([[ -f "$DRAIN" ]] && echo yes || echo no)"; else echo "stopped"; fi
+    nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null || true
+    ;;
+  logs) exec tail -n 200 -f "$LOGS/worker.log" ;;
+  smoke)
+    export RESCENE_EXPECT_5090=1
+    export LD_LIBRARY_PATH="$DATA/runtime/system-libs/usr/lib/x86_64-linux-gnu:$ROOT/.venv/lib/python3.11/site-packages/nvidia/cuda_runtime/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    cd "$ROOT"; exec .venv/bin/python scripts/smoke_gpu.py
+    ;;
+  sync-runtime) cd "$ROOT"; exec bash scripts/bootstrap_5090.sh ;;
+  sync-models)
+    model=$DATA/cache/models/VGGT-1B/model.safetensors
+    [[ -s "$model" && -s "$model.sha256" ]] || { echo "VGGT model or checksum missing" >&2; exit 1; }
+    cd "$(dirname "$model")"; sha256sum --check model.safetensors.sha256
+    ;;
+  *) echo "usage: workerctl {bootstrap|start|drain|stop|status|logs|smoke|sync-runtime|sync-models}" >&2; exit 2 ;;
+esac

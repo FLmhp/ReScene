@@ -1,0 +1,20 @@
+[
+  {
+    "name": "balanced-v4-fine-r1",
+    "profile": "balanced",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/balanced/balanced-v4-fine.json"
+  },
+  {
+    "name": "balanced-v4-fine-r2",
+    "profile": "balanced",
+    "repeat": 2,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/balanced/balanced-v4-fine.json"
+  },
+  {
+    "name": "balanced-v4-fine-r3",
+    "profile": "balanced",
+    "repeat": 3,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/balanced/balanced-v4-fine.json"
+  }
+]

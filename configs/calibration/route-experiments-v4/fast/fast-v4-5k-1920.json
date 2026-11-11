@@ -1,0 +1,16 @@
+{
+  "profile": "fast",
+  "candidate_id": "fast-v4-5k-1920",
+  "group": "F4",
+  "dataset": "vggt-example",
+  "scene_id": "golden-kitchen",
+  "scene": "/root/ReScene/data/golden-kitchen/images",
+  "validation": {
+    "every": 8
+  },
+  "steps": 5000,
+  "overrides": {
+    "preprocess_max_side": 1920
+  },
+  "purpose": "F4: 5000-step FAST with 1920 preprocessing long side."
+}

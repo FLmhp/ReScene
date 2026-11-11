@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rescene"
+dynamic = ["version"]
+description = "Isolated VGGT, COLMAP, and gsplat reconstruction experiments."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "numpy>=1.26,<2",
+  "Pillow>=10",
+  "imageio-ffmpeg>=0.5",
+  "plyfile>=1.0,<2",
+]
+
+[project.optional-dependencies]
+dev = ["httpx>=0.28,<1", "mypy>=1,<2", "pytest>=8", "ruff>=0.8"]
+api = [
+  "alembic>=1.14,<2",
+  "aliyun-python-sdk-sts>=3.1,<4",
+  "fastapi>=0.115,<1",
+  "oss2>=2.19,<3",
+  "psycopg[binary]>=3.2,<4",
+  "PyJWT>=2.10,<3",
+  "segno>=1.6,<2",
+  "sqlalchemy>=2.0,<3",
+  "uvicorn[standard]>=0.34,<1",
+]
+worker = ["oss2>=2.19,<3"]
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
+
+[project.scripts]
+rescene = "rescene.cli:main"
+rescene-api = "rescene_api.main:run"
+rescene-worker = "rescene_worker.main:run"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = [".cache", "third_party"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+

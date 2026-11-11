@@ -1,0 +1,52 @@
+# 更新记录
+
+## 未发布
+
+## 0.3.0 - 2026-11-11
+
+### 新增
+
+- 管理控制台（四端）：用户目录改为分页 + 邮箱/状态/管理员筛选，新增 `GET /v1/users/{id}` 返回账号的活跃项目与角色；新增公告 `POST/GET/DELETE /v1/announcements`，发布时向全部活跃账号写入一条通知、撤回时同批删除；新增全局操作日志 `GET /v1/audit`（操作者/动作/项目/起止时间过滤与分页）、`GET /v1/audit/actions` 与 `GET /v1/audit.csv`（最多 1 万行，带 BOM）。Web/桌面、Android、小程序均提供「管理控制台」入口。
+- 任务运行日志：Worker 新增 `LogShipper`，按 2 秒增量采集 `worker.log` 与阶段日志并以 `POST /v1/worker/jobs/{id}/logs` 上报（单批 ≤200 行、单行 ≤4000 字，失败不影响任务）；`GET /v1/jobs/{id}/logs` 支持 `after_id` 增量、`before_id` 回看与级别过滤，每任务保留最新 `RESCENE_JOB_LOG_LIMIT`（默认 2000）行。四端任务面板展示运行日志并在运行态每 3 秒增量轮询。
+- 通知中心增强：`GET /v1/notifications` 支持 `offset` 与 `kind`，新增 `GET /v1/notifications/count` 未读计数；Web/桌面与 Android 支持未读筛选、加载更多、公告标签与任务深链。
+- Web/桌面响应式外壳：≤1024px 侧栏改为抽屉（汉堡按钮、遮罩、Esc 关闭），≤1100px 主网格单列，≤640px 移动端排版、单列表单与 16px 输入字号，粗指针设备 44px 触控目标。
+- 桌面多平台安装包：`release.yml` 新增 Linux（`deb` + `AppImage`）与 macOS（universal `dmg`）任务，tag 触发后由 `github-release` 任务创建 GitHub Release；Tauri `bundle.targets` 改为 `all`，图标集由 `icon.svg` 生成。新增 `scripts/build-desktop-release.sh` 与 `scripts/release-notes.mjs`。
+- 仓库与发布流程：`scripts/bump-version.mjs` 单入口改版本（同步全部元数据、`versionCode` 自增并立即复验），`scripts/check-commits.mjs` + `.githooks/commit-msg` + CI `commit-messages` 任务强制 Conventional Commits。
+- 开放自助注册：新增 `POST /v1/auth/register`（邮箱 + 密码，至少 12 位，同邮箱返回 409）。Web、桌面端、Android 与小程序均提供登录/注册切换，注册成功直接进入工作台。
+- 四端（Web/桌面、Expo Android、微信小程序）统一为深色玻璃拟态视觉：半透明面板、渐变主按钮、聚焦光晕与更圆润的卡片。
+- 素材可删除：`DELETE /v1/assets/{id}`（被任务引用时返回 409 `asset.in_use` 并附带稳定错误码），四端素材列表均提供删除入口；读取项目详情时顺带清理超过 `RESCENE_STALE_UPLOAD_SECONDS`（默认 24 小时）仍未完成的上传。
+- 任务阶段历史：`GET /v1/jobs/{id}/stages` 返回每阶段状态、进度、消息与指标，四端在任务下方以「阶段记录/时间线」展示；SSE 阶段事件同样进入该列表。
+- 协作通知：任务完成/失败时给任务创建者与项目所有者写入通知，`GET /v1/notifications`、`POST /v1/notifications/read` 提供读取与已读；Web/桌面、Android、小程序提供「通知」面板与未读数。
+- 账号治理：`POST /v1/auth/password` 自助改密（旧 token 立即失效），管理员可 `GET /v1/users`、`PATCH /v1/users/{id}`（停用/降权，禁止锁死自己）、`POST /v1/users/{id}/password` 重置密码。
+- 邮箱邀请：`POST /v1/projects/{id}/members` 对未注册邮箱返回 `{"status":"invited"}` 并落库 `project_invitations`，对方注册时自动成为成员；`GET/DELETE /v1/projects/{id}/invitations` 查看与撤销。
+- 审计查询：`GET /v1/projects/{id}/audit` 返回项目范围的审计记录（含操作者邮箱与元数据），Web/桌面在项目设置内展示。
+- 分享二维码：`GET /v1/public/shares/{token}/qr.png` 生成 PNG 二维码，Web/桌面、Android 与小程序在创建分享后直接展示；分享到期改为「永久/1 天/7 天/30 天」预设。
+- 稳定错误码：新增 `X-Error-Code` 响应头（如 `auth.rate_limited`、`asset.in_use`、`admin.self_locked`），CORS 同时暴露该头与 `Retry-After`；客户端据码映射中文提示。
+- 登录/注册/改密限流：`RESCENE_AUTH_RATE_LIMIT`（默认每分钟 10 次）滑动窗口，超限返回 429 与 `Retry-After`。
+- 客户端重试：任务轮询与 SSE 重连改为指数退避（上限 15s / 8s）；Android 与小程序新增上传队列，离线创建项目与上传在恢复前台时按序重放，409 的重复上传自动丢弃。
+
+### 变更
+
+- **不兼容**：`GET /v1/users` 由数组改为 `{total, items}`，并新增 `active`、`is_admin`、`offset` 参数（`limit` 仍限 1–100）；`GET /v1/projects/{id}/audit` 由数组改为 `{total, items}` 并新增 `action`、`offset` 参数。四端与测试同批更新，不保留兼容分支。
+- **不兼容**：删除微信登录与绑定（`POST /v1/auth/wechat`、`/v1/auth/wechat/link`、`users.wechat_openid`、迁移 `0004`、`RESCENE_WECHAT_APP_ID/SECRET`）；小程序改为邮箱密码注册/登录。
+- 登录邮箱统一去空格并转小写后再查询，与注册写入保持一致。
+- 管理员建号表单、Android 与小程序的管理员建号提示统一为 12 位密码，与 `auth.hash_password` 的下限一致。
+
+## 0.2.1 - 2026-11-10
+
+### 新增
+
+- 增加 Windows NSIS 与 Android release 构建脚本、源清单/发布清单流程和统一版本校验。
+- 增加中文用户手册、开发与发布指南，并更新部署运维与项目说明。
+
+### 修复
+
+- Android Viewer 改为原生获取短期签名场景地址后加载，Bearer token 不进入 WebView；修复 Android WebView 消息缺少 `nativeEvent.url` 时桥接静默超时的问题。
+- Viewer 改为按需渲染，移动端像素比限制为 1；场景加载后只预热渲染 2 秒，避免 Android WebView 空闲时持续重绘导致无响应。
+- Android 登录恢复、上传、任务、分享和系统返回导航完成 release APK 实测。
+- README 与两份 5090 历史报告增加评测勘误：冻结源图未等于实际渲染分割，缺失坐标变换的高斯产物不得沿用几何评分；保留历史数值，不计为算法收益。
+
+- Worker 发布 PLY 使用声明的最终训练 step，并校验配置与评测 step 一致；不再挑体积最大或字典序靠后的文件。对应产物哈希和发布 manifest 的回归已通过。
+- Web 与 API 的 Compose 构建上下文统一解析到仓库根目录，避免 Web 构建取错目录。
+- Docker 上下文排除部署秘密、数据库、备份、实际环境文件、签名材料和原生构建缓存。
+- 发布产物校验改为显式 API 地址和受保护 token 文件；失败任务、缺失产物、大小或 SHA256 不符、无效必需指标均返回失败。PLY、SPZ 与元数据均完整校验，不再仅探测首字节。

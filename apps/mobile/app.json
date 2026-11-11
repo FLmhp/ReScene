@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "ReScene",
+    "slug": "rescene",
+    "version": "0.3.0",
+    "scheme": "rescene",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "icon": "./assets/icon.png",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "app.rescene.mobile"
+    },
+    "android": {
+      "package": "app.rescene.mobile",
+      "versionCode": 4,
+      "allowBackup": false,
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.VIBRATE",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#111318"
+      }
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 220,
+          "resizeMode": "contain",
+          "backgroundColor": "#111318"
+        }
+      ],
+      "./withAndroidReleaseSigning"
+    ]
+  }
+}

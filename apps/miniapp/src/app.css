@@ -1,0 +1,230 @@
+/*
+ * Native theme for the WeChat Mini Program.
+ *
+ * WXSS cannot import `@rescene/design-tokens/web.css` (it targets `:root`),
+ * so the palette is bridged onto `page` here and every rule below consumes the
+ * variables. Values mirror packages/design-tokens/src/tokens.ts exactly; update
+ * both in the same change.
+ */
+page {
+  color-scheme: dark;
+
+  --bg: #0b0d12;
+  --bg-deep: #07080c;
+  --bg-soft: #0f1219;
+  --panel: #151a23;
+  --panel-alt: #0f131a;
+  --surface: rgba(255, 255, 255, 0.055);
+  --surface-strong: rgba(255, 255, 255, 0.09);
+  --border: #5a6274;
+  --border-soft: rgba(255, 255, 255, 0.14);
+  --divider: rgba(255, 255, 255, 0.08);
+  --fg: #f2f4f8;
+  --muted: #b9c0ce;
+  --accent: #8aa4ff;
+  --accent-strong: #7c9bff;
+  --accent-alt: #a78bfa;
+  --on-accent: #080a10;
+  --danger: #ff9ea3;
+  --success: #7fe3b0;
+
+  background:
+    radial-gradient(600px 420px at 8% -6%, rgba(124, 155, 255, 0.2), transparent 62%),
+    radial-gradient(520px 380px at 100% 0%, rgba(167, 139, 250, 0.16), transparent 58%),
+    var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  font-size: 28px;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+
+.screen {
+  min-height: 100vh;
+  padding: 44px 28px;
+  padding-bottom: calc(44px + constant(safe-area-inset-bottom));
+  padding-bottom: calc(44px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  box-sizing: border-box;
+}
+
+.eyebrow {
+  color: var(--accent);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.title {
+  color: var(--fg);
+  font-size: 54px;
+  font-weight: 800;
+  letter-spacing: -1.5px;
+  line-height: 1.2;
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.card {
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 28px;
+  padding: 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.label {
+  color: var(--fg);
+  font-size: 26px;
+  font-weight: 600;
+}
+
+.input {
+  background: rgba(7, 8, 12, 0.55);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-sizing: border-box;
+  color: var(--fg);
+  height: 92px;
+  padding: 0 22px;
+  font-size: 28px;
+}
+
+.textarea {
+  background: rgba(7, 8, 12, 0.55);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-sizing: border-box;
+  color: var(--fg);
+  font-size: 28px;
+  min-height: 200px;
+  padding: 20px 22px;
+  width: 100%;
+}
+
+.button {
+  background: linear-gradient(135deg, #7c9bff 0%, #a78bfa 100%);
+  border: 1px solid transparent;
+  border-radius: 16px;
+  box-sizing: border-box;
+  color: var(--on-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 88px;
+  margin: 0;
+  padding: 18px 24px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 28px;
+  line-height: 1.4;
+  box-shadow: 0 16px 36px rgba(124, 155, 255, 0.28);
+}
+
+.button::after {
+  border: 0;
+}
+
+.button.ghost {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-soft);
+  color: var(--fg);
+  box-shadow: none;
+}
+
+.button-hover {
+  opacity: 0.82;
+}
+
+.button[disabled] {
+  opacity: 0.55;
+}
+
+.segmented {
+  display: flex;
+  gap: 8px;
+  padding: 6px;
+  background: rgba(7, 8, 12, 0.55);
+  border: 1px solid var(--divider);
+  border-radius: 18px;
+  box-sizing: border-box;
+}
+
+.segmented .tab {
+  flex: 1;
+  text-align: center;
+  padding: 18px 0;
+  border-radius: 14px;
+  color: var(--muted);
+  font-size: 26px;
+  line-height: 1.2;
+}
+
+.segmented .tab.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  min-height: 88px;
+  margin: 0;
+  padding: 24px;
+  box-sizing: border-box;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px;
+  font-size: 26px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 26px;
+}
+
+.log {
+  color: var(--muted);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 22px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.error {
+  color: var(--danger);
+  font-size: 26px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.profile.active {
+  border-left: 6px solid var(--accent-strong);
+  color: var(--accent-strong);
+  font-weight: 700;
+  padding-left: 20px;
+}
+
+.qr {
+  width: 320px;
+  height: 320px;
+  background: #fff;
+  border-radius: 18px;
+  margin-top: 16px;
+}

@@ -1,0 +1,11 @@
+{
+  "profile": "balanced",
+  "candidate_id": "b1-query-2048",
+  "group": "B1",
+  "dataset": "vggt-example",
+  "scene_id": "golden-kitchen",
+  "scene": "/root/ReScene/data/golden-kitchen/images",
+  "validation": {"every": 8},
+  "overrides": {"vggt_max_query_points": 2048},
+  "purpose": "B1: 2048 query points at 8 query frames versus the 1024 baseline."
+}

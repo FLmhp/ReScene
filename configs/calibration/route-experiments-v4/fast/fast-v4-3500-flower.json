@@ -1,0 +1,13 @@
+{
+  "profile": "fast",
+  "candidate_id": "fast-v4-3500-flower",
+  "group": "cross-scene-v4",
+  "dataset": "vggt-example",
+  "scene_id": "vggt-flower",
+  "scene": "/root/ReScene/data/vggt-flower/images",
+  "validation": {
+    "every": 8
+  },
+  "steps": 3500,
+  "purpose": "v4 FAST winner (3500 steps) on vggt-flower; cross-scene stability check."
+}

@@ -1,0 +1,11 @@
+{
+  "profile": "quality",
+  "candidate_id": "q2-resolution-2400",
+  "group": "Q2",
+  "dataset": "eth3d",
+  "scene_id": "eth3d-playground",
+  "scene": "/root/ReScene/data/eth3d-playground/dslr_images_undistorted",
+  "validation": {"every": 8},
+  "overrides": {"preprocess_max_side": 2400},
+  "purpose": "Q2: preprocessing long side 2400 with unchanged MVS settings and training schedule."
+}

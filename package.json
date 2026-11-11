@@ -1,0 +1,19 @@
+{
+  "name": "rescene",
+  "version": "0.3.0",
+  "private": true,
+  "packageManager": "pnpm@10.18.3",
+  "scripts": {
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "check:versions": "node scripts/check-versions.mjs",
+    "manifest:source": "node scripts/source-manifest.mjs",
+    "manifest:release": "node scripts/release-manifest.mjs",
+    "quality": "pnpm check:versions && python -m ruff format --check src tests scripts && python -m ruff check src tests scripts && python -m mypy --follow-imports=skip src/rescene_api/schemas.py && python -m pytest -q && pnpm -r typecheck && pnpm -r test"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

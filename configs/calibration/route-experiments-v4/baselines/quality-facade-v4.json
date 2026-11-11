@@ -1,0 +1,12 @@
+{
+  "profile": "quality",
+  "candidate_id": "quality-facade-v4-original",
+  "group": "cross-scene-v4",
+  "dataset": "eth3d",
+  "scene_id": "eth3d-facade",
+  "scene": "/root/autodl-tmp/rescene/datasets/eth3d/facade/facade/images/dslr_images_undistorted",
+  "validation": {
+    "every": 8
+  },
+  "purpose": "v4 QUALITY cross-scene baseline on eth3d-facade."
+}

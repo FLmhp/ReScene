@@ -1,0 +1,15 @@
+{
+  "profile": "balanced",
+  "candidate_id": "balanced-v4-fine-playground",
+  "group": "cross-scene-v4",
+  "dataset": "eth3d",
+  "scene_id": "eth3d-playground",
+  "scene": "/root/ReScene/data/eth3d-playground/dslr_images_undistorted",
+  "validation": {
+    "every": 8
+  },
+  "overrides": {
+    "vggt_fine_tracking": true
+  },
+  "purpose": "v4 BALANCED candidate (fine) on eth3d-playground; cross-scene stability check."
+}

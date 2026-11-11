@@ -1,0 +1,14 @@
+[
+  {"name": "quality-synced-d2", "profile": "quality", "repeat": 2, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/quality-original.json"},
+  {"name": "quality-synced-d3", "profile": "quality", "repeat": 3, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/quality-original.json"},
+  {"name": "screen-f1-packed", "profile": "fast", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/f1-packed.json"},
+  {"name": "screen-f2-5k", "profile": "fast", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/f2-5k.json"},
+  {"name": "screen-f2-10k", "profile": "fast", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/f2-10k.json"},
+  {"name": "screen-q1-pinhole", "profile": "quality", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/q1-pinhole.json"},
+  {"name": "screen-q2-2400", "profile": "quality", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/q2-resolution-2400.json"},
+  {"name": "screen-q3-dense-init", "profile": "quality", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/q3-dense-init.json"},
+  {"name": "screen-b1-2048", "profile": "balanced", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/b1-query-2048.json"},
+  {"name": "screen-b1-4096", "profile": "balanced", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/b1-query-4096.json"},
+  {"name": "screen-b2-fine", "profile": "balanced", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/b2-fine-tracking.json"},
+  {"name": "screen-b2-reproj4", "profile": "balanced", "repeat": 1, "spec": "/root/autodl-tmp/rescene/delivery-v3/specs/b2-reproj-4.json"}
+]

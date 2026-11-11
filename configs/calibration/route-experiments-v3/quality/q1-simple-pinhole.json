@@ -1,0 +1,11 @@
+{
+  "profile": "quality",
+  "candidate_id": "q1-simple-pinhole",
+  "group": "Q1",
+  "dataset": "eth3d",
+  "scene_id": "eth3d-playground",
+  "scene": "/root/ReScene/data/eth3d-playground/dslr_images_undistorted",
+  "validation": {"every": 8},
+  "overrides": {"colmap_camera_model": "SIMPLE_PINHOLE"},
+  "purpose": "Q1: SIMPLE_PINHOLE model on already undistorted ETH3D images versus SIMPLE_RADIAL."
+}

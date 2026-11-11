@@ -1,0 +1,38 @@
+[
+  {
+    "name": "fast-v4-5k-r1",
+    "profile": "fast",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/fast/fast-v4-5k.json"
+  },
+  {
+    "name": "fast-v4-5k-r2",
+    "profile": "fast",
+    "repeat": 2,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/fast/fast-v4-5k.json"
+  },
+  {
+    "name": "fast-v4-5k-r3",
+    "profile": "fast",
+    "repeat": 3,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/fast/fast-v4-5k.json"
+  },
+  {
+    "name": "fast-v4-3500-r1",
+    "profile": "fast",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/fast/fast-v4-3500.json"
+  },
+  {
+    "name": "fast-v4-5k-1920-r1",
+    "profile": "fast",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/fast/fast-v4-5k-1920.json"
+  },
+  {
+    "name": "fast-v4-5k-bridge80-r1",
+    "profile": "fast",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/fast/fast-v4-5k-bridge80.json"
+  }
+]

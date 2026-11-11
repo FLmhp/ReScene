@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "license_target": "academic-noncommercial",
+  "description": "Frozen scene-level calibration and test split for ReScene v1.",
+  "sources": {
+    "dtu": "https://roboimagedata.compute.dtu.dk/?page_id=36",
+    "eth3d": "https://eth3d.ethz.ch/",
+    "mipnerf360": "https://github.com/google-research/multinerf"
+  },
+  "scenes": [
+    {
+      "id": "dtu-scan24",
+      "dataset": "dtu",
+      "split": "calibration",
+      "input": "/home/loch/ReScene/datasets/dtu/scan24/images"
+    },
+    {
+      "id": "dtu-scan65",
+      "dataset": "dtu",
+      "split": "calibration",
+      "input": "/home/loch/ReScene/datasets/dtu/scan65/images"
+    },
+    {
+      "id": "eth3d-courtyard",
+      "dataset": "eth3d",
+      "split": "calibration",
+      "input": "/home/loch/ReScene/datasets/eth3d/courtyard/images"
+    },
+    {
+      "id": "eth3d-office",
+      "dataset": "eth3d",
+      "split": "calibration",
+      "input": "/home/loch/ReScene/datasets/eth3d/office/images"
+    },
+    {
+      "id": "mip360-bonsai",
+      "dataset": "mipnerf360",
+      "split": "calibration",
+      "input": "/home/loch/ReScene/datasets/mipnerf360/bonsai/images"
+    },
+    {
+      "id": "mip360-garden",
+      "dataset": "mipnerf360",
+      "split": "calibration",
+      "input": "/home/loch/ReScene/datasets/mipnerf360/garden/images"
+    },
+    {
+      "id": "dtu-scan106",
+      "dataset": "dtu",
+      "split": "test",
+      "input": "/home/loch/ReScene/datasets/dtu/scan106/images"
+    },
+    {
+      "id": "eth3d-playground",
+      "dataset": "eth3d",
+      "split": "test",
+      "input": "/home/loch/ReScene/datasets/eth3d/playground/images"
+    },
+    {
+      "id": "mip360-bicycle",
+      "dataset": "mipnerf360",
+      "split": "test",
+      "input": "/home/loch/ReScene/datasets/mipnerf360/bicycle/images"
+    }
+  ]
+}

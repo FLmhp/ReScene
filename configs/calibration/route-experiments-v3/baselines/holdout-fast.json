@@ -1,0 +1,10 @@
+{
+  "profile": "fast",
+  "candidate_id": "fast-original",
+  "group": "holdout-v3",
+  "dataset": "eth3d-electro",
+  "scene_id": "eth3d-electro",
+  "scene": "/root/autodl-tmp/rescene/datasets/eth3d/electro/electro/images/dslr_images_undistorted",
+  "validation": {"every": 8},
+  "purpose": "Reserved holdout check for the production FAST baseline."
+}

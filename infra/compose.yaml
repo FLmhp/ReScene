@@ -1,0 +1,130 @@
+name: rescene
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: rescene-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rescene
+      POSTGRES_USER: rescene
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=30
+    volumes:
+      - ./postgres:/var/lib/postgresql/data
+    secrets: [db_password]
+    networks: [rescene-internal]
+    mem_limit: 1g
+    cpus: 1.5
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rescene -d rescene"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/api/Dockerfile
+    container_name: rescene-api
+    restart: unless-stopped
+    environment:
+      RESCENE_DB_PASSWORD_FILE: /run/secrets/db_password
+      RESCENE_JWT_SECRET_FILE: /run/secrets/jwt_secret
+      RESCENE_WORKER_TOKEN_FILE: /run/secrets/worker_token
+      RESCENE_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      RESCENE_OSS_ACCESS_KEY_SECRET_FILE: /run/secrets/oss_access_key_secret
+      RESCENE_ADMIN_EMAIL: ${RESCENE_ADMIN_EMAIL}
+      RESCENE_CORS_ORIGINS: https://app.rescene.xyz,http://tauri.localhost,https://tauri.localhost,tauri://localhost
+      RESCENE_OSS_ENDPOINT: ${RESCENE_OSS_ENDPOINT}
+      RESCENE_OSS_REGION: ${RESCENE_OSS_REGION:-oss-cn-beijing}
+      RESCENE_OSS_BUCKET: ${RESCENE_OSS_BUCKET}
+      RESCENE_OSS_ACCESS_KEY_ID: ${RESCENE_OSS_ACCESS_KEY_ID}
+      RESCENE_OSS_ROLE_ARN: ${RESCENE_OSS_ROLE_ARN}
+    secrets: [db_password, jwt_secret, worker_token, admin_password, oss_access_key_secret]
+    depends_on:
+      db: { condition: service_healthy }
+    networks: [rescene, rescene-internal]
+    mem_limit: 640m
+    cpus: 2.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://api.rescene.xyz
+    container_name: rescene-web
+    restart: unless-stopped
+    depends_on:
+      api: { condition: service_healthy }
+    networks: [rescene]
+    mem_limit: 384m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  backup:
+    image: postgres:16-alpine
+    profiles: [tools]
+    environment:
+      PGHOST: db
+      PGDATABASE: rescene
+      PGUSER: rescene
+      PGPASSWORD_FILE: /run/secrets/db_password
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    volumes:
+      - ./deploy/backup.sh:/backup.sh:ro
+      - ./backups:/backups
+    secrets: [db_password]
+    networks: [rescene-internal]
+    mem_limit: 256m
+    cpus: 0.5
+
+  backup-upload:
+    image: rescene-api
+    profiles: [tools]
+    environment:
+      RESCENE_OSS_ENDPOINT: ${RESCENE_OSS_ENDPOINT}
+      RESCENE_OSS_BUCKET: ${RESCENE_OSS_BUCKET}
+      RESCENE_OSS_ACCESS_KEY_ID: ${RESCENE_OSS_ACCESS_KEY_ID}
+      RESCENE_OSS_ACCESS_KEY_SECRET_FILE: /run/secrets/oss_access_key_secret
+      RESCENE_OSS_ROLE_ARN: ${RESCENE_OSS_ROLE_ARN}
+    entrypoint: ["python", "/upload_backup.py"]
+    volumes:
+      - ./deploy/upload_backup.py:/upload_backup.py:ro
+      - ./backups:/backups:ro
+    secrets: [oss_access_key_secret]
+    networks: [rescene]
+    mem_limit: 256m
+    cpus: 0.5
+
+networks:
+  rescene:
+    name: rescene
+  rescene-internal:
+    internal: true
+
+secrets:
+  db_password: { file: ./secrets/db_password }
+  jwt_secret: { file: ./secrets/jwt_secret }
+  worker_token: { file: ./secrets/worker_token }
+  admin_password: { file: ./secrets/admin_password }
+  oss_access_key_secret: { file: ./secrets/oss_access_key_secret }

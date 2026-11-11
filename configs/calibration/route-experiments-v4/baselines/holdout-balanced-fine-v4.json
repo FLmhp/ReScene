@@ -1,0 +1,21 @@
+{
+  "profile": "balanced",
+  "candidate_id": "balanced-v4-fine-holdout",
+  "group": "holdout-v4",
+  "dataset": "eth3d-electro",
+  "scene_id": "eth3d-electro",
+  "scene": "/root/autodl-tmp/rescene/datasets/eth3d/electro/electro/images/dslr_images_undistorted",
+  "validation": {
+    "sources": [
+      0,
+      8,
+      16,
+      24,
+      40
+    ]
+  },
+  "overrides": {
+    "vggt_fine_tracking": true
+  },
+  "purpose": "v4 BALANCED frozen candidate (fine tracking) on the eth3d-electro holdout."
+}

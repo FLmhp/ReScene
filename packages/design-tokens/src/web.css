@@ -1,0 +1,46 @@
+:root {
+  color-scheme: dark;
+
+  /* Mirrors tokens.ts — keep both files in lockstep. */
+  --bg: #0b0d12;
+  --bg-deep: #07080c;
+  --bg-soft: #0f1219;
+  --panel: #151a23;
+  --panel-alt: #0f131a;
+  --surface: rgba(255, 255, 255, 0.055);
+  --surface-strong: rgba(255, 255, 255, 0.09);
+  --border: #5a6274;
+  --border-soft: rgba(255, 255, 255, 0.14);
+  --divider: rgba(255, 255, 255, 0.08);
+  --fg: #f2f4f8;
+  --muted: #b9c0ce;
+  --accent: #8aa4ff;
+  --accent-strong: #7c9bff;
+  --accent-alt: #a78bfa;
+  --on-accent: #080a10;
+  --danger: #ff9ea3;
+  --success: #7fe3b0;
+  --overlay: rgba(7, 8, 12, 0.78);
+
+  --gradient-accent: linear-gradient(135deg, #7c9bff 0%, #a78bfa 100%);
+  --shadow-panel: 0 28px 90px rgba(0, 0, 0, 0.55);
+  --glow-accent: 0 0 0 3px rgba(124, 155, 255, 0.28);
+
+  --space-xs: 4px;
+  --space-sm: 7px;
+  --space-md: 14px;
+  --space-lg: 22px;
+  --space-xl: 42px;
+
+  --radius-none: 0;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --radius-full: 999px;
+
+  --font-eyebrow: 11px;
+  --font-body: 14px;
+  --font-title: 18px;
+  --font-display: 40px;
+}

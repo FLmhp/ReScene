@@ -1,0 +1,19 @@
+{
+  "profile": "fast",
+  "candidate_id": "fast-v4-3500-holdout",
+  "group": "holdout-v4",
+  "dataset": "eth3d-electro",
+  "scene_id": "eth3d-electro",
+  "scene": "/root/autodl-tmp/rescene/datasets/eth3d/electro/electro/images/dslr_images_undistorted",
+  "validation": {
+    "sources": [
+      0,
+      8,
+      16,
+      24,
+      40
+    ]
+  },
+  "steps": 3500,
+  "purpose": "v4 FAST frozen candidate (3500 steps) on the eth3d-electro holdout with the frozen five validation sources."
+}

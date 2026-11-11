@@ -1,0 +1,11 @@
+{
+  "profile": "fast",
+  "candidate_id": "f2-5k",
+  "group": "F2-cross-scene",
+  "dataset": "vggt-flower",
+  "scene_id": "vggt-flower",
+  "scene": "/root/ReScene/data/vggt-flower/images",
+  "validation": {"every": 8},
+  "steps": 5000,
+  "purpose": "F2 winner cross-scene check on vggt-flower."
+}

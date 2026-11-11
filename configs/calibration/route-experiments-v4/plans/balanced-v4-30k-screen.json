@@ -1,0 +1,8 @@
+[
+  {
+    "name": "balanced-v4-fine-4096-12q-30k-r1",
+    "profile": "balanced",
+    "repeat": 1,
+    "spec": "/root/autodl-tmp/rescene/delivery-v4/specs/balanced/balanced-v4-fine-4096-12q-30k.json"
+  }
+]

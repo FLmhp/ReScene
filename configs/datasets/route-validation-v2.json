@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "license_target": "academic-noncommercial",
+  "description": "Frozen validation scenes for the 5090 quality-first round.",
+  "scenes": [
+    {
+      "id": "vggt-fern",
+      "dataset": "vggt-example",
+      "split": "calibration",
+      "input": "/root/ReScene/data/vggt-fern/images"
+    },
+    {
+      "id": "vggt-flower",
+      "dataset": "vggt-example",
+      "split": "calibration",
+      "input": "/root/ReScene/data/vggt-flower/images"
+    },
+    {
+      "id": "eth3d-playground",
+      "dataset": "eth3d",
+      "split": "calibration",
+      "input": "/root/ReScene/data/eth3d-playground/dslr_images_undistorted"
+    }
+  ]
+}

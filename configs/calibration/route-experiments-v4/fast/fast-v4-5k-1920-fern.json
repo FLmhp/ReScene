@@ -1,0 +1,16 @@
+{
+  "profile": "fast",
+  "candidate_id": "fast-v4-5k-1920-fern",
+  "group": "cross-scene-v4",
+  "dataset": "vggt-example",
+  "scene_id": "vggt-fern",
+  "scene": "/root/ReScene/data/vggt-fern/images",
+  "validation": {
+    "every": 8
+  },
+  "steps": 5000,
+  "overrides": {
+    "preprocess_max_side": 1920
+  },
+  "purpose": "v4 FAST candidate (5000 steps, 1920 long side) on vggt-fern; cross-scene stability check."
+}

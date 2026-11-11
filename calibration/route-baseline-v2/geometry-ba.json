@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "before_path": "runs/route-baseline-v2-balanced-baseline-golden-kitchen/sparse-pre-ba",
+  "after_path": "runs/route-baseline-v2-balanced-baseline-golden-kitchen/sparse",
+  "reference_focal": 801.7630255684977,
+  "before": {
+    "mean": 2.9076862433875617,
+    "median": 2.792892010164333,
+    "p95": 5.677291593104562,
+    "observations": 51008
+  },
+  "after": {
+    "mean": 1.152026741054684,
+    "median": 0.9841208960296891,
+    "p95": 2.5901872971879394,
+    "observations": 51008
+  },
+  "common_observations": 51008,
+  "improved_ratio": 0.8437107904642409
+}

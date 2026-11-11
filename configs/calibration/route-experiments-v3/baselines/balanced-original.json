@@ -1,0 +1,10 @@
+{
+  "profile": "balanced",
+  "candidate_id": "balanced-original",
+  "group": "baseline",
+  "dataset": "vggt-example",
+  "scene_id": "golden-kitchen",
+  "scene": "/root/ReScene/data/golden-kitchen/images",
+  "validation": {"every": 8},
+  "purpose": "Cold original BALANCED production configuration with VGGT BA; 3 repeats."
+}

@@ -1,0 +1,15 @@
+{
+  "profile": "quality",
+  "candidate_id": "quality-v4-pinhole",
+  "group": "Q4",
+  "dataset": "eth3d",
+  "scene_id": "eth3d-playground",
+  "scene": "/root/ReScene/data/eth3d-playground/dslr_images_undistorted",
+  "validation": {
+    "every": 8
+  },
+  "overrides": {
+    "colmap_camera_model": "PINHOLE"
+  },
+  "purpose": "Q4: PINHOLE COLMAP camera model instead of SIMPLE_RADIAL."
+}

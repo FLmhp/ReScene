@@ -1,0 +1,11 @@
+{
+  "profile": "quality",
+  "candidate_id": "q3-dense-init",
+  "group": "Q3",
+  "dataset": "eth3d",
+  "scene_id": "eth3d-playground",
+  "scene": "/root/ReScene/data/eth3d-playground/dslr_images_undistorted",
+  "validation": {"every": 8},
+  "overrides": {"gsplat_init_points": "dense"},
+  "purpose": "Q3: validated, deterministically sampled dense initialization versus sparse, same geometry and schedule."
+}

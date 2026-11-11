@@ -1,0 +1,21 @@
+{
+  "profile": "quality",
+  "candidate_id": "quality-v4-2400-holdout",
+  "group": "holdout-v4",
+  "dataset": "eth3d-electro",
+  "scene_id": "eth3d-electro",
+  "scene": "/root/autodl-tmp/rescene/datasets/eth3d/electro/electro/images/dslr_images_undistorted",
+  "validation": {
+    "sources": [
+      0,
+      8,
+      16,
+      24,
+      40
+    ]
+  },
+  "overrides": {
+    "preprocess_max_side": 2400
+  },
+  "purpose": "v4 QUALITY frozen candidate (2400 long side) on the eth3d-electro holdout."
+}

@@ -1,0 +1,13 @@
+app.rescene.xyz {
+    encode zstd gzip
+    handle_path /downloads/* {
+        root * /var/www/rescene-releases
+        file_server
+    }
+    reverse_proxy rescene-web:3000
+}
+
+api.rescene.xyz {
+    encode zstd gzip
+    reverse_proxy rescene-api:8000
+}

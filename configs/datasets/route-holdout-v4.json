@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "reserved_at": "2026-11-10",
+  "purpose": "Single-use scene-level holdout with explicit frozen validation source indices. Never run screening or tuning on this scene; evaluate only after candidates are frozen.",
+  "license_target": "academic-noncommercial",
+  "license": "CC BY-NC-SA 4.0",
+  "source": "https://www.eth3d.net/datasets",
+  "validation_sources": {
+    "sources": [
+      0,
+      8,
+      16,
+      24,
+      40
+    ]
+  },
+  "excluded_sources": [
+    {
+      "source_index": 32,
+      "source": "DSC_9291.JPG",
+      "normalized_image": "000031.jpg",
+      "reason": "Not registered by the holdout-fast sparse model, so the frozen validation split cannot render it."
+    }
+  ],
+  "scenes": [
+    {
+      "id": "eth3d-electro",
+      "dataset": "ETH3D high-res multi-view training",
+      "split": "holdout",
+      "images_archive": "https://www.eth3d.net/data/electro_dslr_undistorted.7z",
+      "ground_truth_archive": "https://www.eth3d.net/data/electro_dslr_scan_eval.7z",
+      "input": "/root/autodl-tmp/rescene/datasets/eth3d/electro/electro/images/dslr_images_undistorted",
+      "calibration": "/root/autodl-tmp/rescene/datasets/eth3d/electro/electro/dslr_calibration_undistorted",
+      "ground_truth": "/root/autodl-tmp/rescene/datasets/eth3d/electro/electro/dslr_scan_eval",
+      "archive_sha256": {
+        "images": "0d2bc31fec0032b8fb20703abba8e45ef7a395c13d2d3476adc1f4dd4ffd7d8b",
+        "ground_truth": "5ca10a73e7da0e3c511e255bba5656cca4c372dc00c1417c97b75228a5bb3bac"
+      },
+      "expected_images": 45,
+      "environment": "outdoor",
+      "validation_sources": {
+        "sources": [
+          0,
+          8,
+          16,
+          24,
+          40
+        ]
+      },
+      "validation_source_names": [
+        "DSC_9257.JPG",
+        "DSC_9265.JPG",
+        "DSC_9273.JPG",
+        "DSC_9281.JPG",
+        "DSC_9299.JPG"
+      ]
+    }
+  ]
+}

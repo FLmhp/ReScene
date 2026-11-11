@@ -1,0 +1,395 @@
+import { explainError, isOfflineError, ResceneApiError } from "@rescene/api-client";
+import type { AppNotification, Project, User } from "@rescene/schemas";
+import { Button, Input, Text, View } from "@tarojs/components";
+import Taro, { useDidShow } from "@tarojs/taro";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import { apiBaseUrl, clearToken, client, hasToken, onSessionExpired, persistToken } from "../../api";
+import { enqueue, replayQueued } from "../../queue";
+
+// api.ts relaunches this page when a credential expires, so the notice must
+// survive that remount to stay actionable.
+const EXPIRY_NOTICE_KEY = "rescene-session-expired";
+const EXPIRED_NOTICE = "登录已过期，请重新登录。";
+const ROLE_LABEL: Record<Project["effective_role"], string> = {
+  owner: "所有者",
+  admin: "管理员",
+  member: "成员",
+  viewer: "只读",
+};
+
+function serverLabel(): string {
+  if (!apiBaseUrl) return "未配置（请设置 TARO_APP_API_URL）";
+  if (!apiBaseUrl.startsWith("https://")) return `${apiBaseUrl}（非 HTTPS，微信真机无法访问）`;
+  return apiBaseUrl;
+}
+
+function message(reason: unknown, fallback: string): string {
+  if (reason instanceof ResceneApiError) {
+    if (reason.status === 401) return "登录已过期，请重新登录。";
+    if (reason.status === 403) return "没有权限执行此操作。";
+    if (reason.status === 422) return reason.detail || "输入无效，请检查后重试。";
+    return explainError(reason, reason.detail || fallback);
+  }
+  return reason instanceof Error ? reason.message : fallback;
+}
+
+export default function IndexPage() {
+  const [user, setUser] = useState<User | null>(null);
+  const [recovering, setRecovering] = useState(hasToken());
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [name, setName] = useState("");
+  const [search, setSearch] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [unread, setUnread] = useState(0);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [nextPassword, setNextPassword] = useState("");
+  const [nextConfirm, setNextConfirm] = useState("");
+  const [changingPassword, setChangingPassword] = useState(false);
+  const authLock = useRef(false);
+  const passwordLock = useRef(false);
+  const projectLock = useRef(false);
+  const recoveryLock = useRef(false);
+  const booted = useRef(false);
+
+  useEffect(() => {
+    const pending = Taro.getStorageSync<string>(EXPIRY_NOTICE_KEY);
+    if (pending) {
+      Taro.removeStorageSync(EXPIRY_NOTICE_KEY);
+      setError(EXPIRED_NOTICE);
+    }
+    return onSessionExpired(() => {
+      Taro.setStorageSync(EXPIRY_NOTICE_KEY, "1");
+      setUser(null);
+      setProjects([]);
+      setNotifications([]);
+      setRecovering(false);
+      setError(EXPIRED_NOTICE);
+    });
+  }, []);
+
+  const loadProjects = useCallback(async () => {
+    setProjects(await client.listProjects());
+  }, []);
+
+  const recover = useCallback(async () => {
+    if (!hasToken() || recoveryLock.current) return;
+    recoveryLock.current = true;
+    if (!booted.current) setRecovering(true);
+    setError("");
+    try {
+      const current = await client.getMe();
+      setUser(current);
+      const renewed = await client.refresh();
+      persistToken(renewed.access_token);
+      await loadProjects();
+    } catch (reason) {
+      setError(message(reason, "恢复登录失败，请检查服务器连接后重试。"));
+    } finally {
+      booted.current = true;
+      recoveryLock.current = false;
+      setRecovering(false);
+    }
+  }, [loadProjects]);
+
+  const loadNotifications = useCallback(async () => {
+    if (!hasToken()) return;
+    try {
+      const [items, count] = await Promise.all([client.listNotifications(true, 5), client.notificationCount()]);
+      setNotifications(items);
+      setUnread(count);
+    } catch (reason) {
+      setError(message(reason, "加载通知失败。"));
+    }
+  }, []);
+
+  useDidShow(() => {
+    void (async () => {
+      if (hasToken()) {
+        try { await replayQueued(client, () => undefined); }
+        catch (reason) { setError(message(reason, "同步离线数据失败。")); }
+      }
+      await recover();
+      await loadNotifications();
+    })();
+  });
+
+  async function login() {
+    if (authLock.current) return;
+    authLock.current = true;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await client.login(email.trim(), password);
+      persistToken(result.access_token);
+      Taro.removeStorageSync(EXPIRY_NOTICE_KEY);
+      setPassword("");
+      setUser(await client.getMe());
+      await loadProjects();
+      await loadNotifications();
+    } catch (reason) {
+      if (reason instanceof ResceneApiError && (reason.status === 401 || reason.status === 403)) {
+        setError("邮箱或密码不正确。");
+      } else {
+        setError(message(reason, "登录失败，请重试。"));
+      }
+    } finally {
+      authLock.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function register() {
+    if (authLock.current) return;
+    const address = email.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) {
+      setError("请输入有效的邮箱地址。");
+      return;
+    }
+    if (password.length < 12) {
+      setError("密码至少 12 位。");
+      return;
+    }
+    if (confirm !== password) {
+      setError("两次输入的密码不一致。");
+      return;
+    }
+    authLock.current = true;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await client.register(address, password);
+      persistToken(result.access_token);
+      Taro.removeStorageSync(EXPIRY_NOTICE_KEY);
+      setPassword("");
+      setConfirm("");
+      setUser(await client.getMe());
+      await loadProjects();
+      await loadNotifications();
+    } catch (reason) {
+      if (reason instanceof ResceneApiError && reason.status === 409) {
+        setError("该邮箱已注册，请直接登录。");
+      } else {
+        setError(message(reason, "注册失败，请重试。"));
+      }
+    } finally {
+      authLock.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function createProject() {
+    const trimmed = name.trim();
+    if (!trimmed || projectLock.current) return;
+    if (trimmed.length > 200) {
+      setError("项目名称最多 200 个字符。");
+      return;
+    }
+    projectLock.current = true;
+    setCreatingProject(true);
+    setError("");
+    try {
+      const project = await client.createProject(trimmed);
+      setName("");
+      setProjects((current) => [project, ...current]);
+    } catch (reason) {
+      if (isOfflineError(reason)) {
+        await enqueue({
+          kind: "project",
+          id: `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          name: trimmed,
+          createdAt: Date.now(),
+        });
+        setName("");
+        setError("");
+        setNotice("已离线保存，联网后自动创建。");
+      } else {
+        setError(message(reason, "创建项目失败。"));
+      }
+    } finally {
+      projectLock.current = false;
+      setCreatingProject(false);
+    }
+  }
+
+  async function changePassword() {
+    if (passwordLock.current) return;
+    if (nextPassword.length < 12) {
+      setError("新密码至少 12 位。");
+      return;
+    }
+    if (nextPassword !== nextConfirm) {
+      setError("两次输入的新密码不一致。");
+      return;
+    }
+    passwordLock.current = true;
+    setChangingPassword(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await client.changePassword(currentPassword, nextPassword);
+      persistToken(result.access_token);
+      setCurrentPassword("");
+      setNextPassword("");
+      setNextConfirm("");
+      setNotice("密码已更新，其他设备已退出登录。");
+    } catch (reason) {
+      setError(message(reason, "更新密码失败。"));
+    } finally {
+      passwordLock.current = false;
+      setChangingPassword(false);
+    }
+  }
+
+  async function markAllRead() {
+    try {
+      await client.markNotificationsRead();
+      await loadNotifications();
+    } catch (reason) {
+      setError(message(reason, "标记已读失败。"));
+    }
+  }
+
+  async function openNotification(item: AppNotification) {
+    try {
+      await client.markNotificationsRead([item.id]);
+      await loadNotifications();
+    } catch (reason) {
+      setError(message(reason, "标记已读失败。"));
+    }
+    // The mini program has no job screen; a task notice opens its project so
+    // the running log and stage timeline stay reachable from here.
+    if (item.project_id) void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(item.project_id)}&name=` });
+  }
+
+  async function signOut() {
+    if (authLock.current) return;
+    authLock.current = true;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    let revoked = true;
+    try {
+      await client.logout();
+    } catch {
+      revoked = false;
+    } finally {
+      clearToken();
+      setUser(null);
+      setProjects([]);
+      setNotifications([]);
+      setUnread(0);
+      setCurrentPassword("");
+      setNextPassword("");
+      setNextConfirm("");
+      setSearch("");
+      setName("");
+      setBusy(false);
+      authLock.current = false;
+    }
+    if (!revoked) setError("本机已退出，但服务器无法确认会话已撤销。请检查网络并联系管理员撤销会话。");
+  }
+
+  const filtered = projects.filter((project) => project.name.toLowerCase().includes(search.trim().toLowerCase()));
+  const unreadItems = notifications.filter((item) => item.read_at === null);
+
+  if (recovering) {
+    return <View className="screen"><Text className="muted">正在恢复登录…</Text></View>;
+  }
+
+  if (!user) {
+    return (
+      <View className="screen">
+        <Text className="eyebrow">RESCENE / MINI PROGRAM</Text>
+        <Text className="title">登录 / 注册</Text>
+        <Text className="muted">服务器：{serverLabel()}</Text>
+        <View className="card">
+          <View className="segmented">
+            <View className={mode === "login" ? "tab active" : "tab"} onClick={() => { setMode("login"); setError(""); }}>登录</View>
+            <View className={mode === "register" ? "tab active" : "tab"} onClick={() => { setMode("register"); setError(""); }}>注册</View>
+          </View>
+          <Text className="label">邮箱</Text>
+          <Input className="input" placeholder="name@example.com" value={email} onInput={(event) => setEmail(event.detail.value)} />
+          <Text className="label">{mode === "login" ? "密码" : "密码（至少 12 位）"}</Text>
+          <Input className="input" password value={password} onInput={(event) => setPassword(event.detail.value)} />
+          {mode === "register" ? (
+            <>
+              <Text className="label">确认密码</Text>
+              <Input className="input" password value={confirm} onInput={(event) => setConfirm(event.detail.value)} />
+            </>
+          ) : null}
+          {mode === "login" ? (
+            <Button className="button" loading={busy} disabled={busy} onClick={() => void login()}>邮箱登录</Button>
+          ) : (
+            <Button className="button" loading={busy} disabled={busy} onClick={() => void register()}>创建账号</Button>
+          )}
+          <Text className="muted">{mode === "login" ? "首次使用请切换到注册；密码至少 12 位。" : "注册后即可创建项目；密码至少 12 位。"}</Text>
+          {hasToken() ? <Button className="button ghost" onClick={() => void recover()}>重试恢复登录</Button> : null}
+        </View>
+        {error ? <Text className="error">{error}</Text> : null}
+        {notice ? <Text>{notice}</Text> : null}
+      </View>
+    );
+  }
+
+  return (
+    <View className="screen">
+      <Text className="eyebrow">RESCENE / PROJECTS</Text>
+      <Text className="title">项目</Text>
+      <Text className="muted">{user.email}{user.is_admin ? " · 管理员" : ""}</Text>
+      <Text className="muted">服务器：{serverLabel()}</Text>
+      <View className="card">
+        <View className="row">
+          <Text className="label">通知（{unread}）</Text>
+          <Button className="button ghost" size="mini" disabled={!unread} onClick={() => void markAllRead()}>全部已读</Button>
+        </View>
+        {unreadItems.length === 0 ? <Text className="muted">暂无通知</Text> : null}
+        {unreadItems.map((item) => (
+          <View className="row" key={item.id} onClick={() => void openNotification(item)}>
+            <Text>{item.title}</Text>
+            <Text className="muted">{item.created_at}</Text>
+          </View>
+        ))}
+      </View>
+      <View className="card">
+        <Text className="label">搜索项目</Text>
+        <Input className="input" value={search} onInput={(event) => setSearch(event.detail.value)} />
+        <Text className="label">新项目名称</Text>
+        <Input className="input" maxlength={200} value={name} onInput={(event) => setName(event.detail.value)} />
+        <Button className="button" loading={creatingProject} disabled={creatingProject || !name.trim()} onClick={() => void createProject()}>创建项目</Button>
+      </View>
+      {filtered.map((project) => (
+        <View className="row" key={project.id} onClick={() => void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(project.id)}&name=${encodeURIComponent(project.name)}` })}>
+          <Text>{project.name}</Text><Text className="muted">{ROLE_LABEL[project.effective_role]} · 打开 ›</Text>
+        </View>
+      ))}
+      {filtered.length === 0 ? <Text className="muted">{search.trim() ? "没有匹配的项目。" : "还没有项目。"}</Text> : null}
+      {user.is_admin ? (
+        <Button className="button ghost" onClick={() => void Taro.navigateTo({ url: "/pages/admin/index" })}>管理控制台</Button>
+      ) : null}
+      {error ? <Text className="error">{error}</Text> : null}
+      {notice ? <Text>{notice}</Text> : null}
+      <View className="card">
+        <Text className="label">账户安全</Text>
+        <Text className="label">当前密码</Text>
+        <Input className="input" password value={currentPassword} onInput={(event) => setCurrentPassword(event.detail.value)} />
+        <Text className="label">新密码（至少 12 位）</Text>
+        <Input className="input" password value={nextPassword} onInput={(event) => setNextPassword(event.detail.value)} />
+        <Text className="label">确认新密码</Text>
+        <Input className="input" password value={nextConfirm} onInput={(event) => setNextConfirm(event.detail.value)} />
+        <Button className="button" loading={changingPassword} disabled={changingPassword || !currentPassword || !nextPassword || !nextConfirm} onClick={() => void changePassword()}>更新密码</Button>
+      </View>
+      <Button className="button ghost" loading={busy} disabled={busy} onClick={() => void signOut()}>退出登录</Button>
+    </View>
+  );
+}
