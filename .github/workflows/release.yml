@@ -147,18 +147,12 @@ jobs:
           pnpm --filter @rescene/desktop tauri build --target x86_64-unknown-linux-gnu --bundles deb,appimage
           test -n "$(find apps/desktop/src-tauri/target -path '*/bundle/deb/*.deb' -type f)" || { echo 'No .deb installer was produced' >&2; exit 1; }
           test -n "$(find apps/desktop/src-tauri/target -path '*/bundle/appimage/*.AppImage' -type f)" || { echo 'No .AppImage installer was produced' >&2; exit 1; }
-      # Two bundle directories would otherwise nest the artifact and break the
-      # manifest hashing and `gh release create`, which both take files.
-      - name: Stage installers flat
-        run: |
-          mkdir -p installer-stage
-          find apps/desktop/src-tauri/target -path '*/bundle/deb/*.deb' -type f -exec cp {} installer-stage/ \;
-          find apps/desktop/src-tauri/target -path '*/bundle/appimage/*.AppImage' -type f -exec cp {} installer-stage/ \;
-          ls -l installer-stage
       - uses: actions/upload-artifact@v4
         with:
           name: linux-desktop
-          path: installer-stage/*
+          path: |
+            apps/desktop/src-tauri/target/**/bundle/deb/*
+            apps/desktop/src-tauri/target/**/bundle/appimage/*
           if-no-files-found: error
 
   macos-desktop:
@@ -326,9 +320,22 @@ jobs:
         with:
           name: android-apk-signed
           path: release-inputs/artifacts
+      # upload-artifact keeps whatever directory prefix precedes a `**` glob, so
+      # the manifest and `gh release create` must see only files.
+      - name: Flatten downloaded artifacts
+        run: |
+          mkdir -p release-inputs/flat
+          find release-inputs/artifacts -type f -exec cp -n {} release-inputs/flat/ \;
+          expected=$(find release-inputs/artifacts -type f | wc -l)
+          actual=$(find release-inputs/flat -type f | wc -l)
+          ls -l release-inputs/flat
+          if [ "$expected" -ne "$actual" ]; then
+            echo "Artifact names collide: $expected files downloaded, $actual unique" >&2
+            exit 1
+          fi
       - name: Hash release artifacts
         run: |
-          node scripts/release-manifest.mjs --source-manifest release-inputs/source/source-manifest.json release-inputs/artifacts/* > "$RUNNER_TEMP/release-manifest.json"
+          node scripts/release-manifest.mjs --source-manifest release-inputs/source/source-manifest.json release-inputs/flat/* > "$RUNNER_TEMP/release-manifest.json"
       - uses: actions/upload-artifact@v4
         with:
           name: release-manifest
@@ -353,10 +360,15 @@ jobs:
           pattern: '*'
           path: release-assets
           merge-multiple: true
+      - name: Flatten release assets
+        run: |
+          mkdir -p release-flat
+          find release-assets -type f -exec cp -n {} release-flat/ \;
+          ls -l release-flat
       - name: Compose release notes from CHANGELOG.md
         run: node scripts/release-notes.mjs > "$RUNNER_TEMP/notes.md"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "ReScene $(tr -d '\r\n' < VERSION)" --notes-file "$RUNNER_TEMP/notes.md" release-assets/*
+        run: gh release create "$GITHUB_REF_NAME" --title "ReScene $(tr -d '\r\n' < VERSION)" --notes-file "$RUNNER_TEMP/notes.md" release-flat/*
 
