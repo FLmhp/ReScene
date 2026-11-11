@@ -147,12 +147,18 @@ jobs:
           pnpm --filter @rescene/desktop tauri build --target x86_64-unknown-linux-gnu --bundles deb,appimage
           test -n "$(find apps/desktop/src-tauri/target -path '*/bundle/deb/*.deb' -type f)" || { echo 'No .deb installer was produced' >&2; exit 1; }
           test -n "$(find apps/desktop/src-tauri/target -path '*/bundle/appimage/*.AppImage' -type f)" || { echo 'No .AppImage installer was produced' >&2; exit 1; }
+      # Two bundle directories would otherwise nest the artifact and break the
+      # manifest hashing and `gh release create`, which both take files.
+      - name: Stage installers flat
+        run: |
+          mkdir -p installer-stage
+          find apps/desktop/src-tauri/target -path '*/bundle/deb/*.deb' -type f -exec cp {} installer-stage/ \;
+          find apps/desktop/src-tauri/target -path '*/bundle/appimage/*.AppImage' -type f -exec cp {} installer-stage/ \;
+          ls -l installer-stage
       - uses: actions/upload-artifact@v4
         with:
           name: linux-desktop
-          path: |
-            apps/desktop/src-tauri/target/**/bundle/deb/*
-            apps/desktop/src-tauri/target/**/bundle/appimage/*
+          path: installer-stage/*
           if-no-files-found: error
 
   macos-desktop:
