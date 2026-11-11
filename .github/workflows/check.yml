@@ -86,6 +86,18 @@ jobs:
           TARO_APP_WEB_URL: https://app.example.com
           TARO_APP_WECHAT_APP_ID: wx0123456789abcdef
 
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The runtime dependency tree of the images differs from a workspace
+      # install: a devDependency needed while compiling workspace sources
+      # only fails here. Keep these builds as the guard for that class of bug.
+      - name: Build API image
+        run: docker build -f infra/api/Dockerfile -t rescene-api:ci .
+      - name: Build web image
+        run: docker build -f infra/web/Dockerfile -t rescene-web:ci .
+
   desktop-shell:
     runs-on: windows-latest
     steps:
