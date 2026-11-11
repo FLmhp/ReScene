@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "version": "0.3.0",
+  "sourceManifest": {
+    "name": "source-manifest.json",
+    "size": 70460,
+    "sha256": "046141cc6eef52b61ab62e17632fb65a0b7fba5683335860e1287aedfc06ab40"
+  },
+  "artifacts": [
+    {
+      "name": "ReScene_0.3.0_amd64.AppImage",
+      "size": 83053048,
+      "sha256": "7fde5d0a939d19ac7e6d207f4ed3a2a112c79af5cab4f817cb92c07d1fc4a96a"
+    },
+    {
+      "name": "ReScene_0.3.0_amd64.deb",
+      "size": 5613758,
+      "sha256": "ea34783ddc76e25afe3480e64b4535e9e1e7a2be4680fbe297bb31e5774e1cf2"
+    },
+    {
+      "name": "ReScene_0.3.0_universal.dmg",
+      "size": 10700748,
+      "sha256": "91586b9f2e22808aa6e10a4a00191189c982620173c0dfe64b6da05766f4f2c7"
+    },
+    {
+      "name": "ReScene_0.3.0_x64-setup.exe",
+      "size": 4026391,
+      "sha256": "67fe6e44c570f94572aac0fb25da6302dcf9f7b1f5f425afba1f26c70dcd7387"
+    }
+  ]
+}
