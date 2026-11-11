@@ -80,6 +80,11 @@ jobs:
       - run: pnpm --filter @rescene/desktop build
       - run: pnpm --filter @rescene/mobile export
       - run: pnpm --filter @rescene/miniapp build:weapp
+        env:
+          # The Taro config requires production values; CI proves the build compiles, not that it ships.
+          TARO_APP_API_URL: https://api.example.com
+          TARO_APP_WEB_URL: https://app.example.com
+          TARO_APP_WECHAT_APP_ID: wx0123456789abcdef
 
   desktop-shell:
     runs-on: windows-latest

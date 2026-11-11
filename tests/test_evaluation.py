@@ -40,7 +40,8 @@ def test_pose_errors_are_zero_after_similarity_alignment() -> None:
     ate, rotation_error, _ = pose_errors(source, target, predicted_rotations, target_rotations)
 
     assert ate < 1e-12
-    assert rotation_error < 1e-6
+    # SVD round-off differs per BLAS; 1e-5 rad (0.0006 deg) still fails a real misalignment.
+    assert rotation_error < 1e-5
 
 
 def test_read_ascii_ply_xyz_ignores_other_properties(tmp_path: Path) -> None:
