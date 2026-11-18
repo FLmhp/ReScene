@@ -1,0 +1,50 @@
+[
+  {
+    "scene": "delivery_area",
+    "source_count": 948,
+    "eligible_count": 493,
+    "preflight_counts": [
+      64,
+      80,
+      160,
+      250
+    ],
+    "validation_views": 8
+  },
+  {
+    "scene": "playground",
+    "source_count": 960,
+    "eligible_count": 636,
+    "preflight_counts": [
+      64,
+      80,
+      160,
+      250
+    ],
+    "validation_views": 8
+  },
+  {
+    "scene": "terrains",
+    "source_count": 660,
+    "eligible_count": 322,
+    "preflight_counts": [
+      64,
+      80,
+      160,
+      250
+    ],
+    "validation_views": 8
+  },
+  {
+    "scene": "forest",
+    "source_count": 1028,
+    "eligible_count": 566,
+    "preflight_counts": [
+      64,
+      80,
+      160,
+      250
+    ],
+    "validation_views": 8
+  }
+]

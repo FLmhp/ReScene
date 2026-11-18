@@ -1,0 +1,80 @@
+{
+  "data_source": "isolated API fixtures",
+  "checks": [
+    {
+      "client": "web",
+      "check": "format, blur, duplicate preflight",
+      "status": "PASS"
+    },
+    {
+      "client": "web",
+      "width": 1440,
+      "theme": "light",
+      "status": "PASS"
+    },
+    {
+      "client": "web",
+      "width": 1440,
+      "theme": "dark",
+      "status": "PASS"
+    },
+    {
+      "client": "web",
+      "width": 1024,
+      "theme": "light",
+      "status": "PASS"
+    },
+    {
+      "client": "web",
+      "width": 1024,
+      "theme": "dark",
+      "status": "PASS"
+    },
+    {
+      "client": "web",
+      "width": 768,
+      "theme": "light",
+      "status": "PASS"
+    },
+    {
+      "client": "web",
+      "width": 768,
+      "theme": "dark",
+      "status": "PASS"
+    },
+    {
+      "client": "web",
+      "width": 390,
+      "theme": "light",
+      "status": "PASS"
+    },
+    {
+      "client": "web",
+      "width": 390,
+      "theme": "dark",
+      "status": "PASS"
+    },
+    {
+      "client": "windows-ui",
+      "check": "format, blur, duplicate preflight",
+      "status": "PASS"
+    },
+    {
+      "client": "windows-ui",
+      "width": 1280,
+      "theme": "light",
+      "status": "PASS"
+    },
+    {
+      "client": "windows-ui",
+      "width": 1280,
+      "theme": "dark",
+      "status": "PASS"
+    },
+    {
+      "client": "web",
+      "check": "expired SPZ link refreshed and rendered",
+      "status": "PASS"
+    }
+  ]
+}

@@ -172,7 +172,7 @@ python -m rescene report --run-id my-scene
 
 引擎环境与 Worker 操作见 [部署与运维](docs/单5090系统部署与运维.md)；质量结论见 [5090 v3 优化报告](docs/RESCENE_5090_DELIVERY_OPTIMIZATION.md)。历史标定存在冻结帧、渲染分割和坐标变换口径问题，不能直接作为新候选的晋级基线。
 
-5090 下次实验使用 `/root/autodl-fs` 的共享存储归档大型数据集，逐场景复制到实例本地数据盘运行。本轮仅整理计划，实验仍待开机后执行。[5090 大数据集训练运行手册](docs/5090大数据集训练运行手册.md)
+5090 下次实验使用 `/root/autodl-fs` 归档数据，逐场景复制到实例本地数据盘运行。已在本机准备 ETH3D 的四个场景，完成归档校验和 16 组冻结输入的 CPU 预检。Worker 同步、真实训练和质量对照待开机执行。[5090 大数据集训练运行手册](docs/5090大数据集训练运行手册.md) · [关机期验收](artifacts/test-runs/2026-11-18-closed-gpu/report.md)
 
 ### 后续 A100 优化
 

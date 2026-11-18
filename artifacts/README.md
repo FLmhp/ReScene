@@ -7,7 +7,7 @@
 | `screenshots/` | 各端真实运行截图 | 每张都来自实际运行，不使用设计稿或合成图 |
 | `golden/` | 黄金样例的 `metrics.json` 与 `report.md` | 只保留指标与报告，`scene.spz` 由重建流程重新产出 |
 | `release/<版本>/` | `release-manifest.json`、`source-manifest.json` | 发布包的 SHA-256 与源码快照清单；安装包本体在 GitHub Release |
-| `test-runs/` | [0.4.0 四端报告](test-runs/2026-11-18-ui-v040/report.md) · [工作台与离线恢复验收](test-runs/2026-11-18-workbench-reliability/report.md) | 发布验收与本地分页、租约恢复、Viewer 重试记录 |
+| `test-runs/` | [0.4.0 四端报告](test-runs/2026-11-18-ui-v040/report.md) · [工作台与离线恢复验收](test-runs/2026-11-18-workbench-reliability/report.md) · [5090 关机期验收](test-runs/2026-11-18-closed-gpu/report.md) | 四端构建、素材预检、数据库恢复与算法预检 |
 
 ## 截图
 
