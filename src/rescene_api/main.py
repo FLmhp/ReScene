@@ -18,6 +18,7 @@ import jwt
 import oss2
 import segno
 import uvicorn
+from aliyunsdkcore.acs_exception.exceptions import ClientException
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -896,14 +897,35 @@ def delete_asset(asset_id: str, db: Db, user: UserDep) -> None:
     asset = db.get(Asset, asset_id)
     if not asset:
         fail(status.HTTP_404_NOT_FOUND, "Asset not found", "asset.not_found")
-    project_for_user(db, asset.project_id, user, write=True)
+    project_for_user(db, asset.project_id, user, write=True, lock=True)
+    asset = db.get(Asset, asset_id, with_for_update=True, populate_existing=True)
+    if not asset:
+        fail(status.HTTP_404_NOT_FOUND, "Asset not found", "asset.not_found")
     if asset_referenced(db, asset):
         fail(status.HTTP_409_CONFLICT, "Asset is used by a job", "asset.in_use")
-    with suppress(oss2.exceptions.NotFound):
-        storage().delete(asset.object_key)
+    try:
+        with suppress(oss2.exceptions.NotFound):
+            storage().delete(asset.object_key)
+    except oss2.exceptions.AccessDenied as error:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Asset storage refused the deletion") from error
     audit(db, user.id, "asset.delete", "asset", asset.id, project_id=asset.project_id, filename=asset.filename)
     db.delete(asset)
     db.commit()
+
+
+@app.get("/v1/assets/{asset_id}/preview")
+def asset_preview(asset_id: str, db: Db, user: UserDep) -> dict[str, str]:
+    asset = db.get(Asset, asset_id)
+    if not asset:
+        fail(status.HTTP_404_NOT_FOUND, "Asset not found", "asset.not_found")
+    project_for_user(db, asset.project_id, user)
+    if asset.status != "READY" or PurePosixPath(asset.filename).suffix.lower() not in IMAGE_SUFFIXES:
+        fail(status.HTTP_409_CONFLICT, "Image is not ready for preview", "asset.preview_unavailable")
+    try:
+        url = storage().signed_preview(asset.object_key)
+    except (oss2.exceptions.OssError, ClientException) as error:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Image preview storage is unavailable") from error
+    return {"url": url, "expires_at": (now() + timedelta(seconds=300)).isoformat()}
 
 
 @app.post("/v1/projects/{project_id}/jobs", status_code=201)

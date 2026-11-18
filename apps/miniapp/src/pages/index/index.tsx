@@ -1,3 +1,4 @@
+import { Screen } from "../../screen";
 import { explainError, isOfflineError, ResceneApiError } from "@rescene/api-client";
 import type { AppNotification, Project, User } from "@rescene/schemas";
 import { Button, Input, Text, View } from "@tarojs/components";
@@ -35,6 +36,8 @@ function message(reason: unknown, fallback: string): string {
 }
 
 export default function IndexPage() {
+  const [panel, setPanel] = useState<"notifications" | "account" | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [recovering, setRecovering] = useState(hasToken());
   const [projects, setProjects] = useState<Project[]>([]);
@@ -304,15 +307,15 @@ export default function IndexPage() {
   const unreadItems = notifications.filter((item) => item.read_at === null);
 
   if (recovering) {
-    return <View className="screen"><Text className="muted">正在恢复登录…</Text></View>;
+    return <Screen><Text className="muted">正在恢复登录…</Text></Screen>;
   }
 
   if (!user) {
     return (
-      <View className="screen">
-        <Text className="eyebrow">RESCENE / MINI PROGRAM</Text>
+      <Screen>
+        <Text className="muted">影像到三维空间</Text>
         <Text className="title">登录 / 注册</Text>
-        <Text className="muted">服务器：{serverLabel()}</Text>
+  
         <View className="card">
           <View className="segmented">
             <View className={mode === "login" ? "tab active" : "tab"} onClick={() => { setMode("login"); setError(""); }}>登录</View>
@@ -321,7 +324,8 @@ export default function IndexPage() {
           <Text className="label">邮箱</Text>
           <Input className="input" placeholder="name@example.com" value={email} onInput={(event) => setEmail(event.detail.value)} />
           <Text className="label">{mode === "login" ? "密码" : "密码（至少 12 位）"}</Text>
-          <Input className="input" password value={password} onInput={(event) => setPassword(event.detail.value)} />
+          <Input className="input" password={!showPassword} value={password} onInput={(event) => setPassword(event.detail.value)} />
+          <Button className="button ghost compact" onClick={() => setShowPassword(!showPassword)}>{showPassword ? "隐藏密码" : "显示密码"}</Button>
           {mode === "register" ? (
             <>
               <Text className="label">确认密码</Text>
@@ -336,19 +340,23 @@ export default function IndexPage() {
           <Text className="muted">{mode === "login" ? "首次使用请切换到注册；密码至少 12 位。" : "注册后即可创建项目；密码至少 12 位。"}</Text>
           {hasToken() ? <Button className="button ghost" onClick={() => void recover()}>重试恢复登录</Button> : null}
         </View>
-        {error ? <Text className="error">{error}</Text> : null}
+        {error ? <Text className="error">{error} · {serverLabel()}</Text> : null}
         {notice ? <Text>{notice}</Text> : null}
-      </View>
+      </Screen>
     );
   }
 
   return (
-    <View className="screen">
-      <Text className="eyebrow">RESCENE / PROJECTS</Text>
-      <Text className="title">项目</Text>
+    <Screen>
+      
+      <Text className="title">我的项目</Text>
       <Text className="muted">{user.email}{user.is_admin ? " · 管理员" : ""}</Text>
-      <Text className="muted">服务器：{serverLabel()}</Text>
-      <View className="card">
+
+      <View className="selection-tools">
+        <Button className="button ghost compact" onClick={() => setPanel(panel === "notifications" ? null : "notifications")}>通知（{unread}）</Button>
+        <Button className="button ghost compact" onClick={() => setPanel(panel === "account" ? null : "account")}>账户设置</Button>
+      </View>
+      {panel === "notifications" ? <View className="card">
         <View className="row">
           <Text className="label">通知（{unread}）</Text>
           <Button className="button ghost" size="mini" disabled={!unread} onClick={() => void markAllRead()}>全部已读</Button>
@@ -360,7 +368,7 @@ export default function IndexPage() {
             <Text className="muted">{item.created_at}</Text>
           </View>
         ))}
-      </View>
+      </View> : null}
       <View className="card">
         <Text className="label">搜索项目</Text>
         <Input className="input" value={search} onInput={(event) => setSearch(event.detail.value)} />
@@ -369,8 +377,8 @@ export default function IndexPage() {
         <Button className="button" loading={creatingProject} disabled={creatingProject || !name.trim()} onClick={() => void createProject()}>创建项目</Button>
       </View>
       {filtered.map((project) => (
-        <View className="row" key={project.id} onClick={() => void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(project.id)}&name=${encodeURIComponent(project.name)}` })}>
-          <Text>{project.name}</Text><Text className="muted">{ROLE_LABEL[project.effective_role]} · 打开 ›</Text>
+        <View className="project-tile" key={project.id} onClick={() => void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(project.id)}&name=${encodeURIComponent(project.name)}` })}>
+          <Text className="label">{project.name}</Text><Text className="muted">{ROLE_LABEL[project.effective_role]} · 打开 ›</Text>
         </View>
       ))}
       {filtered.length === 0 ? <Text className="muted">{search.trim() ? "没有匹配的项目。" : "还没有项目。"}</Text> : null}
@@ -379,8 +387,8 @@ export default function IndexPage() {
       ) : null}
       {error ? <Text className="error">{error}</Text> : null}
       {notice ? <Text>{notice}</Text> : null}
-      <View className="card">
-        <Text className="label">账户安全</Text>
+      {panel === "account" ? <View className="card">
+        <Text className="section-heading">账户安全</Text>
         <Text className="label">当前密码</Text>
         <Input className="input" password value={currentPassword} onInput={(event) => setCurrentPassword(event.detail.value)} />
         <Text className="label">新密码（至少 12 位）</Text>
@@ -388,8 +396,8 @@ export default function IndexPage() {
         <Text className="label">确认新密码</Text>
         <Input className="input" password value={nextConfirm} onInput={(event) => setNextConfirm(event.detail.value)} />
         <Button className="button" loading={changingPassword} disabled={changingPassword || !currentPassword || !nextPassword || !nextConfirm} onClick={() => void changePassword()}>更新密码</Button>
-      </View>
+      </View> : null}
       <Button className="button ghost" loading={busy} disabled={busy} onClick={() => void signOut()}>退出登录</Button>
-    </View>
+    </Screen>
   );
 }

@@ -7,8 +7,8 @@ import { hashFile } from './manifest-utils.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // Only project-owned source trees and explicitly named root inputs are considered.
 const trees = ['src', 'apps', 'packages', 'scripts', 'tests', 'configs', 'infra', 'docs', '.github/workflows'];
-const rootFiles = ['VERSION', 'README.md', 'CHANGELOG.md', 'pyproject.toml', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.gitignore', '.dockerignore', '.editorconfig', '.gitattributes', 'workerctl'];
-const extensions = new Set(['.py', '.pyi', '.toml', '.json', '.jsonc', '.yaml', '.yml', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.css', '.html', '.rs', '.lock', '.sh', '.ps1', '.md', '.txt', '.conf', '.caddy', '.cron', '.sql', '.png', '.ico', '.svg']);
+const rootFiles = ['AGENTS.md', 'AGENT.md', 'VERSION', 'README.md', 'CHANGELOG.md', 'pyproject.toml', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.gitignore', '.dockerignore', '.editorconfig', '.gitattributes', 'workerctl'];
+const extensions = new Set(['.py', '.pyi', '.toml', '.json', '.jsonc', '.yaml', '.yml', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.css', '.html', '.rs', '.lock', '.sh', '.ps1', '.md', '.txt', '.conf', '.caddy', '.cron', '.sql', '.png', '.ico', '.svg', '.woff2']);
 const excludedDirs = new Set(['node_modules', 'dist', 'build', 'target', 'gen', 'coverage', '__pycache__', '.expo', '.next', '.git', 'secrets', 'backups', 'postgres']);
 const sensitive = /(^|[._-])(secret|secrets|credential|credentials|password|token|private|apikey|api-key|keystore)([._-]|$)|\.(pem|key|p12|pfx|jks|keystore)$/i;
 

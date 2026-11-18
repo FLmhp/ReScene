@@ -1,6 +1,6 @@
 [package]
 name = "rescene-desktop"
-version = "0.3.0"
+version = "0.4.0"
 description = "ReScene desktop workbench"
 edition = "2021"
 rust-version = "1.77.2"

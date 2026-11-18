@@ -158,7 +158,17 @@ class OssStorage:
 
     def delete(self, object_key: str) -> None:
         """Remove one object; callers tolerate NotFound for never-written uploads."""
-        auth = oss2.Auth(self.config.oss_access_key_id, self.config.oss_access_key_secret)
+        credentials = self.assume(
+            "asset-delete",
+            [
+                {
+                    "Effect": "Allow",
+                    "Resource": [f"acs:oss:*:*:{self.config.oss_bucket}/{object_key}"],
+                    "Action": ["oss:DeleteObject"],
+                }
+            ],
+        )
+        auth = oss2.StsAuth(credentials.access_key_id, credentials.access_key_secret, credentials.security_token)
         bucket = oss2.Bucket(auth, self.config.oss_endpoint, self.config.oss_bucket)
         bucket.delete_object(object_key)
 
@@ -166,6 +176,26 @@ class OssStorage:
         auth = oss2.Auth(self.config.oss_access_key_id, self.config.oss_access_key_secret)
         bucket = oss2.Bucket(auth, self.config.oss_endpoint, self.config.oss_bucket)
         return bucket.sign_url("GET", object_key, expires)
+
+    def signed_preview(self, object_key: str) -> str:
+        credentials = self.assume(
+            "asset-preview",
+            [
+                {
+                    "Effect": "Allow",
+                    "Resource": [f"acs:oss:*:*:{self.config.oss_bucket}/{object_key}"],
+                    "Action": ["oss:GetObject"],
+                }
+            ],
+        )
+        auth = oss2.StsAuth(credentials.access_key_id, credentials.access_key_secret, credentials.security_token)
+        bucket = oss2.Bucket(auth, self.config.oss_endpoint, self.config.oss_bucket)
+        return bucket.sign_url(
+            "GET",
+            object_key,
+            300,
+            params={"x-oss-process": "image/resize,m_lfit,w_320,h_320/auto-orient,1"},
+        )
 
 
 def credentials_dict(credentials: TemporaryCredentials, config: Settings) -> dict[str, str]:

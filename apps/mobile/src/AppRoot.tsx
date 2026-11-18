@@ -26,7 +26,7 @@ import { LoginScreen } from "./screens/Login";
 import { ProjectScreen } from "./screens/Project";
 import { ProjectsScreen } from "./screens/Projects";
 import { ViewerScreen } from "./screens/ViewerScreen";
-import { theme } from "./theme";
+import { useAppearance } from "./appearance";
 import { Busy, Button, ErrorText, Screen } from "./ui";
 
 type Route =
@@ -50,6 +50,7 @@ function routeTitle(route: Route): string {
 }
 
 export function AppRoot() {
+  const { theme, dark } = useAppearance();
   const [session, setSession] = useState<Session>("loading");
   const [routes, setRoutes] = useState<Route[]>([{ name: "projects" }]);
   const [notice, setNotice] = useState("");
@@ -265,7 +266,7 @@ export function AppRoot() {
         paddingTop: Platform.OS === "android" ? StatusBar.currentHeight ?? 0 : 0,
       }}
     >
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle={dark ? "light-content" : "dark-content"} />
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
         <View style={{ backgroundColor: theme.bg, flex: 1 }}>{content}</View>
       </KeyboardAvoidingView>

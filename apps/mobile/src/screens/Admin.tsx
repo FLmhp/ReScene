@@ -11,8 +11,9 @@ import { useEffect, useState } from "react";
 import { Alert, Pressable, Text, View } from "react-native";
 
 import { client } from "../api";
-import { spacing, theme } from "../theme";
-import { Button, Card, ErrorText, Field, Screen, Segmented, textStyles } from "../ui";
+import { spacing } from "../theme";
+import { useAppearance } from "../appearance";
+import { Button, Card, ErrorText, Field, Screen, Segmented, useTextStyles } from "../ui";
 
 type AdminTab = "users" | "announcements" | "logs";
 type StatusFilter = "all" | "active" | "inactive";
@@ -49,6 +50,7 @@ function Pager({
   onChange: (page: number) => void;
 }) {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const textStyles = useTextStyles();
   return (
     <View style={{ gap: spacing.xs }}>
       <Text style={textStyles.muted}>第 {page + 1} / {pages} 页 · 共 {total} 条</Text>
@@ -70,6 +72,8 @@ function Pager({
 }
 
 export function AdminScreen({ onBack }: { onBack: () => void }) {
+  const { theme } = useAppearance();
+  const textStyles = useTextStyles();
   const [tab, setTab] = useState<AdminTab>("users");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");

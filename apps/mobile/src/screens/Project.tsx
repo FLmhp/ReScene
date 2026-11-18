@@ -1,20 +1,20 @@
 import { explainError, isOfflineError } from "@rescene/api-client";
+import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, stageLabel } from "@rescene/schemas";
 import type { Asset, MemberRole, Profile, ProjectDetail, ProjectMember } from "@rescene/schemas";
 import * as DocumentPicker from "expo-document-picker";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Pressable, Text, View } from "react-native";
+import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { client } from "../api";
+import { AssetThumbnail } from "../AssetThumbnail";
 import { enqueue, loadQueue, replayQueued, saveQueue } from "../queue";
-import { theme } from "../theme";
+import { useAppearance } from "../appearance";
+import type { Palette } from "@rescene/design-tokens";
 import { type PickedFile, uploadFile } from "../upload";
-import { Button, Card, ErrorText, Field, Screen, textStyles } from "../ui";
+import { Button, Card, ErrorText, Field, Screen, useTextStyles } from "../ui";
 
-const PROFILES: [Profile, string, string][] = [
-  ["fast", "FAST · 快速预览", "无 BA、步数少，最快出结果，适合构图检查。"],
-  ["balanced", "BALANCED · 推荐", "相机 BA + 更长训练，质量与耗时平衡。"],
-  ["quality", "QUALITY · 精细重建", "COLMAP 几何 + 完整训练，耗时最长，适合最终交付。"],
-];
+const PROFILES: Profile[] = ["fast", "balanced", "quality"];
+const ROLE_LABEL = { owner: "所有者", admin: "管理员", member: "成员", viewer: "只读" };
 type Upload = { id: string; file: PickedFile; progress: number; status: "uploading" | "failed" | "done"; error?: string };
 type TimelineRow = { key: string; stage: string; status: string; progress: number; message?: string | null; metrics: Record<string, unknown> };
 
@@ -31,6 +31,12 @@ export function ProjectScreen({ project, onJob, onBack }: {
   onJob: (jobId: string) => void;
   onBack: () => void;
 }) {
+  const { theme } = useAppearance();
+  const textStyles = useTextStyles();
+  const styles = makeStyles(theme);
+  const [showManagement, setShowManagement] = useState(false);
+  const [visibleAssets, setVisibleAssets] = useState(24);
+  const [workerOnline, setWorkerOnline] = useState<boolean | null>(null);
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -62,6 +68,16 @@ export function ProjectScreen({ project, onJob, onBack }: {
     }
   }, [project.id]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let active = true;
+    async function refreshWorker() {
+      const status = await client.getWorkerStatus().catch(() => null);
+      if (active) setWorkerOnline(status?.online ?? null);
+    }
+    void refreshWorker();
+    const timer = setInterval(() => void refreshWorker(), 15_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [project.id]);
 
   useEffect(() => {
     if (replayed.current) return;
@@ -166,8 +182,13 @@ export function ProjectScreen({ project, onJob, onBack }: {
         <ErrorText>{error}</ErrorText>
         <Button label="刷新项目" onPress={() => void load()} tone="ghost" />
       </Card> : null}
-        {detail ? <Text style={textStyles.muted}>权限：{detail.effective_role}{!canWrite ? " · 只读" : ""}</Text> : <Text style={textStyles.muted}>加载中…</Text>}
-        {canManage ? <Card>
+        {detail ? <View style={styles.projectHeader}>
+          <Text style={textStyles.muted}>{ROLE_LABEL[detail.effective_role]} · {detail.assets.length} 个素材 · {detail.jobs.length} 个任务</Text>
+          <Pressable accessibilityRole="button" accessibilityState={{ expanded: showManagement }} style={styles.action} onPress={() => setShowManagement((value) => !value)}>
+            <Text style={styles.link}>{showManagement ? "收起管理" : canManage ? "项目管理" : "查看成员"}</Text>
+          </Pressable>
+        </View> : <Text style={textStyles.muted}>加载中…</Text>}
+        {showManagement && canManage ? <Card>
           <Field label="项目名称" value={name} onChangeText={setName} />
           <Button disabled={busy || !name.trim() || name.trim() === detail?.name} label="保存名称" onPress={() => void mutate(async () => { await client.updateProject(project.id, name.trim()); await load(); })} />
           <Button disabled={busy} label="删除项目" tone="ghost" onPress={() => Alert.alert("删除项目", "确定删除此项目？此操作无法撤销。", [
@@ -175,8 +196,8 @@ export function ProjectScreen({ project, onJob, onBack }: {
             { text: "删除", style: "destructive", onPress: () => void mutate(async () => { await client.deleteProject(project.id); onBack(); }) },
           ])} />
         </Card> : null}
-        {detail ? <Card>
-          <Text style={textStyles.body}>成员</Text>
+        {showManagement && detail ? <Card>
+          <Text accessibilityRole="header" style={textStyles.heading}>成员</Text>
           {members.map((member) => <View key={member.user_id} style={{ paddingVertical: 8 }}>
             <Text style={textStyles.body}>{member.email} · {member.role}</Text>
             {canManage && member.role !== "owner" ? <>
@@ -200,61 +221,100 @@ export function ProjectScreen({ project, onJob, onBack }: {
             {inviteNotice ? <Text accessibilityLiveRegion="polite" style={textStyles.muted}>{inviteNotice}</Text> : null}
           </> : null}
         </Card> : null}
-        {canWrite ? <Card>
-          <Button label="选择图片或视频上传" onPress={pickAndUpload} />
-          <Text style={textStyles.muted}>支持 JPG/PNG 图片组，或单个 MP4/MOV/MKV/AVI/WEBM/M4V 视频；不要混合图片与视频。单个文件上限 5 GB，单次任务素材合计不超过 8 GB。上传完成并显示 READY 后才能创建任务；失败的文件可单独重试，无需重新选择其余文件。</Text>
+        {detail ? <Card>
+          <View style={styles.rowHeader}>
+            <Text accessibilityRole="header" style={textStyles.heading}>素材</Text>
+            {canWrite ? <Text style={styles.link}>已选 {selected.length} 个</Text> : null}
+          </View>
+          {canWrite && detail.assets.length > 0 ? <View style={styles.rowHeader}>
+            <Button tone="ghost" label="全选图片" onPress={() => setSelected(detail.assets.filter((asset) => asset.status === "READY" && mediaType(asset) === "image").map((asset) => asset.id))} />
+            <Button tone="ghost" disabled={!selected.length} label="清空选择" onPress={() => setSelected([])} />
+          </View> : null}
+          {canWrite ? <>
+            <Button label="选择图片或视频上传" onPress={pickAndUpload} />
+            <Text style={textStyles.muted}>一组 JPG / PNG 图片或一个视频。单文件 ≤ 5 GiB，单任务 ≤ 8 GiB。</Text>
+          </> : null}
           {uploads.map((item) => <View key={item.id}>
             <Text style={textStyles.muted}>{item.file.name} · {item.progress}% · {item.status === "failed" ? "失败" : item.status === "done" ? "完成" : "上传中"}</Text>
             {item.error ? <Text style={textStyles.error}>{item.error}</Text> : null}
             {item.status === "failed" ? <Button label="重试上传" onPress={() => void runUpload(item.id, item.file)} tone="ghost" /> : null}
           </View>)}
-        </Card> : null}
-        <Card>
-          <Text style={textStyles.body}>素材</Text>
-          {!detail?.assets.length ? <Text style={textStyles.muted}>暂无素材。</Text> : null}
-          {detail?.assets.map((asset) => <View key={asset.id} style={{ paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: theme.border }}>
-            <Pressable disabled={!canWrite || asset.status !== "READY"} onPress={() => toggleAsset(asset)}>
-              <Text style={{ color: selected.includes(asset.id) ? theme.accentStrong : theme.fg }}>{selected.includes(asset.id) ? "● " : "○ "}{asset.filename}</Text>
-              <Text style={textStyles.muted}>{asset.status}{!mediaType(asset) ? " · 未知媒体类型" : ""}</Text>
-            </Pressable>
+          {!detail.assets.length && !uploads.length ? <Text style={textStyles.muted}>暂无素材</Text> : null}
+          {detail.assets.slice(0, visibleAssets).map((asset) => <View key={asset.id} style={[styles.asset, selected.includes(asset.id) && styles.selected]}>
+            <AssetThumbnail asset={asset} />
             <Pressable
+              accessibilityRole={canWrite ? "checkbox" : undefined}
+              accessibilityState={canWrite ? { checked: selected.includes(asset.id), disabled: asset.status !== "READY" } : undefined}
+              disabled={!canWrite || asset.status !== "READY"}
+              onPress={() => toggleAsset(asset)}
+              style={styles.assetChoice}
+            >
+              <Text style={textStyles.body}>{asset.filename}</Text>
+              <Text style={textStyles.muted}>{selected.includes(asset.id) ? "已选" : ASSET_STATUS_LABELS[asset.status]}{!mediaType(asset) ? " · 未知媒体类型" : ""}</Text>
+            </Pressable>
+            {canWrite ? <Pressable
               accessibilityRole="button"
               accessibilityLabel={`删除 ${asset.filename}`}
-              disabled={!canWrite}
               onPress={() => Alert.alert("删除素材", `确定删除「${asset.filename}」？`, [
                 { text: "取消", style: "cancel" },
                 { text: "删除", style: "destructive", onPress: () => void mutate(async () => { await client.deleteAsset(asset.id); await load(); }, "删除失败，请稍后重试。") },
               ])}
-              style={{ alignSelf: "flex-start", paddingTop: 6 }}
+              style={styles.action}
             >
-              <Text style={{ color: canWrite ? theme.danger : theme.muted }}>删除</Text>
-            </Pressable>
+              <Text style={textStyles.error}>删除</Text>
+            </Pressable> : null}
           </View>)}
-        </Card>
+          {detail.assets.length > visibleAssets ? <Button tone="ghost" label={`加载更多素材（${visibleAssets}/${detail.assets.length}）`} onPress={() => setVisibleAssets((count) => count + 24)} /> : null}
+        </Card> : null}
         {canWrite ? <Card>
-          {PROFILES.map(([value, label, hint]) => <Pressable key={value} onPress={() => setProfile(value)}>
-            <Text style={{ color: profile === value ? theme.accentStrong : theme.muted, paddingTop: 8 }}>{profile === value ? "● " : "○ "}{label}</Text>
-            <Text style={textStyles.muted}>{hint}</Text>
-          </Pressable>)}
-          <Button disabled={creating || !selected.length} label={creating ? "正在创建…" : `开始重建（${selected.length}）`} onPress={createJob} />
+          <Text accessibilityRole="header" style={textStyles.heading}>重建路线</Text>
+          {PROFILES.map((value) => {
+            const option = RECONSTRUCTION_PROFILES[value];
+            return (
+              <Pressable key={value} accessibilityRole="radio" accessibilityState={{ checked: profile === value }} style={[styles.route, profile === value && styles.selected]} onPress={() => setProfile(value)}>
+                <Text style={profile === value ? styles.link : textStyles.body}>{option.title} · {value.toUpperCase()}</Text>
+                <Text style={textStyles.muted}>{option.description} · 最多 {option.frames} 帧</Text>
+              </Pressable>
+            );
+          })}
+          {workerOnline != null ? <Text style={workerOnline ? styles.online : textStyles.muted}>
+            {workerOnline ? "计算节点在线" : "计算节点离线，提交后排队"}
+          </Text> : null}
+          <Button disabled={creating || !selected.length} label={creating ? "正在创建…" : selected.length ? `开始重建（${selected.length}）` : "开始重建"} onPress={createJob} />
+          {!selected.length ? <Text style={textStyles.muted}>请先从素材列表选择要重建的文件</Text> : null}
         </Card> : null}
         <Card>
-          <Text style={textStyles.body}>任务历史</Text>
+          <Text accessibilityRole="header" style={textStyles.heading}>任务历史</Text>
           {timeline.length > 0 ? <>
             <Text style={textStyles.muted}>最近任务阶段</Text>
             {timeline.map((row) => <View key={row.key} style={{ paddingVertical: 8 }}>
-              <Text style={textStyles.body}>{row.stage} · {row.status} · {Math.round(row.progress * 100)}%</Text>
+              <Text style={textStyles.body}>{stageLabel(row.stage)} · {row.status} · {Math.round(row.progress * 100)}%</Text>
               {row.message ? <Text style={textStyles.muted}>{row.message}</Text> : null}
               {Object.keys(row.metrics).length > 0 ? <Text style={textStyles.muted}>{JSON.stringify(row.metrics)}</Text> : null}
             </View>)}
           </> : null}
           {!detail?.jobs.length ? <Text style={textStyles.muted}>暂无任务。</Text> : null}
-          {detail?.jobs.map((job) => <Pressable key={job.id} onPress={() => onJob(job.id)} style={{ paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: theme.border }}>
-            <Text style={textStyles.body}>{job.profile} · {job.status}</Text>
-            <Text style={textStyles.muted}>{job.created_at} · {job.id}</Text>
+          {detail?.jobs.map((job) => <Pressable accessibilityRole="button" key={job.id} onPress={() => onJob(job.id)} style={styles.route}>
+            <View style={styles.rowHeader}>
+              <Text style={textStyles.body}>{RECONSTRUCTION_PROFILES[job.profile].title}</Text>
+              <Text style={job.status === "FAILED" ? textStyles.error : styles.link}>{JOB_STATUS_LABELS[job.status]}</Text>
+            </View>
+            <Text style={textStyles.muted}>{new Date(job.created_at).toLocaleString()} · {job.id.slice(0, 8)}</Text>
           </Pressable>)}
         </Card>
         <Button label="返回项目列表" onPress={onBack} tone="ghost" />
     </Screen>
   );
 }
+
+const makeStyles = (theme: Palette) => StyleSheet.create({
+  projectHeader: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, justifyContent: "space-between" },
+  rowHeader: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, justifyContent: "space-between" },
+  action: { minHeight: 44, minWidth: 44, justifyContent: "center", alignItems: "center", paddingHorizontal: 8 },
+  link: { color: theme.accent, fontWeight: "600" },
+  online: { color: theme.success },
+  asset: { flexDirection: "row", alignItems: "center", borderWidth: 1, borderColor: theme.divider, borderRadius: 12 },
+  assetChoice: { flex: 1, minHeight: 48, padding: 10, gap: 4 },
+  selected: { borderColor: theme.accent, backgroundColor: theme.surfaceStrong },
+  route: { gap: 5, minHeight: 48, padding: 12, borderWidth: 1, borderColor: theme.borderSoft, borderRadius: 12 },
+});

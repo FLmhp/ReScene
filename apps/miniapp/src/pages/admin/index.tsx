@@ -1,3 +1,4 @@
+import { Screen } from "../../screen";
 import { explainError, ResceneApiError } from "@rescene/api-client";
 import type {
   AdminUser,
@@ -261,7 +262,7 @@ export default function AdminPage() {
   const hasNextLogPage = (logPage + 1) * PAGE_SIZE < logTotal;
 
   return (
-    <View className="screen">
+    <Screen>
       <Text className="eyebrow">RESCENE / ADMIN</Text>
       <Text className="title">管理控制台</Text>
       <Text className="muted">账号、公告与全站操作日志；仅管理员可见。</Text>
@@ -397,6 +398,6 @@ export default function AdminPage() {
 
       {error ? <Text className="error">{error}</Text> : null}
       {notice ? <Text>{notice}</Text> : null}
-    </View>
+    </Screen>
   );
 }

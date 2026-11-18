@@ -1,6 +1,9 @@
+import { Screen } from "../../screen";
+import { AssetThumbnail } from "../../asset-thumbnail";
 import { explainError, isOfflineError, ResceneApiError } from "@rescene/api-client";
+import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, stageLabel } from "@rescene/schemas";
 import type { Asset, Job, JobLog, MemberRole, Profile, ProjectDetail, ProjectMember, ShareSummary, WorkerStatus } from "@rescene/schemas";
-import { Button, Image, Input, Text, View } from "@tarojs/components";
+import { Button, Image, Input, Progress, Text, View } from "@tarojs/components";
 import Taro, { useDidHide, useDidShow, useRouter } from "@tarojs/taro";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -16,16 +19,7 @@ import {
   type ChosenFile,
 } from "../../upload";
 
-const PROFILES: [Profile, string][] = [
-  ["fast", "FAST · 快速预览"],
-  ["balanced", "BALANCED · 推荐"],
-  ["quality", "QUALITY · 精细重建"],
-];
-const PROFILE_HINTS: Record<Profile, string> = {
-  fast: "优先缩短等待时间，适合先确认取景与覆盖；需要更精细的结果时请改用推荐或精细档。",
-  balanced: "日常推荐：在可接受的等待时间内兼顾重建质量与速度，适合多数项目。",
-  quality: "优先重建质量，耗时和资源占用更高；建议在确认素材质量后用于最终交付。",
-};
+const PROFILES: Profile[] = ["fast", "balanced", "quality"];
 const MEMBER_ROLE_LABEL = { owner: "所有者", member: "成员（可写）", viewer: "查看者（只读）" } as const;
 const EFFECTIVE_ROLE_LABEL = { owner: "所有者", admin: "管理员", member: "成员（可写）", viewer: "查看者（只读）" } as const;
 const ACTIVE: Record<string, true> = { QUEUED: true, LEASED: true, RUNNING: true };
@@ -66,6 +60,9 @@ const isVideo = (filename: string) => /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(file
 
 export default function ProjectPage() {
   const router = useRouter();
+  const [showManagement, setShowManagement] = useState(false);
+  const [visibleAssets, setVisibleAssets] = useState(24);
+  const [showLogs, setShowLogs] = useState(false);
   const projectId = router.params.id ?? "";
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [members, setMembers] = useState<ProjectMember[]>([]);
@@ -477,10 +474,14 @@ export default function ProjectPage() {
   }
 
   return (
-    <View className="screen">
-      <Text className="eyebrow">RESCENE / PROJECT</Text>
+    <Screen>
       <Text className="title">{detail?.name ?? "项目"}</Text>
-      <Text className="muted">当前角色：{role ? EFFECTIVE_ROLE_LABEL[role] : "加载中"}</Text>
+      {detail && role ? <View className="project-heading">
+        <Text className="muted">{EFFECTIVE_ROLE_LABEL[role]} · {detail.assets.length} 个素材</Text>
+        <Button className="button ghost compact" aria-expanded={showManagement} onClick={() => setShowManagement((value) => !value)}>
+          {showManagement ? "收起管理" : canManage ? "项目管理" : "查看成员"}
+        </Button>
+      </View> : null}
       {!projectId ? <Text className="error">缺少项目参数，请返回项目列表重新打开。</Text> : null}
       {projectId && !detail && !error ? <Text className="muted">加载中…</Text> : null}
       {error ? <View className="card">
@@ -488,15 +489,13 @@ export default function ProjectPage() {
         <Button className="button ghost" onClick={reload}>重试加载</Button>
       </View> : null}
       {notice ? <Text>{notice}</Text> : null}
-      {role === "viewer" ? <Text className="muted">只读访问：可查看项目、素材、任务与成员；上传、任务操作和成员管理不可用。</Text> : null}
-      {role === "member" ? <Text className="muted">成员权限：可上传素材并创建、取消或重试任务；改名、删除和成员管理仅限 owner/admin。</Text> : null}
-      {canManage ? <View className="card">
+      {showManagement && canManage ? <View className="card">
         <Text className="label">项目名称</Text>
         <Input className="input" value={name} onInput={(event) => setName(event.detail.value)} />
         <Button className="button ghost" onClick={rename}>保存名称</Button>
         <Button className="button ghost" onClick={removeProject}>删除项目</Button>
       </View> : null}
-      <View className="card">
+      {showManagement && detail ? <View className="card">
         <Text className="label">项目成员</Text>
         {members.map((member) => <View className="row" key={member.user_id}>
           <Text>{member.email} · {MEMBER_ROLE_LABEL[member.role]}</Text>
@@ -511,43 +510,68 @@ export default function ProjectPage() {
           <Button className="button ghost" onClick={() => setMemberRole(memberRole === "member" ? "viewer" : "member")}>邀请角色：{MEMBER_ROLE_LABEL[memberRole]}</Button>
           <Button className="button" onClick={addMember}>添加成员</Button>
         </View> : null}
-      </View>
-      <View className="card">
-        <Text className="label">素材</Text>
-        {canWrite ? <Button className="button" disabled={uploading} onClick={upload}>选择图片或视频</Button> : null}
-        <Text className="muted">
-          支持 JPG/PNG 图片与 MP4/MOV/M4V/WebM 视频，每个不超过 {Math.round(MINIAPP_FILE_LIMIT / 1024 / 1024)}MB，每次最多 {MINIAPP_FILE_COUNT} 个；同一任务不能混合图片与视频。
-        </Text>
+      </View> : null}
+      {detail ? <View className="card">
+        <View className="project-heading">
+          <Text className="section-heading">素材</Text>
+          {canWrite ? <Text className="selection-count">已选 {selected.length} 个</Text> : null}
+        </View>
+        {canWrite ? <>
+          <Button className="button" disabled={uploading} onClick={upload}>选择图片或视频</Button>
+          <Text className="muted">每次最多 {MINIAPP_FILE_COUNT} 个，单文件 ≤ {MINIAPP_FILE_LIMIT / 1024 / 1024} MiB。同一任务可选一组 JPG / PNG 或一个视频。</Text>
+        </> : null}
         {uploads.map((item, index) => <View className="row" key={`${item.file.path}-${index}`}>
           <Text>{item.file.name} · {item.status === "failed" ? item.error : `${item.progress}%`}</Text>
           {item.status === "failed" ? <Button className="button ghost" disabled={uploading} onClick={() => void runUploads(uploads, [index])}>重试上传</Button> : null}
         </View>)}
-        {(detail?.assets ?? []).map((asset) => <View className="row" key={asset.id} onClick={() => toggle(asset)}>
-          <Text>{asset.filename}</Text><Text className="muted">{selected.includes(asset.id) ? "已选" : asset.status}</Text>
-          {canWrite ? <Button className="button ghost" size="mini" onClick={(event) => { event.stopPropagation(); void removeAsset(asset); }}>删除</Button> : null}
+        {!detail.assets.length && !uploads.length ? <Text className="muted">暂无素材</Text> : null}
+        {canWrite && detail.assets.length > 0 ? <View className="selection-tools">
+          <Button className="button ghost compact" onClick={() => setSelected(detail.assets.filter((asset) => asset.status === "READY" && /\.(jpe?g|png)$/i.test(asset.filename)).map((asset) => asset.id))}>全选图片</Button>
+          <Button className="button ghost compact" disabled={!selected.length} onClick={() => setSelected([])}>清空选择</Button>
+        </View> : null}
+        {detail.assets.slice(0, visibleAssets).map((asset) => <View className={`row asset-row${selected.includes(asset.id) ? " selected" : ""}`} key={asset.id}>
+          <AssetThumbnail asset={asset} />
+          <View className="asset-choice" role={canWrite ? "checkbox" : undefined} aria-checked={canWrite ? selected.includes(asset.id) : undefined} aria-disabled={!canWrite || asset.status !== "READY"} onClick={() => toggle(asset)}>
+            <Text>{asset.filename}</Text>
+            <Text className="muted">{selected.includes(asset.id) ? "已选" : ASSET_STATUS_LABELS[asset.status]}</Text>
+          </View>
+          {canWrite ? <Button className="button ghost compact danger-action" aria-label={`删除 ${asset.filename}`} onClick={() => void removeAsset(asset)}>删除</Button> : null}
         </View>)}
-      </View>
-      <View className="card">
-        <Text className="label">Worker 状态</Text>
-        <Text>{worker ? (worker.online ? "在线" : "离线") : "未知"}</Text>
-        {worker && !worker.online ? <Text className="muted">Worker 当前离线，新任务会排队等待 Worker 上线后执行。</Text> : null}
-        {(worker?.workers ?? []).map((item) => <Text className="muted" key={item.id}>{item.id} · {item.online ? "在线" : "离线"} · {item.gpu_name ?? "无 GPU 信息"} · {item.last_seen_at ?? "无心跳"}</Text>)}
-        <Button className="button ghost" onClick={loadWorker}>刷新状态</Button>
-      </View>
-      {canWrite ? <View className="card">
-        {PROFILES.map(([value, label]) => <Text className={`row profile ${profile === value ? "active" : ""}`} key={value} onClick={() => setProfile(value)}>{profile === value ? "● " : "○ "}{label}</Text>)}
-        <Text className="muted">{PROFILE_HINTS[profile]}</Text>
-        <Button className="button" disabled={creating || !selected.length} loading={creating} onClick={createJob}>开始重建（{selected.length}）</Button>
+        {detail.assets.length > visibleAssets ? <Button className="button ghost" onClick={() => setVisibleAssets((count) => count + 24)}>加载更多素材（{visibleAssets}/{detail.assets.length}）</Button> : null}
       </View> : null}
-      <View className="card">
-        <Text className="label">任务历史</Text>
-        {jobs.map((item) => <View className="row" key={item.id} onClick={() => setJob(item)}><Text>{item.id} · {item.profile}</Text><Text>{item.status}{job?.id === item.id ? " · 已选" : ""}</Text></View>)}
-        {job ? <View>
-          <Text>{job.status} · {job.profile} · 第 {job.attempt} 次</Text>
-          <Text className="muted">{job.current_stage ?? "等待 Worker"} · {Math.round(job.progress * 100)}%</Text>
-          <Text className="muted">创建：{job.created_at} · 更新：{job.updated_at}</Text>
+      {canWrite ? <View className="card">
+        <Text className="section-heading">重建路线</Text>
+        {PROFILES.map((value) => {
+          const option = RECONSTRUCTION_PROFILES[value];
+          return <Button className={`button route-option${profile === value ? " selected" : ""}`} aria-pressed={profile === value} key={value} onClick={() => setProfile(value)}>
+            <Text className="label">{option.title} · {value.toUpperCase()}</Text>
+            <Text className="muted">{option.description} · 最多 {option.frames} 帧</Text>
+          </Button>;
+        })}
+        <View className="project-heading">
+          <Text className={worker?.online ? "success-state" : "muted"}>
+            {worker ? (worker.online ? "计算节点在线" : "计算节点离线，提交后排队") : "暂无计算节点状态"}
+          </Text>
+          <Button className="button ghost compact" onClick={loadWorker}>刷新</Button>
+        </View>
+        <Button className="button" disabled={creating || !selected.length || uploading} loading={creating} onClick={createJob}>
+          {selected.length ? `开始重建（${selected.length}）` : "开始重建"}
+        </Button>
+        {!selected.length ? <Text className="muted">请先从素材列表选择要重建的文件</Text> : null}
+      </View> : null}
+      {detail ? <View className="card">
+        <Text className="section-heading">重建任务</Text>
+        {jobs.map((item) => <Button className={`button route-option${job?.id === item.id ? " selected" : ""}`} aria-pressed={job?.id === item.id} key={item.id} onClick={() => setJob(item)}>
+          <Text className="label">{RECONSTRUCTION_PROFILES[item.profile].title} · {JOB_STATUS_LABELS[item.status]}</Text>
+          <Text className="muted">{new Date(item.created_at).toLocaleString()} · {item.id.slice(0, 8)}</Text>
+        </Button>)}
+        {job ? <View className="task-detail">
+          <Text className={job.status === "SUCCEEDED" ? "success-state" : job.status === "FAILED" ? "error" : "label"}>{JOB_STATUS_LABELS[job.status]} · 第 {job.attempt} 次</Text>
+          <Text className="muted">{stageLabel(job.current_stage)} · {Math.round(job.progress * 100)}%</Text>
+          <Progress percent={Math.round(job.progress * 100)} strokeWidth={5} borderRadius={6} activeColor="#7c9bff" backgroundColor="#07080c" />
+          <Text className="muted">更新于 {new Date(job.updated_at).toLocaleString()}</Text>
           {timeline.map((row) => <View key={row.key}>
-            <Text className="muted">{row.stage} · {row.status} · {Math.round(row.progress * 100)}%</Text>
+            <Text className="muted">{stageLabel(row.stage)} · {row.status} · {Math.round(row.progress * 100)}%</Text>
             {row.message ? <Text className="muted">{row.message}</Text> : null}
             {Object.keys(row.metrics).length > 0 ? <Text className="muted">{JSON.stringify(row.metrics)}</Text> : null}
           </View>)}
@@ -557,17 +581,21 @@ export default function ProjectPage() {
           {canWrite && (job.status === "FAILED" || job.status === "CANCELLED") ? <Button className="button ghost" disabled={jobBusy} loading={jobBusy} onClick={() => void changeJob("retry")}>重试任务</Button> : null}
           {reconstructionId ? <Button className="button" onClick={() => void Taro.navigateTo({ url: `/pages/viewer/index?id=${encodeURIComponent(reconstructionId)}` })}>打开三维场景</Button> : null}
         </View> : <Text className="muted">暂无任务</Text>}
-      </View>
+      </View> : null}
       {job ? <View className="card">
-        <Text className="label">运行日志</Text>
-        <View className="segmented">
-          {LOG_LEVELS.map(([value, label]) => (
-            <View className={logLevel === value ? "tab active" : "tab"} key={value || "all"} onClick={() => setLogLevel(value)}>{label}</View>
-          ))}
-        </View>
-        <Button className="button ghost" disabled={!logs.length} onClick={() => void loadEarlierLogs()}>加载更早</Button>
-        {logs.length === 0 ? <Text className="muted">暂无运行日志。</Text> : null}
-        {logs.map((row) => <Text className="log" key={row.id}>{row.created_at} · {row.level} · {row.message}</Text>)}
+        <Button className="button ghost" aria-expanded={showLogs} onClick={() => setShowLogs((value) => !value)}>
+          {showLogs ? "收起运行日志" : `查看运行日志（${logs.length}）`}
+        </Button>
+        {showLogs ? <>
+          <View className="segmented">
+            {LOG_LEVELS.map(([value, label]) => (
+              <View className={logLevel === value ? "tab active" : "tab"} key={value || "all"} onClick={() => setLogLevel(value)}>{label}</View>
+            ))}
+          </View>
+          <Button className="button ghost" disabled={!logs.length} onClick={() => void loadEarlierLogs()}>加载更早</Button>
+          {logs.length === 0 ? <Text className="muted">暂无运行日志。</Text> : null}
+          {logs.map((row) => <Text className="log" key={row.id}>{row.created_at} · {row.level} · {row.message}</Text>)}
+        </> : null}
       </View> : null}
       {canWrite && reconstructionId ? <View className="card">
         <Text className="label">分享</Text>
@@ -586,6 +614,6 @@ export default function ProjectPage() {
           {!share.revoked_at ? <Button className="button ghost" onClick={() => void revokeShare(share.id)}>撤销</Button> : null}
         </View>)}
       </View> : null}
-    </View>
+    </Screen>
   );
 }

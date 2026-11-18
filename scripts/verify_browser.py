@@ -185,11 +185,13 @@ def verify(
             print(f"job_id={job_response.value.json()['id']}", flush=True)
             expect(page.locator(".job-head")).to_be_visible(timeout=20000)
         if cancel_running:
-            expect(page.locator(".job-head strong")).to_have_text("RUNNING", timeout=90000)
-            expect(page.locator(".job-head small")).to_have_text(re.compile("^(geometry|training)$"), timeout=90000)
+            expect(page.locator(".job-head strong")).to_have_text("重建中", timeout=90000)
+            expect(page.locator(".job-head small")).to_have_text(
+                re.compile("^(估计相机与几何|训练 3D 场景)$"), timeout=90000
+            )
             capture("06-cancel-running", ".job-head")
             page.get_by_role("button", name="取消任务", exact=True).click()
-            expect(page.locator(".job-head strong")).to_have_text("CANCELLED", timeout=120000)
+            expect(page.locator(".job-head strong")).to_have_text("已取消", timeout=120000)
             expect(page.locator(".result-actions")).to_have_count(0)
             capture("07-cancelled", ".job-head")
             print("running job cancelled and never published", flush=True)
@@ -197,7 +199,7 @@ def verify(
         if submitted:
             capture("03-job-submitted", ".job-head")
         print("browser job submitted", flush=True)
-        expect(page.locator(".job-head strong")).to_have_text("SUCCEEDED", timeout=480000)
+        expect(page.locator(".job-head strong")).to_have_text("已完成", timeout=480000)
         print("browser job succeeded", flush=True)
         page.get_by_role("button", name="打开场景", exact=True).click()
         canvas = page.locator(".viewer canvas")

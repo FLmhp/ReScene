@@ -1,7 +1,7 @@
 {
   "name": "@rescene/miniapp",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "scripts": {
     "dev:weapp": "taro build --type weapp --watch --env development",
     "build:weapp": "taro build --type weapp --env production",
@@ -23,7 +23,8 @@
     "@tarojs/shared": "4.3.2",
     "@tarojs/taro": "4.3.2",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@babel/core": "^7.29.0",

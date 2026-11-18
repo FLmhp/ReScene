@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import jwt
+import oss2
 import pytest
 from fastapi.testclient import TestClient
 
@@ -10,6 +11,58 @@ from rescene_api.config import settings
 from rescene_api.db import SessionLocal
 from rescene_api.main import app
 from rescene_api.models import Asset, JobStage, ProjectMember, Reconstruction, ReconstructionJob, User
+
+
+def test_asset_preview_permissions_and_unavailable_inputs(accounts, project, monkeypatch):
+    from unittest.mock import Mock
+
+    import rescene_api.main as api
+
+    store = Mock()
+    store.signed_preview.return_value = "https://example.test/image-preview"
+    monkeypatch.setattr(api, "storage", lambda: store)
+    with SessionLocal() as db:
+        image = Asset(
+            project_id=project["id"],
+            object_key="image.jpg",
+            filename="image.jpg",
+            size=5,
+            content_type="image/jpeg",
+            status="READY",
+        )
+        pending = Asset(
+            project_id=project["id"],
+            object_key="pending.jpg",
+            filename="pending.jpg",
+            size=5,
+            content_type="image/jpeg",
+            status="UPLOADING",
+        )
+        video = Asset(
+            project_id=project["id"],
+            object_key="video.mp4",
+            filename="video.mp4",
+            size=5,
+            content_type="video/mp4",
+            status="READY",
+        )
+        db.add_all([image, pending, video])
+        db.commit()
+        ids = image.id, pending.id, video.id
+    with TestClient(app) as client:
+        route = f"/v1/assets/{ids[0]}/preview"
+        assert client.get(route).status_code == 401
+        assert client.get(route, headers=accounts["outsider"]["headers"]).status_code == 403
+        store.signed_preview.assert_not_called()
+        for actor in ("owner", "member", "viewer", "admin"):
+            response = client.get(route, headers=accounts[actor]["headers"])
+            assert response.status_code == 200
+            assert response.json()["url"] == "https://example.test/image-preview"
+        for asset_id in ids[1:]:
+            assert client.get(f"/v1/assets/{asset_id}/preview", headers=accounts["owner"]["headers"]).status_code == 409
+        assert client.get("/v1/assets/missing/preview", headers=accounts["owner"]["headers"]).status_code == 404
+        store.signed_preview.side_effect = oss2.exceptions.NoSuchKey(404, {}, b"", {})
+        assert client.get(route, headers=accounts["owner"]["headers"]).status_code == 503
 
 
 @pytest.fixture

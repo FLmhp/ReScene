@@ -1,5 +1,6 @@
+import { Screen } from "../../screen";
 import { Button, Text, View, WebView } from "@tarojs/components";
-import { useRouter, useShareAppMessage } from "@tarojs/taro";
+import Taro, { useRouter, useShareAppMessage } from "@tarojs/taro";
 import { useState } from "react";
 
 import { webBaseUrl } from "../../api";
@@ -39,26 +40,27 @@ export default function ViewerPage() {
   }
 
   return (
-    <View className="screen">
+    <Screen>
       <Text className="title">三维场景</Text>
       {!validRoute ? (
         <Text className="error">场景链接无效。请从项目重新打开，或使用有效的分享链接。</Text>
       ) : !validBase ? (
         <Text className="error">查看器地址未配置为有效的 HTTPS 地址，请联系管理员。</Text>
       ) : (
-        <>
-          <Text className="muted">场景将在小程序内的网页中打开。小程序需要在后台配置查看器业务域名，且设备和网络须支持 WebGL。</Text>
+        <View className="card">
+          <Text className="section-heading">在浏览器查看</Text>
           {share ? (
             <Text className="muted">分享无需登录；链接失效或被撤销时，请联系分享者重新获取。</Text>
           ) : (
-            <Text className="muted">网页使用独立登录，请使用已有账户登录；登录过期后需重新登录。场景加载失败时可在网页中重试。</Text>
+            <Text className="muted">复制链接到手机浏览器，用 ReScene 账号登录后查看场景。</Text>
           )}
-          {failed ? <Text className="error">网页打开失败。请检查网络、HTTPS 和小程序业务域名配置后重试。</Text> : null}
-          <Button className="button" onClick={() => { setFailed(false); setOpen(true); }}>
-            {failed ? "重试打开" : "打开场景"}
+          <Button className="button" onClick={() => void Taro.setClipboardData({ data: src }).catch(() => Taro.showToast({ title: "复制失败", icon: "none" }))}>
+            复制查看链接
           </Button>
-        </>
+          {failed ? <Text className="error">小程序内打开失败，请复制链接到浏览器。</Text> : null}
+          <Button className="button ghost" onClick={() => { setFailed(false); setOpen(true); }}>在小程序内打开</Button>
+        </View>
       )}
-    </View>
+    </Screen>
   );
 }

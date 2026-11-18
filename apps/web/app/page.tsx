@@ -2,7 +2,8 @@
 
 import { ResceneClient } from "@rescene/api-client";
 import { createWebUploader } from "@rescene/uploader/web";
-import { Viewer } from "@rescene/viewer";
+import dynamic from "next/dynamic";
+const Viewer = dynamic(() => import("@rescene/viewer").then((module) => module.Viewer), { ssr: false });
 import { Workbench, type KeyValueStore } from "@rescene/workbench";
 import { useState } from "react";
 

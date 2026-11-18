@@ -1,6 +1,7 @@
 "use client";
 
 import { ResceneApiError, explainError, type JobEvent, type ResceneClient } from "@rescene/api-client";
+import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, stageLabel } from "@rescene/schemas";
 import type {
   AppNotification,
   Artifact,
@@ -23,6 +24,9 @@ import { type ComponentType, type FormEvent, useCallback, useEffect, useMemo, us
 
 import { AdminConsole } from "./AdminConsole";
 import { BrandMark } from "./BrandMark";
+import { ThemeControl } from "./ThemeControl";
+import { AssetPreview } from "./AssetPreview";
+import { ProjectCard } from "./ProjectCard";
 
 export type KeyValueStore = { get(key: string): string | null; set(key: string, value: string): void; remove(key: string): void };
 export type WorkbenchViewerProps = { src: string; artifactKind?: string; reconstructionId?: string; sha256?: string; size?: number; onStatus?: (status: "loading" | "ready" | "error", detail?: string) => void; onRetry?: () => void };
@@ -33,7 +37,7 @@ const PROJECT_KEY = "rescene-project";
 const JOB_KEY = "rescene-job";
 const ACTIVE: Record<string, boolean> = { QUEUED: true, LEASED: true, RUNNING: true };
 const VIDEO_FILE = /\.(mp4|mov|mkv|avi|webm|m4v)$/i;
-const PROFILES: [Profile, string, string][] = [["fast", "FAST", "快速预览 · 7k"], ["balanced", "BALANCED", "推荐 · BA + 20k"], ["quality", "QUALITY", "COLMAP · 精细重建"]];
+const PROFILES: Profile[] = ["fast", "balanced", "quality"];
 const NOTIFY_PAGE_SIZE = 20;
 type UploadItem = { name: string; progress: number; status: string; file?: File; projectId?: string; retryable?: boolean };
 type TimelineRow = { key: string; stage: string; status: string; progress: number; message?: string | null; metrics: Record<string, unknown> };
@@ -73,6 +77,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [createdShareToken, setCreatedShareToken] = useState("");
   const [sharePreset, setSharePreset] = useState<SharePreset>("7d");
   const [message, setMessage] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [timeline, setTimeline] = useState<TimelineRow[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -425,6 +430,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
 
   if (!token) return (
     <main className="login-shell">
+      <div className="login-appearance"><ThemeControl /></div>
       <section className="login-hero">
         <div className="mark"><BrandMark size={30} /></div>
         <p className="eyebrow">RESCENE / SPATIAL RECONSTRUCTION</p>
@@ -440,13 +446,14 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
         {authMode === "login" ? (
           <form onSubmit={login}>
             <label>团队邮箱<input name="email" type="email" required autoComplete="email" /></label>
-            <label>密码<input name="password" type="password" required autoComplete="current-password" /></label>
+            <label>密码<input name="password" type={showPassword ? "text" : "password"} required autoComplete="current-password" /></label>
+            <label className="password-toggle"><input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />显示密码</label>
             <button type="submit">进入工作台</button>
           </form>
         ) : (
           <form onSubmit={register}>
             <label>团队邮箱<input name="email" type="email" required autoComplete="email" /></label>
-            <label>密码（至少 12 位）<input name="password" type="password" required minLength={12} autoComplete="new-password" /></label>
+            <label>密码（至少 12 位）<input name="password" type={showPassword ? "text" : "password"} required minLength={12} autoComplete="new-password" /></label>
             <label>确认密码<input name="confirm" type="password" required minLength={12} autoComplete="new-password" /></label>
             <button type="submit">创建账号</button>
           </form>
@@ -467,6 +474,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       </header>
       <button className="nav-backdrop" type="button" aria-label="关闭导航" onClick={() => setNavOpen(false)} />
       <aside>
+        <ThemeControl />
         <div className="brand">
           <span className="mark"><BrandMark size={22} /></span>
           <strong>ReScene</strong>
@@ -526,7 +534,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
             <summary>创建账号</summary>
             <form onSubmit={(event) => { event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); runAction(async () => { await client.createUser(String(data.get("email")), String(data.get("password")), data.get("admin") === "on"); form.reset(); setMessage("账号已创建"); }); }}>
               <label>邮箱<input name="email" type="email" required /></label>
-              <label>初始密码（至少 12 位）<input name="password" type="password" minLength={12} required /></label>
+              <label>初始密码（至少 12 位）<input name="password" type={showPassword ? "text" : "password"} minLength={12} required /></label>
               <label><input name="admin" type="checkbox" />管理员</label>
               <button>创建账号</button>
             </form>
@@ -557,16 +565,23 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
               ) : !loaded ? (
                 <div className="empty"><span>…</span><h2>正在加载工作台…</h2></div>
               ) : (
-                <div className="empty"><span>01</span><h2>选择或创建一个项目</h2><p>上传环绕目标拍摄的图片或视频，选择算法路线后开始重建。</p></div>
+                <section className="project-library">
+                  <header><div><p className="eyebrow">工作空间</p><h1>我的项目</h1></div><span className="muted">{projects.length} 个项目</span></header>
+                  <p className="muted">把拍摄素材整理成项目，重建并分享你的三维场景。</p>
+                  {projects.length === 0 ? <div className="empty"><h2>开始第一个项目</h2><p>在导航中输入项目名称，再上传围绕目标拍摄的照片或视频。</p></div> : null}
+                  <div className="project-gallery">
+                    {projects.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((project) => <ProjectCard key={project.id} client={client} project={project} onOpen={() => selectProject(project.id)} />)}
+                  </div>
+                </section>
               )
             ) : (
               <>
-                <header>
+                <header className="project-header">
                   <div>
-                    <p className="eyebrow">PROJECT / {detail.id.slice(0, 8)} · {detail.effective_role}</p>
+                    <button className="back-link" type="button" onClick={() => selectProject("")}>← 所有项目</button>
                     <h1>{detail.name}</h1>
                   </div>
-                  <div className="count">{detail.assets.length}<small>个素材</small></div>
+                  <p className="project-summary">{detail.assets.length} 个素材 · {detail.jobs.length} 个任务</p>
                 </header>
                 {!canWrite && <p>只读访问：您可以查看素材、任务和结果。</p>}
                 {canManage && (
@@ -628,12 +643,18 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                 </details>
                 <div className="grid">
                   <section className="panel upload-panel">
-                    <div className="panel-title"><span>01</span><h2>素材</h2></div>
+                    <div className="panel-title"><h2>素材</h2>{canWrite && <small>已选 {selectedAssets.length} 个</small>}</div>
+                    {canWrite && detail.assets.length > 0 ? <div className="selection-tools">
+                      <button type="button" onClick={() => setSelectedAssets(detail.assets.filter((item) => item.status === "READY" && /\.(jpg|jpeg|png)$/i.test(item.filename)).map((item) => item.id))}>全选图片</button>
+                      <button type="button" disabled={!selectedAssets.length} onClick={() => setSelectedAssets([])}>清空选择</button>
+                      <span>{(detail.assets.filter((item) => selectedAssets.includes(item.id)).reduce((sum, item) => sum + item.size, 0) / 1024 ** 2).toFixed(1)} MiB</span>
+                    </div> : null}
                     {canWrite && (
                       <label className="dropzone">
                         <input type="file" multiple accept=".jpg,.jpeg,.png,.mp4,.mov,.mkv,.avi,.webm,.m4v" disabled={uploading} onChange={(event) => { void upload(event.target.files); event.currentTarget.value = ""; }} />
                         <strong>{uploading ? "上传中" : "选择图片或视频"}</strong>
-                        <small>JPG · PNG · MP4 · MOV · MKV · AVI · WEBM · M4V / 单文件 ≤5 GiB，任务合计 ≤8 GiB / 浏览器直传 OSS</small>
+                        <small>一组 JPG / PNG 图片或一个视频</small>
+                        <small>单文件 ≤ 5 GiB，单任务 ≤ 8 GiB</small>
                       </label>
                     )}
                     {uploads.map((item, index) => (
@@ -642,36 +663,49 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                         {item.retryable ? <button disabled={uploading} onClick={() => runAction(() => retryUpload(index))}>重试上传</button> : null}
                       </p>
                     ))}
+                    {detail.assets.length === 0 ? <p className="muted">暂无素材</p> : null}
                     <div className="assets">
                       {detail.assets.map((assetRow) => (
-                        <label key={assetRow.id}>
-                          <input type="checkbox" disabled={!canWrite || assetRow.status !== "READY"} checked={selectedAssets.includes(assetRow.id)} onChange={() => setSelectedAssets((items) => items.includes(assetRow.id) ? items.filter((id) => id !== assetRow.id) : [...items, assetRow.id])} />
-                          <span>{assetRow.filename}</span>
-                          <small>{(assetRow.size / 1024 / 1024).toFixed(1)} MB · {assetRow.status}</small>
-                          <button type="button" aria-label={`删除 ${assetRow.filename}`} disabled={!canWrite || uploading} onClick={() => { if (!window.confirm(`删除素材「${assetRow.filename}」？`)) return; runAction(async () => { await client.deleteAsset(assetRow.id); setSelectedAssets((ids) => ids.filter((id) => id !== assetRow.id)); await refresh(); setMessage("素材已删除"); }); }}>删除</button>
-                        </label>
+                        <div className="asset-row" key={assetRow.id}>
+                          <AssetPreview client={client} id={assetRow.id} filename={assetRow.filename} ready={assetRow.status === "READY"} />
+                          <label>
+                            <input type="checkbox" disabled={!canWrite || assetRow.status !== "READY"} checked={selectedAssets.includes(assetRow.id)} onChange={() => setSelectedAssets((items) => items.includes(assetRow.id) ? items.filter((id) => id !== assetRow.id) : [...items, assetRow.id])} />
+                            <span title={assetRow.filename}>{assetRow.filename}</span>
+                            <small>{(assetRow.size / 1024 / 1024).toFixed(1)} MiB · {ASSET_STATUS_LABELS[assetRow.status]}</small>
+                          </label>
+                          {canWrite && <button type="button" aria-label={`删除 ${assetRow.filename}`} disabled={uploading} onClick={() => { if (!window.confirm(`删除素材「${assetRow.filename}」？`)) return; runAction(async () => { await client.deleteAsset(assetRow.id); setSelectedAssets((ids) => ids.filter((id) => id !== assetRow.id)); await refresh(); setMessage("素材已删除"); }); }}>删除</button>}
+                        </div>
                       ))}
                     </div>
                   </section>
                   <section className="panel route-panel">
-                    <div className="panel-title"><span>02</span><h2>路线</h2></div>
-                    <div className="profiles">
-                      {PROFILES.map(([value, title, note]) => (
-                        <button disabled={!canWrite} className={profile === value ? "active" : ""} key={value} onClick={() => setProfile(value)}><strong>{title}</strong><small>{note}</small></button>
-                      ))}
+                    <div className="panel-title"><h2>重建路线</h2></div>
+                    <div className="profiles" role="group" aria-label="重建路线">
+                      {PROFILES.map((value) => {
+                        const option = RECONSTRUCTION_PROFILES[value];
+                        return (
+                          <button type="button" disabled={!canWrite} aria-pressed={profile === value} className={profile === value ? "active" : ""} key={value} onClick={() => setProfile(value)}>
+                            <strong>{option.title}</strong><span>{value.toUpperCase()} · ≤ {option.frames} 帧</span>
+                            <small>{option.description}</small>
+                          </button>
+                        );
+                      })}
                     </div>
-                    {canWrite && <button className="primary" disabled={creating || uploading} onClick={() => runAction(createJob)}>{creating ? "正在创建…" : "开始三维重建"}</button>}
+                    {canWrite && <>
+                      <button className="primary" disabled={creating || uploading || !selectedAssets.length} onClick={() => runAction(createJob)}>{creating ? "正在创建…" : "开始三维重建"}</button>
+                      <p className="muted route-note">{selectedAssets.length ? `已选 ${selectedAssets.length} 个素材` : "在素材列表中勾选要重建的文件"}{workerStatus && !online ? " · 计算节点离线，提交后排队" : ""}</p>
+                    </>}
                   </section>
                   <section className="panel status-panel">
-                    <div className="panel-title"><span>03</span><h2>任务</h2></div>
+                    <div className="panel-title"><h2>重建任务</h2></div>
                     {detail.jobs.length > 0 && (
-                      <label>任务记录<select value={latest?.id ?? ""} onChange={(event) => selectJob(event.target.value)}>{detail.jobs.map((job) => <option key={job.id} value={job.id}>{job.profile.toUpperCase()} · {job.status} · {job.id.slice(0, 8)}</option>)}</select></label>
+                      <label>任务记录<select value={latest?.id ?? ""} onChange={(event) => selectJob(event.target.value)}>{detail.jobs.map((job) => <option key={job.id} value={job.id}>{RECONSTRUCTION_PROFILES[job.profile].title} · {JOB_STATUS_LABELS[job.status]} · {job.id.slice(0, 8)}</option>)}</select></label>
                     )}
                     {latest ? (
                       <>
-                        <div className="job-head"><strong>{latest.status}{latest.cancel_requested ? " · 已请求取消" : ""}</strong><small>{latest.current_stage ?? "等待 Worker"}</small></div>
+                        <div className="job-head"><strong className="job-state" data-status={latest.status}>{JOB_STATUS_LABELS[latest.status]}{latest.cancel_requested ? " · 已请求取消" : ""}</strong><small>{stageLabel(latest.current_stage)}</small></div>
                         <div className="bar" role="progressbar" aria-label="任务进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(latest.progress * 100)}><i style={{ width: `${Math.round(latest.progress * 100)}%` }} /></div>
-                        <p>{Math.round(latest.progress * 100)}% · {latest.profile.toUpperCase()} · 第 {latest.attempt} 次尝试</p>
+                        <p>{Math.round(latest.progress * 100)}% · {RECONSTRUCTION_PROFILES[latest.profile].title}{latest.attempt > 0 ? ` · 第 ${latest.attempt} 次尝试` : ""}</p>
                         {latest.status === "QUEUED" ? <p className="muted">{online ? "已排队，等待 Worker 领取任务。" : "已排队：Worker 当前离线，任务会保留到 Worker 上线。"}</p> : null}
                         {latest.error_message && <p className="error">{latest.error_code} {latest.error_message}</p>}
                         {timeline.length > 0 && (
@@ -679,7 +713,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                             <summary>阶段记录</summary>
                             <ol className="timeline">
                               {timeline.map((row) => (
-                                <li key={row.key}><strong>{row.stage}</strong><small>{row.status} · {Math.round(row.progress * 100)}%{row.message ? ` · ${row.message}` : ""}</small>{Object.keys(row.metrics).length > 0 && <code>{JSON.stringify(row.metrics)}</code>}</li>
+                                <li key={row.key}><strong>{stageLabel(row.stage)}</strong><small>{row.status} · {Math.round(row.progress * 100)}%{row.message ? ` · ${row.message}` : ""}</small>{Object.keys(row.metrics).length > 0 && <code>{JSON.stringify(row.metrics)}</code>}</li>
                               ))}
                             </ol>
                           </details>
@@ -696,8 +730,8 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                           )}
                           {logs.length > 0 && <button onClick={() => runAction(loadEarlierLogs)}>加载更早</button>}
                         </details>
-                        {canWrite && ACTIVE[latest.status] && <button disabled={latest.cancel_requested} onClick={() => runAction(async () => { setLiveJob(await client.cancelJob(latest.id)); await refresh(); })}>取消任务</button>}
-                        {canWrite && (latest.status === "FAILED" || latest.status === "CANCELLED") && <button onClick={() => runAction(async () => { setLiveJob(await client.retryJob(latest.id)); await refresh(); })}>重试任务</button>}
+                        {canWrite && ACTIVE[latest.status] && <button className="task-action" disabled={latest.cancel_requested} onClick={() => runAction(async () => { setLiveJob(await client.cancelJob(latest.id)); await refresh(); })}>取消任务</button>}
+                        {canWrite && (latest.status === "FAILED" || latest.status === "CANCELLED") && <button className="task-action" onClick={() => runAction(async () => { setLiveJob(await client.retryJob(latest.id)); await refresh(); })}>重试任务</button>}
                         {reconstructionId && (
                           <div className="result-actions">
                             <button className="primary" onClick={() => runAction(() => openScene(reconstructionId))}>打开场景</button>

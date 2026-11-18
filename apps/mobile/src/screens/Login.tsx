@@ -3,11 +3,12 @@ import { useState } from "react";
 import { Text } from "react-native";
 
 import { client, persistSession } from "../api";
-import { Button, Card, ErrorText, Field, Screen, Segmented, textStyles } from "../ui";
+import { Button, Card, ErrorText, Field, Screen, Segmented, useTextStyles } from "../ui";
 
 const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 export function LoginScreen({ onSignedIn, notice }: { onSignedIn: () => void; notice?: string }) {
+  const textStyles = useTextStyles();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

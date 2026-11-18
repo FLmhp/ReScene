@@ -5,7 +5,7 @@
   min-width: 240px;
   min-height: 320px;
   overflow: hidden;
-  background: var(--bg, #111318);
+  background: #111318;
 }
 
 .viewer-shell:fullscreen { width: 100vw; height: 100vh; }

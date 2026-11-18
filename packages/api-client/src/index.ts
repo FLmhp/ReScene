@@ -14,6 +14,7 @@ import {
   AnnouncementSchema,
   ApiErrorSchema,
   ArtifactSchema,
+  AssetPreviewSchema,
   AuditPageSchema,
   AuthTokenSchema,
   CompleteAssetSchema,
@@ -323,6 +324,10 @@ export class ResceneClient {
 
   async listMembers(projectId: string): Promise<ProjectMember[]> {
     return this.send(`/v1/projects/${encodeURIComponent(projectId)}/members`, ProjectMemberSchema.array());
+  }
+
+  async getAssetPreview(assetId: string): Promise<{ url: string; expires_at: string }> {
+    return this.send(`/v1/assets/${encodeURIComponent(assetId)}/preview`, AssetPreviewSchema);
   }
 
   async addMember(projectId: string, email: string, role: MemberRole): Promise<AddMemberResult> {

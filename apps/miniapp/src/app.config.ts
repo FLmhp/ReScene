@@ -1,5 +1,6 @@
 export default defineAppConfig({
   pages: ["pages/index/index", "pages/project/index", "pages/viewer/index", "pages/admin/index"],
+  darkmode: true,
   lazyCodeLoading: "requiredComponents",
   window: {
     navigationBarTitleText: "ReScene",

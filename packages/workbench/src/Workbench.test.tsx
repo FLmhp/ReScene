@@ -1,7 +1,7 @@
 import { ResceneClient } from "@rescene/api-client";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { KeyValueStore } from "./Workbench";
 import { Workbench } from "./Workbench";
@@ -102,6 +102,10 @@ function renderWorkbench(client = new ResceneClient("https://api.example"), stor
   return store;
 }
 
+beforeEach(() => {
+  localStorage.clear();
+  vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
+});
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -123,7 +127,7 @@ describe("session gate", () => {
     await userEvent.click(screen.getByText("创建账号"));
 
     await waitFor(() => expect(store.data.get("rescene-token")).toBe("token-2"));
-    await waitFor(() => expect(screen.getByText(/Kitchen/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "项目" }).querySelector("button")).toBeTruthy());
   });
 
   it("stores the access token and shows the signed-in account", async () => {
@@ -137,7 +141,7 @@ describe("session gate", () => {
     await userEvent.click(screen.getByText("进入工作台"));
 
     await waitFor(() => expect(store.data.get("rescene-token")).toBe("token-1"));
-    await waitFor(() => expect(screen.getByText(/Kitchen/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "项目" }).querySelector("button")).toBeTruthy());
     expect(screen.getByText(/ops@example\.com/)).toBeTruthy();
     expect(screen.getByText(/RTX 5090 在线/)).toBeTruthy();
   });
@@ -149,12 +153,18 @@ describe("project roles", () => {
 
     renderWorkbench(new ResceneClient("https://api.example", "token-1"));
 
-    await waitFor(() => expect(screen.getByText(/Kitchen/)).toBeTruthy());
-    await userEvent.click(screen.getByText(/Kitchen/));
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "项目" }).querySelector("button")).toBeTruthy());
+    await userEvent.click(screen.getByRole("button", { name: /Kitchen ·/ }));
 
     await waitFor(() => expect(screen.getByText("项目设置")).toBeTruthy());
     expect(screen.getByText("选择图片或视频")).toBeTruthy();
-    expect(screen.getByText("开始三维重建")).toBeTruthy();
+    const start = screen.getByRole<HTMLButtonElement>("button", { name: "开始三维重建" });
+    expect(start.disabled).toBe(true);
+    await userEvent.click(screen.getByRole("checkbox", { name: /frame\.jpg/ }));
+    expect(start.disabled).toBe(false);
+    const quality = screen.getByRole("button", { name: /精细重建/ });
+    await userEvent.click(quality);
+    expect(quality.getAttribute("aria-pressed")).toBe("true");
     await waitFor(() => expect(screen.getByLabelText("teammate@example.com 的角色")).toBeTruthy());
     expect(screen.getByText("owner")).toBeTruthy();
   });
@@ -169,8 +179,8 @@ describe("project roles", () => {
 
     renderWorkbench(new ResceneClient("https://api.example", "token-1"));
 
-    await waitFor(() => expect(screen.getByText(/Kitchen/)).toBeTruthy());
-    await userEvent.click(screen.getByText(/Kitchen/));
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "项目" }).querySelector("button")).toBeTruthy());
+    await userEvent.click(screen.getByRole("button", { name: /Kitchen ·/ }));
 
     await waitFor(() => expect(screen.getByText(/只读访问/)).toBeTruthy());
     expect(screen.queryByText("开始三维重建")).toBeNull();
@@ -226,8 +236,8 @@ describe("collaboration surfaces", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
 
     renderWorkbench(new ResceneClient("https://api.example", "token-1"));
-    await waitFor(() => expect(screen.getByText(/Kitchen/)).toBeTruthy());
-    await userEvent.click(screen.getByText(/Kitchen/));
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "项目" }).querySelector("button")).toBeTruthy());
+    await userEvent.click(screen.getByRole("button", { name: /Kitchen ·/ }));
     await waitFor(() => expect(screen.getByLabelText("删除 frame.jpg")).toBeTruthy());
     await userEvent.click(screen.getByLabelText("删除 frame.jpg"));
 
@@ -243,7 +253,7 @@ describe("collaboration surfaces", () => {
     stubFetch(routeTable({ "/v1/auth/password": { access_token: "token-3", token_type: "bearer" } }));
 
     const store = renderWorkbench(new ResceneClient("https://api.example", "token-1"));
-    await waitFor(() => expect(screen.getByText(/Kitchen/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "项目" }).querySelector("button")).toBeTruthy());
 
     await userEvent.type(screen.getByLabelText("当前密码"), "correct-horse");
     await userEvent.type(screen.getByLabelText("新密码（至少 12 位）"), "correct-horse-2");
@@ -268,8 +278,8 @@ describe("collaboration surfaces", () => {
     );
 
     renderWorkbench(new ResceneClient("https://api.example", "token-1"));
-    await waitFor(() => expect(screen.getByText(/Kitchen/)).toBeTruthy());
-    await userEvent.click(screen.getByText(/Kitchen/));
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "项目" }).querySelector("button")).toBeTruthy());
+    await userEvent.click(screen.getByRole("button", { name: /Kitchen ·/ }));
     await userEvent.type(screen.getByLabelText("成员邮箱"), "guest@example.com");
     await userEvent.click(screen.getByText("添加成员"));
 
@@ -415,10 +425,24 @@ describe("management console", () => {
     stubFetch(routeTable());
 
     renderWorkbench(new ResceneClient("https://api.example", "token-1"));
-    await waitFor(() => expect(screen.getByText(/Kitchen/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "项目" }).querySelector("button")).toBeTruthy());
 
     expect(document.querySelector("main.shell")?.className).not.toContain("nav-open");
     await userEvent.click(screen.getByRole("button", { name: "打开导航" }));
     expect(document.querySelector("main.shell")?.className).toContain("nav-open");
+  });
+});
+
+describe("appearance", () => {
+  it("persists an explicit theme without discarding the login form", async () => {
+    stubFetch(routeTable());
+    renderWorkbench();
+    await userEvent.type(screen.getByLabelText("团队邮箱"), "retained@example.com");
+    await userEvent.selectOptions(screen.getByLabelText("外观主题"), "dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(localStorage.getItem("rescene-theme")).toBe("dark");
+    expect((screen.getByLabelText("团队邮箱") as HTMLInputElement).value).toBe("retained@example.com");
+    await userEvent.selectOptions(screen.getByLabelText("外观主题"), "light");
+    expect(document.documentElement.dataset.theme).toBe("light");
   });
 });

@@ -1,31 +1,108 @@
+@font-face { font-family: Inter; src: url("../assets/InterVariable.woff2") format("woff2"); font-style: normal; font-weight: 100 900; font-display: swap; }
+/* Palette values mirror tokens.ts. */
 :root {
+  color-scheme: light;
+  --bg: #F3F5F9;
+  --bg-deep: #E9EDF4;
+  --bg-soft: #F8FAFC;
+  --panel: #FFFFFF;
+  --panel-alt: #F5F7FB;
+  --surface: #FFFFFF;
+  --surface-strong: #EAF0FE;
+  --border: #7C889C;
+  --border-soft: #D5DCE8;
+  --divider: #E3E8F0;
+  --fg: #17243A;
+  --muted: #526178;
+  --accent: #2859C5;
+  --accent-strong: #2859C5;
+  --accent-alt: #6354C7;
+  --on-accent: #FFFFFF;
+  --danger: #B4233C;
+  --success: #146C43;
+  --overlay: rgba(20, 32, 52, 0.45);
+  --gradient-accent: #2859C5;
+  --shadow-panel: 0 12px 36px rgba(20,32,52,0.07);
+  --glow-accent: 0 0 0 3px rgba(40,89,197,0.16);
+}
+@media (prefers-color-scheme: dark) {
+:root:not([data-theme]) {
   color-scheme: dark;
-
-  /* Mirrors tokens.ts — keep both files in lockstep. */
-  --bg: #0b0d12;
-  --bg-deep: #07080c;
-  --bg-soft: #0f1219;
-  --panel: #151a23;
-  --panel-alt: #0f131a;
+  --bg: #0B0D12;
+  --bg-deep: #07080C;
+  --bg-soft: #0F1219;
+  --panel: #151A23;
+  --panel-alt: #0F131A;
   --surface: rgba(255, 255, 255, 0.055);
   --surface-strong: rgba(255, 255, 255, 0.09);
-  --border: #5a6274;
+  --border: #5A6274;
   --border-soft: rgba(255, 255, 255, 0.14);
   --divider: rgba(255, 255, 255, 0.08);
-  --fg: #f2f4f8;
-  --muted: #b9c0ce;
-  --accent: #8aa4ff;
-  --accent-strong: #7c9bff;
-  --accent-alt: #a78bfa;
-  --on-accent: #080a10;
-  --danger: #ff9ea3;
-  --success: #7fe3b0;
+  --fg: #F2F4F8;
+  --muted: #B9C0CE;
+  --accent: #8AA4FF;
+  --accent-strong: #7C9BFF;
+  --accent-alt: #A78BFA;
+  --on-accent: #080A10;
+  --danger: #FF9EA3;
+  --success: #7FE3B0;
   --overlay: rgba(7, 8, 12, 0.78);
-
-  --gradient-accent: linear-gradient(135deg, #7c9bff 0%, #a78bfa 100%);
-  --shadow-panel: 0 28px 90px rgba(0, 0, 0, 0.55);
-  --glow-accent: 0 0 0 3px rgba(124, 155, 255, 0.28);
-
+  --gradient-accent: #7C9BFF;
+  --shadow-panel: 0 12px 36px rgba(0,0,0,0.18);
+  --glow-accent: 0 0 0 3px rgba(124,155,255,0.22);
+}
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0B0D12;
+  --bg-deep: #07080C;
+  --bg-soft: #0F1219;
+  --panel: #151A23;
+  --panel-alt: #0F131A;
+  --surface: rgba(255, 255, 255, 0.055);
+  --surface-strong: rgba(255, 255, 255, 0.09);
+  --border: #5A6274;
+  --border-soft: rgba(255, 255, 255, 0.14);
+  --divider: rgba(255, 255, 255, 0.08);
+  --fg: #F2F4F8;
+  --muted: #B9C0CE;
+  --accent: #8AA4FF;
+  --accent-strong: #7C9BFF;
+  --accent-alt: #A78BFA;
+  --on-accent: #080A10;
+  --danger: #FF9EA3;
+  --success: #7FE3B0;
+  --overlay: rgba(7, 8, 12, 0.78);
+  --gradient-accent: #7C9BFF;
+  --shadow-panel: 0 12px 36px rgba(0,0,0,0.18);
+  --glow-accent: 0 0 0 3px rgba(124,155,255,0.22);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #F3F5F9;
+  --bg-deep: #E9EDF4;
+  --bg-soft: #F8FAFC;
+  --panel: #FFFFFF;
+  --panel-alt: #F5F7FB;
+  --surface: #FFFFFF;
+  --surface-strong: #EAF0FE;
+  --border: #7C889C;
+  --border-soft: #D5DCE8;
+  --divider: #E3E8F0;
+  --fg: #17243A;
+  --muted: #526178;
+  --accent: #2859C5;
+  --accent-strong: #2859C5;
+  --accent-alt: #6354C7;
+  --on-accent: #FFFFFF;
+  --danger: #B4233C;
+  --success: #146C43;
+  --overlay: rgba(20, 32, 52, 0.45);
+  --gradient-accent: #2859C5;
+  --shadow-panel: 0 12px 36px rgba(20,32,52,0.07);
+  --glow-accent: 0 0 0 3px rgba(40,89,197,0.16);
+}
+:root {
   --space-xs: 4px;
   --space-sm: 7px;
   --space-md: 14px;

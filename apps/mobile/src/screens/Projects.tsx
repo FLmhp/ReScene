@@ -5,8 +5,8 @@ import { AppState, Pressable, Text, View } from "react-native";
 
 import { client, persistSession } from "../api";
 import { enqueue, replayQueued } from "../queue";
-import { theme } from "../theme";
-import { Button, Card, ErrorText, Field, Screen, textStyles } from "../ui";
+import { useAppearance } from "../appearance";
+import { Button, Card, ErrorText, Field, Screen, useTextStyles } from "../ui";
 
 export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
   onOpen: (project: { id: string; name: string }) => void;
@@ -14,6 +14,9 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
   onAdmin: () => void;
   onJob?: (jobId: string) => void;
 }) {
+  const { theme } = useAppearance();
+  const textStyles = useTextStyles();
+  const [panel, setPanel] = useState<"notifications" | "account" | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [me, setMe] = useState<User | null>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -141,8 +144,13 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
 
   const visible = projects.filter((project) => project.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   return (
-    <Screen scroll title="项目">
-      <Card>
+    <Screen scroll title="我的项目">
+      <Text style={textStyles.muted}>把拍摄素材整理成项目，重建并分享三维场景。</Text>
+      <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+        <Button tone="ghost" label={`通知（${unread}）`} onPress={() => setPanel(panel === "notifications" ? null : "notifications")} />
+        <Button tone="ghost" label="账户设置" onPress={() => setPanel(panel === "account" ? null : "account")} />
+      </View>
+      {panel === "notifications" ? <Card>
         <Text style={textStyles.body}>通知（{unread}）</Text>
         <Button disabled={busy || (notifications.length === 0 && unread === 0)} label="全部已读" tone="ghost" onPress={() => void markAllRead()} />
         {notifications.length === 0 ? <Text style={textStyles.muted}>暂无未读通知。</Text> : notifications.map((item) => (
@@ -157,7 +165,7 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
             <Text style={textStyles.muted}>{new Date(item.created_at).toLocaleString()}</Text>
           </Pressable>
         ))}
-      </Card>
+      </Card> : null}
       <Card>
         <Text style={textStyles.body}>{me ? `${me.email} · ${me.is_admin ? "管理员" : "成员"}` : "正在加载账户…"}</Text>
         <Field label="搜索项目" value={search} onChangeText={setSearch} placeholder="按名称筛选" />
@@ -176,20 +184,20 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
           accessibilityRole="button"
           key={item.id}
           onPress={() => onOpen(item)}
-          style={{ paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: theme.border }}
+          style={{ padding: 22, gap: 14, borderRadius: 16, backgroundColor: theme.panel, borderWidth: 1, borderColor: theme.borderSoft, minHeight: 128 }}
         >
-          <Text style={textStyles.body}>{item.name}</Text>
-          <Text style={textStyles.muted}>{item.effective_role}</Text>
+          <Text style={textStyles.heading}>{item.name}</Text>
+          <Text style={textStyles.muted}>{{ owner: "所有者", admin: "管理员", member: "成员", viewer: "只读" }[item.effective_role]} · 打开项目 ↗</Text>
         </Pressable>
       ))}
       {me?.is_admin ? <View><Button label="管理控制台" onPress={onAdmin} /></View> : null}
-      <Card>
-        <Text style={textStyles.body}>账户安全</Text>
+      {panel === "account" ? <Card>
+        <Text style={textStyles.heading}>账户安全</Text>
         <Field label="当前密码" value={currentPassword} onChangeText={setCurrentPassword} secureTextEntry autoComplete="current-password" />
         <Field label="新密码（至少 12 位）" value={newPassword} onChangeText={setNewPassword} secureTextEntry autoComplete="new-password" />
         <Field label="确认新密码" value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry autoComplete="new-password" />
         <Button disabled={busy || !currentPassword || newPassword.length < 12 || !confirmPassword} label="更新密码" onPress={() => void changePassword()} />
-      </Card>
+      </Card> : null}
       <View><Button label="退出登录" onPress={onSignOut} tone="ghost" /></View>
     </Screen>
   );

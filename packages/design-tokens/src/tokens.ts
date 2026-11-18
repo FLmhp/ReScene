@@ -8,7 +8,7 @@
  * directly, so every value here must be a plain RN/wxss-compatible literal.
  */
 
-export const colors = {
+export const darkColors = {
   bg: "#0B0D12",
   bgDeep: "#07080C",
   bgSoft: "#0F1219",
@@ -29,6 +29,30 @@ export const colors = {
   success: "#7FE3B0",
   overlay: "rgba(7, 8, 12, 0.78)",
 } as const;
+
+export type Palette = { [Key in keyof typeof darkColors]: string };
+
+export const lightColors: Palette = {
+  bg: "#F3F5F9", bgDeep: "#E9EDF4", bgSoft: "#F8FAFC",
+  panel: "#FFFFFF", panelAlt: "#F5F7FB", surface: "#FFFFFF",
+  surfaceStrong: "#EAF0FE", border: "#7C889C", borderSoft: "#D5DCE8",
+  divider: "#E3E8F0", fg: "#17243A", muted: "#526178",
+  accent: "#2859C5", accentStrong: "#2859C5", accentAlt: "#6354C7",
+  onAccent: "#FFFFFF", danger: "#B4233C", success: "#146C43",
+  overlay: "rgba(20, 32, 52, 0.45)",
+};
+
+export const colors = darkColors;
+export type ThemePreference = "system" | "light" | "dark";
+export const THEME_STORAGE_KEY = "rescene-theme";
+export const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
+  { value: "system", label: "跟随系统" },
+  { value: "light", label: "浅色" },
+  { value: "dark", label: "深色" },
+];
+export function themePreference(value: unknown): ThemePreference {
+  return value === "light" || value === "dark" ? value : "system";
+}
 
 export const spacing = {
   xs: 4,

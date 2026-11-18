@@ -7,9 +7,12 @@
 
 import { z } from "zod";
 
+export { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, stageLabel } from "./reconstruction-labels";
+
 export const ProfileSchema = z.enum(["fast", "balanced", "quality"]);
 export const JobStatusSchema = z.enum(["QUEUED", "LEASED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]);
 export const AssetStatusSchema = z.enum(["UPLOADING", "READY", "FAILED"]);
+export const AssetPreviewSchema = z.object({ url: z.string().url(), expires_at: z.string() });
 
 export const AuthTokenSchema = z.object({
   access_token: z.string(),

@@ -1,13 +1,15 @@
 import { ResceneClient } from "@rescene/api-client";
 import { createWebUploader } from "@rescene/uploader/web";
-import { Viewer, type ViewerProps } from "@rescene/viewer";
+import type { ViewerProps } from "@rescene/viewer";
 import { Workbench, type KeyValueStore } from "@rescene/workbench";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import "@rescene/design-tokens/web.css";
 import "@rescene/viewer/viewer.css";
 import "@rescene/workbench/workbench.css";
+
+const Viewer = lazy(() => import("@rescene/viewer").then((module) => ({ default: module.Viewer })));
 
 const API = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? "https://api.rescene.xyz" : "http://localhost:8000");
 const WEB = import.meta.env.VITE_WEB_URL ?? (import.meta.env.PROD ? "https://app.rescene.xyz" : "http://localhost:3000");
@@ -81,7 +83,7 @@ function DesktopViewer({ src, artifactKind, reconstructionId, sha256, size, onSt
 
   if (!native && import.meta.env.DEV) {
     return (
-      <Viewer
+      <Suspense fallback={<p role="status">正在准备三维查看器…</p>}><Viewer
         src={src}
         artifactKind={artifactKind}
         reconstructionId={reconstructionId}
@@ -89,7 +91,7 @@ function DesktopViewer({ src, artifactKind, reconstructionId, sha256, size, onSt
         size={size}
         onStatus={onStatus}
         onRetry={onRetry}
-      />
+      /></Suspense>
     );
   }
 
@@ -142,7 +144,7 @@ function DesktopViewer({ src, artifactKind, reconstructionId, sha256, size, onSt
   }
 
   return (
-    <Viewer
+    <Suspense fallback={<p role="status">正在准备三维查看器…</p>}><Viewer
       src={cachedSrc}
       artifactKind={artifactKind}
       reconstructionId={reconstructionId}
@@ -150,7 +152,7 @@ function DesktopViewer({ src, artifactKind, reconstructionId, sha256, size, onSt
       size={size}
       onStatus={onStatus}
       onRetry={retry}
-    />
+    /></Suspense>
   );
 }
 

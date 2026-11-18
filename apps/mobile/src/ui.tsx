@@ -1,4 +1,7 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import type { Palette } from "@rescene/design-tokens";
+import { THEME_OPTIONS } from "@rescene/design-tokens";
+import { useAppearance } from "./appearance";
 import {
   ActivityIndicator,
   Pressable,
@@ -10,7 +13,7 @@ import {
   type TextInputProps,
 } from "react-native";
 
-import { fontSize, glow, radii, spacing, theme } from "./theme";
+import { fontSize, radii, spacing } from "./theme";
 
 export function Screen({
   children,
@@ -21,26 +24,12 @@ export function Screen({
   title: string;
   scroll?: boolean;
 }) {
-  const header = (
-    <>
-      <Text accessibilityRole="header" style={styles.eyebrow}>
-        RESCENE / MOBILE
-      </Text>
-      <Text accessibilityRole="header" style={styles.title}>
-        {title}
-      </Text>
-    </>
-  );
-  const glows = (
-    <>
-      <View pointerEvents="none" style={styles.glowA} />
-      <View pointerEvents="none" style={styles.glowB} />
-    </>
-  );
+  const { theme } = useAppearance();
+  const styles = makeStyles(theme);
+  const header = <View style={styles.header}><Text accessibilityRole="header" style={[styles.title, { flex: 1 }]}>{title}</Text><AppearancePicker /></View>;
   if (scroll) {
     return (
       <View style={styles.stage}>
-        {glows}
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
@@ -54,7 +43,6 @@ export function Screen({
   }
   return (
     <View style={styles.stage}>
-      {glows}
       <View style={styles.screen}>
         {header}
         {children}
@@ -64,6 +52,8 @@ export function Screen({
 }
 
 export function Card({ children }: { children: ReactNode }) {
+  const { theme } = useAppearance();
+  const styles = makeStyles(theme);
   return <View style={styles.card}>{children}</View>;
 }
 
@@ -94,9 +84,13 @@ export function Field({
   placeholder?: string;
   autoFocus?: boolean;
 }) {
+  const { theme } = useAppearance();
+  const styles = makeStyles(theme);
+  const [passwordVisible, setPasswordVisible] = useState(false);
   return (
     <View style={styles.field}>
       <Text style={styles.label}>{label}</Text>
+      <View>
       <TextInput
         accessibilityLabel={label}
         autoCapitalize="none"
@@ -110,11 +104,15 @@ export function Field({
         placeholder={placeholder}
         placeholderTextColor={theme.muted}
         returnKeyType={returnKeyType}
-        secureTextEntry={secureTextEntry}
-        style={multiline ? [styles.input, styles.inputMultiline] : styles.input}
+        secureTextEntry={secureTextEntry && !passwordVisible}
+        style={[styles.input, multiline && styles.inputMultiline, secureTextEntry && { paddingRight: 64 }]}
         textContentType={textContentType}
         value={value}
       />
+      {secureTextEntry ? <Pressable accessibilityRole="button" accessibilityLabel={passwordVisible ? `隐藏${label}` : `显示${label}`} onPress={() => setPasswordVisible(!passwordVisible)} style={{ position: "absolute", right: 4, top: 2, minHeight: 44, minWidth: 52, alignItems: "center", justifyContent: "center" }}>
+        <Text style={{ color: theme.accent }}>{passwordVisible ? "隐藏" : "显示"}</Text>
+      </Pressable> : null}
+      </View>
     </View>
   );
 }
@@ -130,6 +128,8 @@ export function Button({
   disabled?: boolean;
   tone?: "primary" | "ghost";
 }) {
+  const { theme } = useAppearance();
+  const styles = makeStyles(theme);
   return (
     <Pressable
       accessibilityRole="button"
@@ -150,6 +150,8 @@ export function Button({
 }
 
 export function Busy({ label }: { label: string }) {
+  const { theme } = useAppearance();
+  const styles = makeStyles(theme);
   return (
     <View accessibilityLabel={label} accessibilityLiveRegion="polite" accessibilityRole="progressbar" style={styles.busy}>
       <ActivityIndicator color={theme.accentStrong} />
@@ -167,6 +169,8 @@ export function Segmented<T extends string>({
   onChange: (value: T) => void;
   options: { value: T; label: string }[];
 }) {
+  const { theme } = useAppearance();
+  const styles = makeStyles(theme);
   return (
     <View accessibilityRole="tablist" style={styles.segmented}>
       {options.map((option) => {
@@ -188,6 +192,7 @@ export function Segmented<T extends string>({
 }
 
 export function ErrorText({ children }: { children: ReactNode }) {
+  const textStyles = useTextStyles();
   return (
     <Text accessibilityLiveRegion="polite" accessibilityRole="alert" style={textStyles.error}>
       {children}
@@ -195,43 +200,25 @@ export function ErrorText({ children }: { children: ReactNode }) {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (theme: Palette) => StyleSheet.create({
+  header: { flexDirection: "row", alignItems: "center", gap: 12, flexWrap: "wrap" },
   stage: { flex: 1, backgroundColor: theme.bg },
-  glowA: {
-    position: "absolute",
-    top: -140,
-    left: -110,
-    width: 320,
-    height: 320,
-    borderRadius: 160,
-    backgroundColor: glow.a,
-  },
-  glowB: {
-    position: "absolute",
-    top: -80,
-    right: -130,
-    width: 320,
-    height: 320,
-    borderRadius: 160,
-    backgroundColor: glow.b,
-  },
   scroll: { flex: 1, backgroundColor: "transparent" },
   scrollContent: { flexGrow: 1, padding: spacing.lg, gap: spacing.md },
   screen: { flex: 1, padding: spacing.lg, gap: spacing.md },
-  eyebrow: { color: theme.accent, fontSize: fontSize.eyebrow, fontWeight: "800", letterSpacing: 1.5 },
   title: { color: theme.fg, fontSize: 30, fontWeight: "800", letterSpacing: -1 },
   card: {
-    backgroundColor: theme.surface,
+    backgroundColor: theme.panel,
     borderColor: theme.divider,
     borderWidth: 1,
     borderRadius: radii.lg,
     padding: spacing.lg,
     gap: spacing.md,
     shadowColor: "#000",
-    shadowOpacity: 0.35,
-    shadowRadius: 24,
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
     shadowOffset: { width: 0, height: 16 },
-    elevation: 6,
+    elevation: 1,
   },
   field: { gap: spacing.xs },
   label: { color: theme.muted, fontSize: fontSize.body },
@@ -258,10 +245,10 @@ const styles = StyleSheet.create({
   primary: {
     backgroundColor: theme.accentStrong,
     shadowColor: theme.accentStrong,
-    shadowOpacity: 0.35,
+    shadowOpacity: 0.04,
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
+    elevation: 0,
   },
   ghost: { borderColor: theme.borderSoft, borderWidth: 1, backgroundColor: theme.surface },
   primaryText: { color: theme.onAccent, fontWeight: "800" },
@@ -292,8 +279,29 @@ const styles = StyleSheet.create({
   segmentTextActive: { color: theme.fg, fontWeight: "700" },
 });
 
-export const textStyles = StyleSheet.create({
+const makeTextStyles = (theme: Palette) => StyleSheet.create({
+  heading: { color: theme.fg, fontSize: 18, fontWeight: "700" },
   body: { color: theme.fg, fontSize: fontSize.body },
   muted: { color: theme.muted, fontSize: fontSize.body },
   error: { color: theme.danger, fontSize: fontSize.body },
 });
+
+export function useTextStyles() {
+  const { theme } = useAppearance();
+  return makeTextStyles(theme);
+}
+
+function AppearancePicker() {
+  const { preference, setPreference, theme } = useAppearance();
+  const [open, setOpen] = useState(false);
+  return <View>
+    <Pressable accessibilityRole="button" accessibilityLabel="外观主题" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: 8 }}>
+      <Text style={{ color: theme.accent }}>{THEME_OPTIONS.find((item) => item.value === preference)?.label} ▾</Text>
+    </Pressable>
+    {open ? <View style={{ backgroundColor: theme.panel, borderWidth: 1, borderColor: theme.borderSoft, borderRadius: 10 }}>
+      {THEME_OPTIONS.map((item) => <Pressable key={item.value} accessibilityRole="radio" accessibilityState={{ checked: preference === item.value }} onPress={() => { setPreference(item.value); setOpen(false); }} style={{ minHeight: 44, padding: 10, justifyContent: "center" }}>
+        <Text style={{ color: preference === item.value ? theme.accent : theme.fg }}>{item.label}</Text>
+      </Pressable>)}
+    </View> : null}
+  </View>;
+}

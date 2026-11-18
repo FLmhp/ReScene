@@ -7,8 +7,8 @@ import {
 } from "react-native-webview";
 
 import { client, webBaseUrl } from "../api";
-import { theme } from "../theme";
-import { Button, textStyles } from "../ui";
+import { useAppearance } from "../appearance";
+import { Button, useTextStyles } from "../ui";
 
 type WebViewHandle = { injectJavaScript: (script: string) => void };
 
@@ -21,6 +21,8 @@ type WebViewHandle = { injectJavaScript: (script: string) => void };
 const WebView = WebViewBase as unknown as ComponentType<WebViewProps & RefAttributes<WebViewHandle>>;
 
 export function ViewerScreen({ reconstructionId, onBack }: { reconstructionId: string; onBack: () => void }) {
+  const { theme, dark } = useAppearance();
+  const textStyles = useTextStyles();
   const webview = useRef<WebViewHandle>(null);
   const [error, setError] = useState("");
   const [generation, setGeneration] = useState(0);
@@ -36,11 +38,11 @@ export function ViewerScreen({ reconstructionId, onBack }: { reconstructionId: s
       if (!artifact) throw new Error("没有可显示的 SPZ 或 PLY 产物");
       // The web viewer accepts a short-lived signed URL, so the bearer token
       // never enters the page. The native bridge remains for in-page renewal.
-      setViewerUrl(`${webBaseUrl}/viewer?reconstruction=${encodeURIComponent(reconstructionId)}&src=${encodeURIComponent(artifact.url)}`);
+      setViewerUrl(`${webBaseUrl}/viewer?reconstruction=${encodeURIComponent(reconstructionId)}&theme=${dark ? "dark" : "light"}&src=${encodeURIComponent(artifact.url)}`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "获取场景失败");
     }
-  }, [reconstructionId]);
+  }, [reconstructionId, dark]);
 
   useEffect(() => { void load(); }, [load]);
 
