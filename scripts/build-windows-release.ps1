@@ -17,11 +17,16 @@ try {
     Pop-Location
 }
 
-$installerDirs = @(
-    (Join-Path $root "apps\desktop\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis"),
-    (Join-Path $root "apps\desktop\src-tauri\target\release\bundle\nsis")
-)
-$files = @($installerDirs | Where-Object { Test-Path $_ } | ForEach-Object { Get-ChildItem $_ -Filter "*.exe" })
-if ($files.Count -ne 1) { throw "Expected exactly one NSIS installer, found $($files.Count)" }
-Get-FileHash -Algorithm SHA256 $files[0].FullName | Format-List
-Write-Output $files[0].FullName
+$version = (Get-Content -LiteralPath (Join-Path $root "VERSION") -Raw).Trim()
+$installer = Join-Path $root "apps\desktop\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\ReScene_${version}_x64-setup.exe"
+if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "NSIS installer not found: $installer" }
+$stream = [System.IO.File]::OpenRead($installer)
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $digest = [System.BitConverter]::ToString($sha256.ComputeHash($stream)).Replace("-", "").ToLowerInvariant()
+} finally {
+    $sha256.Dispose()
+    $stream.Dispose()
+}
+Write-Output "SHA256 $digest"
+Write-Output $installer

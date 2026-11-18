@@ -34,10 +34,18 @@ $android = Join-Path $root "apps\mobile\android"
 if (-not (Test-Path (Join-Path $android "gradlew.bat"))) {
     throw "Android native project is missing; run Expo prebuild before this script"
 }
+$app = (Get-Content -Raw -LiteralPath (Join-Path $root "apps\mobile\app.json") | ConvertFrom-Json).expo
+$gradle = Get-Content -Raw -LiteralPath (Join-Path $android "app\build.gradle")
+$version = [regex]::Escape($app.version)
+$versionCode = [int]$app.android.versionCode
+if ($gradle -notmatch "(?m)^\s*versionName\s+`"$version`"\s*$" -or
+    $gradle -notmatch "(?m)^\s*versionCode\s+$versionCode\s*$") {
+    throw "Android native version is stale; regenerate with Expo prebuild from the current app.json before building"
+}
 
 Push-Location $android
 try {
-    & .\gradlew.bat --no-daemon :app:assembleRelease "-PreactNativeArchitectures=arm64-v8a,x86_64"
+    & .\gradlew.bat --no-daemon -I (Join-Path $PSScriptRoot "android-windows-cmake.init.gradle") :app:assembleRelease "-PreactNativeArchitectures=arm64-v8a,x86_64"
     if ($LASTEXITCODE -ne 0) { throw "Gradle release build failed" }
 } finally {
     Pop-Location

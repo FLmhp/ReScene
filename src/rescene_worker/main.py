@@ -25,7 +25,7 @@ from oss2.credentials import Credentials, CredentialsProvider
 from PIL import Image
 
 from rescene.metrics import final_ply_path
-from rescene.preprocess import IMAGE_SUFFIXES, VIDEO_SUFFIXES, video_input_args
+from rescene.preprocess import IMAGE_SUFFIXES, VIDEO_SUFFIXES, relocate_selected_images, video_input_args
 from rescene_worker.logs import LogShipper
 
 
@@ -145,6 +145,10 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+class IncompleteCheckpoint(ValueError):
+    """A legacy archive lacks files required by the current engine."""
+
+
 def restore_archive(bucket: oss2.Bucket, key: str, job_dir: Path) -> None:
     archive = job_dir.parent / f"{job_dir.name}.resume.tar.gz"
     bucket.get_object_to_file(key, str(archive))
@@ -158,14 +162,24 @@ def restore_archive(bucket: oss2.Bucket, key: str, job_dir: Path) -> None:
                 raise RuntimeError(f"Unsafe archive member: {member.name}")
         source.extractall(job_dir)
     archive.unlink(missing_ok=True)
+    if not (job_dir / "photometric_selection.json").is_file():
+        raise IncompleteCheckpoint("Checkpoint has no photometric selection")
+    if key.endswith(("/training.tar.gz", "/export.tar.gz")) and not all(
+        (job_dir / path).is_file() for path in ("photometric_split.json", "geometry_frames.json")
+    ):
+        raise IncompleteCheckpoint("Checkpoint has no training provenance")
+    try:
+        relocate_selected_images(job_dir)
+    except FileNotFoundError as error:
+        raise IncompleteCheckpoint("Checkpoint has no input manifest or selected image") from error
 
 
 def archive_stage(bucket: oss2.Bucket, job_dir: Path, output_prefix: str, stage: str) -> str:
     archive = job_dir.parent / f"{job_dir.name}-{stage}.tar.gz"
     stage_files = {
-        "preprocess": {"images", "input_manifest.json"},
+        "preprocess": {"images", "input_manifest.json", "photometric_selection.json"},
         "geometry": {"sparse", "dense", "degradation.json"},
-        "training": {"gsplat"},
+        "training": {"gsplat", "photometric_split.json", "geometry_frames.json"},
         "export": {"scene.spz", "metrics.json", "report.md"},
     }
     included = {"config.json", "benchmark.json", "environment.json"}
@@ -360,7 +374,7 @@ def safe_cleanup(job_dir: Path, work_root: Path) -> None:
     shutil.rmtree(resolved)
 
 
-def validate_asset(path: Path, size: int, sha256: str | None) -> None:
+def validate_asset(path: Path, size: int, sha256: str | None) -> Path:
     """Verify the downloaded bytes and check that the input can be decoded."""
     if path.stat().st_size != size or (sha256 and sha256_file(path) != sha256):
         raise InvalidInput(f"Asset integrity check failed: {path.name}")
@@ -368,9 +382,13 @@ def validate_asset(path: Path, size: int, sha256: str | None) -> None:
         if path.suffix in IMAGE_SUFFIXES:
             with Image.open(path) as image:
                 expected = "PNG" if path.suffix == ".png" else "JPEG"
-                if image.format != expected or image.width * image.height > 64_000_000:
+                actual = image.format
+                if actual not in {"PNG", "JPEG"} or image.width * image.height > 64_000_000:
                     raise InvalidInput(f"Unexpected image format or dimensions: {path.name}")
                 image.load()
+            # WeChat can give the unmodified PNG bytes a temporary .jpg name.
+            if actual != expected:
+                path = path.rename(path.with_suffix(".png" if actual == "PNG" else ".jpg"))
         else:
             result = subprocess.run(
                 [
@@ -396,6 +414,7 @@ def validate_asset(path: Path, size: int, sha256: str | None) -> None:
                 raise InvalidInput(f"No decodable video frame: {path.name}")
     except (OSError, Image.DecompressionBombError, subprocess.SubprocessError) as error:
         raise InvalidInput(f"Cannot decode asset: {path.name}") from error
+    return path
 
 
 def download_inputs(
@@ -416,7 +435,7 @@ def download_inputs(
         check_lease(events)
         path = input_dir / f"{index:06d}{suffix}"
         bucket.get_object_to_file(item["object_key"], str(path))
-        validate_asset(path, item["size"], item.get("sha256"))
+        path = validate_asset(path, item["size"], item.get("sha256"))
     return path if is_video else input_dir
 
 
@@ -436,7 +455,7 @@ def execute_attempt(
     if resume_key:
         try:
             restore_archive(bucket, resume_key, output_dir)
-        except (oss2.exceptions.NoSuchKey, tarfile.ReadError, EOFError) as error:
+        except (oss2.exceptions.NoSuchKey, tarfile.ReadError, EOFError, IncompleteCheckpoint) as error:
             print(f"{job['job_id']} checkpoint unavailable ({type(error).__name__}); restarting", flush=True)
             safe_cleanup(output_dir, job_dir)
             output_dir.mkdir()

@@ -398,6 +398,19 @@ def preprocess_input(
     return manifest
 
 
+def relocate_selected_images(run_dir: Path) -> None:
+    """Rebase selected image paths after moving a reconstruction directory."""
+    manifest_path = run_dir / "input_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for frame in manifest["frames"]:
+        if frame.get("selected"):
+            image = run_dir / "images" / Path(frame["file"]).name
+            if not image.is_file():
+                raise FileNotFoundError(f"Selected image missing: {image.name}")
+            frame["file"] = str(image)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def selected_files(manifest: dict[str, object]) -> Iterable[Path]:
     """Yield selected frame files from a manifest."""
     for frame in manifest["frames"]:  # type: ignore[index]

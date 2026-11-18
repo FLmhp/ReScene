@@ -26,7 +26,7 @@ from rescene.backends import (
 )
 from rescene.config import ProfileConfig, profile_config
 from rescene.metrics import collect_metrics, final_ply_path, sha256_file, write_report
-from rescene.preprocess import classify_input, preprocess_input
+from rescene.preprocess import classify_input, preprocess_input, relocate_selected_images
 from rescene.stages import StageStore
 
 
@@ -285,15 +285,7 @@ def _run_reuse_comparison(
         copied = {path.relative_to(run_dir).as_posix(): sha256_file(path) for path in _reuse_files(run_dir)}
         if copied != manifest["files"]:
             raise ValueError("Copied reuse artifact SHA-256 mismatch")
-        input_manifest_path = run_dir / "input_manifest.json"
-        input_manifest = json.loads(input_manifest_path.read_text(encoding="utf-8"))
-        for frame in input_manifest["frames"]:
-            if frame.get("selected"):
-                name = Path(frame["file"]).name
-                if not (run_dir / "images" / name).is_file():
-                    raise ValueError(f"Selected image missing from reuse bundle: {name}")
-                frame["file"] = str(run_dir / "images" / name)
-        _write_json(input_manifest_path, input_manifest)
+        relocate_selected_images(run_dir)
     provenance = {
         "mode": "single_stage_reuse",
         "stage": stage,

@@ -8,6 +8,7 @@ const DEVELOPMENT_API_URL = "http://localhost:8000";
 const DEVELOPMENT_WEB_URL = "http://localhost:3000";
 const DEVELOPMENT_PROJECT_CONFIG = "config/project.config.development.json";
 const TOURIST_APP_ID = "touristappid";
+const WECHAT_APP_ID = "wxedb245fb415d436e";
 
 const WECHAT_APP_ID_PATTERN = /^wx[0-9a-f]{16}$/;
 
@@ -149,7 +150,7 @@ function resolveDevelopmentEnv(env: MiniappEnv): ResolvedBuildConfig {
 
   return {
     apiUrl: apiUrl ?? DEVELOPMENT_API_URL,
-    appId: TOURIST_APP_ID,
+    appId: WECHAT_APP_ID,
     webUrl: webUrl ?? DEVELOPMENT_WEB_URL,
   };
 }
@@ -182,7 +183,8 @@ function rewriteProductionProjectConfig(appId: string): void {
     miniprogramRoot: "./",
     setting: {
       ...generated.setting,
-      minified: true,
+      // Webpack already minifies the production bundle. The IDE's second pass rejects modern dependency syntax.
+      minified: false,
       urlCheck: true,
     },
   };
@@ -201,7 +203,7 @@ export default (_merge?: unknown, configEnv?: Partial<ConfigEnv>): UserConfigExp
   const resolved = isDevelopment ? resolveDevelopmentEnv(env) : resolveProductionEnv(env);
 
   // Taro reads TARO_APP_ID when it generates dist/project.config.json.
-  // Production uses the validated value; development always stays a tourist build.
+  // Production uses the validated value; development uses the project's real AppID.
   process.env.TARO_APP_ID = resolved.appId;
 
   const config = {
@@ -231,7 +233,11 @@ export default (_merge?: unknown, configEnv?: Partial<ConfigEnv>): UserConfigExp
     },
     mini: {
       compile: {
-        include: [path.resolve(__dirname, "..", "..", "..", "packages")],
+        include: [
+          path.resolve(__dirname, "..", "..", "..", "packages"),
+          path.dirname(require.resolve("@noble/hashes/sha2.js")),
+          path.dirname(require.resolve("zod/package.json")),
+        ],
       },
       // Taro's build command can replace the config-level onBuildFinish hook with
       // its own plugin hook; afterEmit keeps the emitted config rewrite guaranteed.

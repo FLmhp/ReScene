@@ -2,7 +2,7 @@
   "miniprogramRoot": "dist/",
   "projectname": "rescene",
   "description": "ReScene 三维重建小程序（开发）",
-  "appid": "touristappid",
+  "appid": "wxedb245fb415d436e",
   "setting": {
     "urlCheck": false,
     "es6": false,

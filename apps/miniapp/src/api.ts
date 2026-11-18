@@ -1,7 +1,7 @@
+import { setUnauthorizedHandler } from "./polyfill";
+
 import { ResceneClient } from "@rescene/api-client";
 import Taro from "@tarojs/taro";
-
-import { setUnauthorizedHandler } from "./polyfill";
 
 const TOKEN_KEY = "rescene-token";
 const LOGIN_PAGE = "/pages/index/index";

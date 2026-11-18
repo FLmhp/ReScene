@@ -3,6 +3,10 @@
  * reads. `body` stays undefined on purpose so the client skips SSE and polls.
  */
 import Taro from "@tarojs/taro";
+import { z } from "zod";
+
+// WeChat can stub Function without throwing. Disable Zod's eval probe before schemas are created.
+z.config({ jitless: true });
 
 type RequestInitLike = {
   method?: string;

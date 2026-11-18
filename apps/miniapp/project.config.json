@@ -2,13 +2,13 @@
     "miniprogramRoot": "dist/",
     "projectname": "rescene",
     "description": "ReScene 三维重建小程序",
-    "appid": "",
+    "appid": "wxedb245fb415d436e",
     "setting": {
         "urlCheck": true,
         "es6": false,
         "enhance": false,
         "postcss": false,
-        "minified": true,
+        "minified": false,
         "minifyWXML": true
     },
     "compileType": "miniprogram"

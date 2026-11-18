@@ -12,7 +12,9 @@ from PIL import Image
 
 from rescene_worker.main import (
     Api,
+    IncompleteCheckpoint,
     InvalidInput,
+    archive_stage,
     artifacts,
     download_inputs,
     is_resumed_stage,
@@ -78,7 +80,8 @@ def test_resumed_stage_is_not_archived_again():
     assert not is_resumed_stage(job, "geometry")
 
 
-def test_download_checks_bytes_and_preserves_duplicate_basenames(tmp_path, monkeypatch):
+@pytest.mark.parametrize("filename", ["a.png", "wechat-temp.jpg"])
+def test_download_checks_bytes_and_preserves_duplicate_basenames(tmp_path, monkeypatch, filename):
     # The 8 GiB headroom guard must not make this test depend on the runner's disk.
     monkeypatch.setattr(shutil, "disk_usage", lambda _path: SimpleNamespace(free=10**12))
     source = tmp_path / "source"
@@ -91,7 +94,7 @@ def test_download_checks_bytes_and_preserves_duplicate_basenames(tmp_path, monke
     assets = [
         {
             "id": str(index),
-            "filename": "a.png",
+            "filename": filename,
             "object_key": str(index),
             "size": len(content),
             "sha256": hashlib.sha256(content).hexdigest(),
@@ -102,6 +105,7 @@ def test_download_checks_bytes_and_preserves_duplicate_basenames(tmp_path, monke
     inputs.mkdir()
     assert download_inputs(bucket, assets, inputs, (Event(), Event())) == inputs
     assert len(list(inputs.glob("*.png"))) == 2
+    assert not list(inputs.glob("*.jpg"))
     assets[0]["sha256"] = hashlib.sha256(bytes(len(content))).hexdigest()
     with pytest.raises(InvalidInput, match="integrity"):
         download_inputs(bucket, assets, inputs, (Event(), Event()))
@@ -148,6 +152,40 @@ def test_restore_rejects_symlinks(tmp_path):
 
     with pytest.raises(RuntimeError, match="Unsafe archive member type"):
         restore_archive(bucket, "resume", tmp_path / "output")
+
+
+@pytest.mark.parametrize("stage,has_selection", [("geometry", True), ("geometry", False), ("training", True)])
+def test_checkpoint_preserves_photometric_selection_and_rebases_images(tmp_path, monkeypatch, stage, has_selection):
+    output = tmp_path / "output"
+    (output / "stages").mkdir(parents=True)
+    for completed in ("preprocess", "geometry", "training"):
+        (output / "stages" / f"{completed}.json").write_text('{"status":"success"}', encoding="utf-8")
+    (output / "images").mkdir()
+    image = output / "images" / "000001.jpg"
+    image.write_bytes(b"fixture")
+    (output / "input_manifest.json").write_text(
+        json.dumps({"frames": [{"file": str(image), "selected": True, "source_id": "test"}]}), encoding="utf-8"
+    )
+    for provenance in ("photometric_split.json", "geometry_frames.json"):
+        (output / provenance).write_text("{}", encoding="utf-8")
+    if has_selection:
+        (output / "photometric_selection.json").write_text("{}", encoding="utf-8")
+    stored = tmp_path / "stored.tar.gz"
+    monkeypatch.setattr("oss2.resumable_upload", lambda _bucket, _key, path, **_kw: shutil.copyfile(path, stored))
+    bucket = Mock()
+    bucket.get_object_to_file.side_effect = lambda _key, destination: shutil.copyfile(stored, destination)
+    key = archive_stage(bucket, output, "job/", stage)
+    restored = tmp_path / "restored"
+    if has_selection:
+        restore_archive(bucket, key, restored)
+        assert (restored / "photometric_selection.json").read_text(encoding="utf-8") == "{}"
+        manifest = json.loads((restored / "input_manifest.json").read_text(encoding="utf-8"))
+        assert manifest["frames"][0]["file"] == str(restored / "images" / image.name)
+        if stage == "training":
+            assert (restored / "geometry_frames.json").is_file()
+    else:
+        with pytest.raises(IncompleteCheckpoint, match="photometric selection"):
+            restore_archive(bucket, key, restored)
 
 
 def test_log_shipper_tails_incrementally(tmp_path):
