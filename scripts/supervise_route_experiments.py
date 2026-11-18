@@ -117,6 +117,20 @@ def free_bytes() -> int:
     return shutil.disk_usage(DATA).free
 
 
+def gpu_utilization() -> int | None:
+    """Read GPU activity as telemetry without using it to determine ownership."""
+    try:
+        output = subprocess.check_output(
+            ["nvidia-smi", "--id=0", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return int(output) if output.isdecimal() else None
+
+
 def require_free(threshold: int, context: str) -> None:
     available = free_bytes()
     if available < threshold:
@@ -200,6 +214,7 @@ def monitor(trial: dict[str, object], deadline: float | None = None) -> dict[str
         warning = False
         peak = 0
         samples = 0
+        phase_samples: dict[str, dict[str, int]] = {}
         reason = None
         failure = None
         foreign_seen: dict[int, int] = {}
@@ -229,6 +244,13 @@ def monitor(trial: dict[str, object], deadline: float | None = None) -> dict[str
                     del foreign_seen[pid]
                 peak = max(peak, used)
                 samples += 1
+                if samples % 10 == 1 and (stage := running_stage(run)):
+                    phase = phase_samples.setdefault(stage, {"samples": 0, "peak_mib": 0, "utilization_sum": 0})
+                    phase["peak_mib"] = max(phase["peak_mib"], used)
+                    utilization = gpu_utilization() if used and not foreign else 0
+                    if utilization is not None:
+                        phase["samples"] += 1
+                        phase["utilization_sum"] += utilization
                 if foreign:
                     reason = f"external GPU compute PIDs appeared: {foreign}"
                 if reason is None and deadline is not None and time.time() >= deadline:
@@ -296,6 +318,16 @@ def monitor(trial: dict[str, object], deadline: float | None = None) -> dict[str
             "sample_interval_seconds": 0.5,
             "peak_owned_gpu_mib_sampled": peak,
             "gpu_samples": samples,
+            "phase_gpu": {
+                stage: {
+                    "samples": phase["samples"],
+                    "peak_owned_mib": phase["peak_mib"],
+                    "mean_utilization_percent": (
+                        round(phase["utilization_sum"] / phase["samples"], 2) if phase["samples"] else None
+                    ),
+                }
+                for stage, phase in phase_samples.items()
+            },
             "wall_seconds": round(time.monotonic() - start, 3),
             "returncode": process.wait(),
             "abort_reason": reason,

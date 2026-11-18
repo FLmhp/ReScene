@@ -9,13 +9,15 @@ import os
 import sys
 from pathlib import Path
 
+from rescene.metrics import allows_missing_validation
+
 
 def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
 
 
-def registered_split(manifest: dict, image_names: list[str], scene: Path) -> dict:
+def registered_split(manifest: dict, image_names: list[str], scene: Path, *, allow_missing: bool = False) -> dict:
     """Map registered COLMAP images to the selected source-level split."""
     frames = [frame for frame in manifest["frames"] if frame["selected"]]
     mapping = {Path(frame["file"]).relative_to(scene / "images").as_posix(): frame for frame in frames}
@@ -29,16 +31,20 @@ def registered_split(manifest: dict, image_names: list[str], scene: Path) -> dic
     train = [by_image[name] for name in image_names if not mapping[name]["validation"]]
     val = [by_image[name] for name in image_names if mapping[name]["validation"]]
     expected_val = {frame["source_id"] for frame in frames if frame["validation"]}
-    if set(val) != expected_val:
+    missing = expected_val - set(val)
+    if missing and (not allow_missing or len(expected_val) != 8 or len(missing) != 1):
         raise ValueError("Selected validation sources are missing from registered images")
     if not train or not val or set(train) & set(val):
         raise ValueError("Photometric split requires disjoint, nonempty registered train and validation sets")
-    return {
+    result = {
         "schema_version": 1,
         "train_source_ids": train,
         "validation_source_ids": val,
         "image_to_source_id": by_image,
     }
+    if missing:
+        result["missing_validation_source_ids"] = sorted(missing)
+    return result
 
 
 def _dense_parser(original_parser: object):
@@ -107,7 +113,9 @@ def configure_trainer(trainer: object, split_file: Path, init_points: str = "spa
             selected_ids = selection["train_source_ids"] + selection["validation_source_ids"]
             if len(set(selected_ids)) != len(selected_ids):
                 raise ValueError("Photometric selection has duplicate or leaking source IDs")
-            specification = registered_split(manifest, list(parser.image_names), scene)
+            specification = registered_split(
+                manifest, list(parser.image_names), scene, allow_missing=allows_missing_validation(scene)
+            )
             split_path = scene / "photometric_split.json"
             if split_path.exists():
                 previous = json.loads(split_path.read_text(encoding="utf-8"))

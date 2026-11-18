@@ -70,6 +70,10 @@ def vggt_command(
         command.append("--use-ba")
         if config.vggt_fine_tracking:
             command.append("--fine-tracking")
+    if config.vggt_depth_confidence is not None:
+        command.extend(("--depth-confidence", str(config.vggt_depth_confidence)))
+    if config.vggt_track_observation_limit is not None:
+        command.extend(("--track-observation-limit", str(config.vggt_track_observation_limit)))
     if diagnostics:
         command.append("--diagnostics")
     return command

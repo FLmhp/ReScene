@@ -39,6 +39,8 @@ class ProfileConfig:
     colmap_mapper: str = "incremental"
     colmap_mvs_max_image_size: int = 0
     colmap_poisson_depth: int = 10
+    vggt_depth_confidence: float | None = None
+    vggt_track_observation_limit: int | None = None
 
     def degraded(self) -> ProfileConfig:
         """Return the single bounded CUDA OOM fallback configuration."""
@@ -51,7 +53,11 @@ class ProfileConfig:
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
-        return asdict(self)
+        config = asdict(self)
+        for name in ("vggt_depth_confidence", "vggt_track_observation_limit"):
+            if config[name] is None:
+                del config[name]
+        return config
 
     def with_overrides(self, overrides: dict[str, Any]) -> ProfileConfig:
         """Return a validated calibration candidate without changing route identity."""
@@ -72,6 +78,8 @@ class ProfileConfig:
             "colmap_mapper",
             "colmap_mvs_max_image_size",
             "colmap_poisson_depth",
+            "vggt_depth_confidence",
+            "vggt_track_observation_limit",
         }
         unknown = set(overrides) - allowed
         if unknown:
@@ -98,6 +106,20 @@ class ProfileConfig:
                 f"COLMAP overrides are not applicable to {self.name}: {', '.join(sorted(colmap_overrides))}"
             )
         updated = replace(self, **overrides)
+        confidence = updated.vggt_depth_confidence
+        if confidence is not None and (
+            self.geometry_backend != "vggt"
+            or self.use_bundle_adjustment
+            or isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not 1 <= confidence <= 5
+        ):
+            raise ValueError("vggt_depth_confidence must be between 1 and 5 on the non-BA VGGT route")
+        track_limit = updated.vggt_track_observation_limit
+        if track_limit is not None and (
+            self.geometry_backend != "vggt" or type(track_limit) is not int or not 4096 <= track_limit <= 163840
+        ):
+            raise ValueError("vggt_track_observation_limit must be between 4096 and 163840 on a VGGT route")
         if updated.gsplat_app_opt is True:
             raise ValueError(
                 "gsplat_app_opt requires a deployable appearance protocol; "

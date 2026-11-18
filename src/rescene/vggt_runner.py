@@ -6,6 +6,7 @@ import argparse
 import json
 import shutil
 import sys
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -125,9 +126,15 @@ def main() -> None:
     parser.add_argument("--query-frames", type=int, default=8)
     parser.add_argument("--max-query-points", type=int, default=2_048)
     parser.add_argument("--max-reprojection-error", type=float, default=8.0)
+    parser.add_argument("--depth-confidence", type=float, default=5.0)
+    parser.add_argument("--track-observation-limit", type=int)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--diagnostics", action="store_true")
     args = parser.parse_args()
+    if not 1 <= args.depth_confidence <= 5:
+        parser.error("--depth-confidence must be between 1 and 5")
+    if args.track_observation_limit is not None and not 4096 <= args.track_observation_limit <= 163840:
+        parser.error("--track-observation-limit must be between 4096 and 163840")
 
     sys.path[:0] = [str(args.pycolmap_dir), str(args.vendor_dir)]
     import demo_colmap
@@ -163,15 +170,20 @@ def main() -> None:
         query_frame_num=args.query_frames,
         max_query_pts=args.max_query_points,
         fine_tracking=args.fine_tracking,
-        conf_thres_value=5.0,
+        conf_thres_value=args.depth_confidence,
     )
     original_rename = demo_colmap.rename_colmap_recons_and_rescale_camera
+    original_predict_tracks = demo_colmap.predict_tracks
+    if args.track_observation_limit is not None:
+        print(f"VGGT track observation limit: {args.track_observation_limit}", flush=True)
+        demo_colmap.predict_tracks = partial(original_predict_tracks, max_points_num=args.track_observation_limit)
     demo_colmap.rename_colmap_recons_and_rescale_camera = _correct_padding_coordinates(original_rename)
     try:
         with torch.inference_mode():
             demo_colmap.demo_fn(options)
     finally:
         demo_colmap.rename_colmap_recons_and_rescale_camera = original_rename
+        demo_colmap.predict_tracks = original_predict_tracks
         torch.hub.load_state_dict_from_url = original_loader
         torch.hub.load = original_hub_loader
         track_predict.generate_rank_by_dino = original_rank

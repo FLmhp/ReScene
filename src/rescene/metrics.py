@@ -112,6 +112,14 @@ def validation_registration(
     }
 
 
+def allows_missing_validation(run_dir: Path) -> bool:
+    """Allow one missing view only for an explicitly marked experiment."""
+    metadata = run_dir / "benchmark.json"
+    return (
+        metadata.is_file() and json.loads(metadata.read_text(encoding="utf-8")).get("allow_missing_validation") is True
+    )
+
+
 def _photometric_metrics(run_dir: Path) -> dict[str, object]:
     """Read only the configured final validation evaluation with verified views."""
     config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
@@ -139,7 +147,13 @@ def _photometric_metrics(run_dir: Path) -> dict[str, object]:
     selected_val = ids(selection.get("validation_source_ids"), "selected validation")
     if not selected_train or not selected_val or selected_train & selected_val:
         raise ValueError("Selected train and validation splits must be nonempty and disjoint")
-    if val != selected_val or not train <= selected_train:
+    missing = selected_val - val
+    if (
+        not val <= selected_val
+        or not train <= selected_train
+        or missing != ids(split.get("missing_validation_source_ids", []), "missing validation")
+        or (missing and (len(selected_val) != 8 or len(missing) != 1 or not allows_missing_validation(run_dir)))
+    ):
         raise ValueError("Registered split does not match selected validation or training sources")
     if not train or not val or train & val:
         raise ValueError("Photometric train and validation splits must be nonempty and disjoint")
@@ -186,6 +200,8 @@ def _photometric_metrics(run_dir: Path) -> dict[str, object]:
     result["photometric_step"] = step
     result["photometric_split"] = "val"
     result["photometric_views"] = views
+    if missing:
+        result["missing_validation_source_ids"] = sorted(missing)
     return result
 
 

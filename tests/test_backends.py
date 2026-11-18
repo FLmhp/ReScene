@@ -34,3 +34,13 @@ def test_vggt_ba_failure_detection_reads_log(tmp_path: Path) -> None:
     log.write_text("ValueError: No reconstruction can be built with BA", encoding="utf-8")
     assert is_vggt_ba_failure(RuntimeError("failed"), log)
     assert not is_vggt_ba_failure(RuntimeError("failed"), tmp_path / "missing")
+
+
+def test_vggt_screening_options_are_opt_in(tmp_path: Path) -> None:
+    baseline = profile_config("fast")
+    assert "vggt_track_observation_limit" not in baseline.to_dict()
+    assert "--depth-confidence" not in vggt_command(tmp_path, tmp_path, baseline)
+    config = baseline.with_overrides({"vggt_depth_confidence": 3.0, "vggt_track_observation_limit": 65536})
+    command = vggt_command(tmp_path, tmp_path, config)
+    assert command[command.index("--depth-confidence") + 1] == "3.0"
+    assert command[command.index("--track-observation-limit") + 1] == "65536"

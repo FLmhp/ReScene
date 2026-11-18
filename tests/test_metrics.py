@@ -183,6 +183,32 @@ def test_photometric_metrics_reject_omitted_frozen_validation(tmp_path: Path) ->
         _photometric_metrics(tmp_path)
 
 
+def test_photometric_metrics_allow_one_documented_missing_view_for_screening(tmp_path: Path) -> None:
+    _photometric_fixture(tmp_path)
+    split_path = tmp_path / "photometric_split.json"
+    selection_path = tmp_path / "photometric_selection.json"
+    views_path = tmp_path / "gsplat" / "photometric_views.json"
+    split = json.loads(split_path.read_text(encoding="utf-8"))
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    views = json.loads(views_path.read_text(encoding="utf-8"))
+    for index in range(6):
+        image, source = f"screen-{index}.jpg", f"held-out-{index}.jpg"
+        split["image_to_source_id"][image] = source
+        for entry in (split, selection, views):
+            entry["validation_source_ids"].append(source)
+        views["views"].append({**views["views"][0], "source_id": source, "image_name": image})
+    selection["validation_source_ids"].append("missing.jpg")
+    split["missing_validation_source_ids"] = ["missing.jpg"]
+    for path, data in ((split_path, split), (selection_path, selection), (views_path, views)):
+        path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="selected validation"):
+        _photometric_metrics(tmp_path)
+    (tmp_path / "benchmark.json").write_text('{"allow_missing_validation": true}', encoding="utf-8")
+    metrics = _photometric_metrics(tmp_path)
+    assert metrics["missing_validation_source_ids"] == ["missing.jpg"]
+    assert metrics["psnr"] == pytest.approx(20.1)
+
+
 def test_final_ply_requires_matching_run_metadata(tmp_path: Path) -> None:
     _photometric_fixture(tmp_path)
     ply_dir = tmp_path / "gsplat" / "ply"

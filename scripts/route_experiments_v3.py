@@ -229,6 +229,9 @@ def main() -> None:
     config = trial_config(spec)
     source_hashes = frozen_inputs(spec, scene)
     validation = validation_sources(scene, spec.get("validation"))
+    allow_missing = spec.get("allow_missing_validation", False)
+    if type(allow_missing) is not bool or (allow_missing and (validation is None or len(validation) != 8)):
+        raise ValueError("allow_missing_validation requires a boolean and exactly eight frozen views when enabled")
     seed = spec.get("seed")
     if seed is not None and (type(seed) is not int or not 0 <= seed < 2**32):
         raise ValueError("Trial seed must be an unsigned 32-bit integer")
@@ -288,6 +291,8 @@ def main() -> None:
         "purpose": spec.get("purpose", ""),
         "photometric_holdout": "explicit source IDs; cameras may use validation images",
     }
+    if allow_missing:
+        metadata["allow_missing_validation"] = True
     if args.resume:
         (args.output / "trial_failure.json").unlink(missing_ok=True)
     reuse = {key: spec[key] for key in ("reuse_bundle", "reuse_sha256", "reuse_stage") if key in spec}
@@ -338,9 +343,20 @@ def main() -> None:
     if not validation:
         raise ValueError("Trial requires a frozen validation source set")
     rendered = [view["source_id"] for view in metrics["photometric_views"]]
-    if set(rendered) != validation or len(rendered) != len(validation):
-        atomic_json(run / "trial_failure.json", {"reason": "frozen_views_missing"})
-        raise ValueError("Rendered validation views differ from the frozen source set")
+    rendered_sources = set(rendered)
+    supported = set(metrics["validation_registered_frames"]) & rendered_sources
+    required_views = len(validation) - int(allow_missing)
+    if not rendered_sources <= validation or len(rendered) != len(rendered_sources) or len(supported) < required_views:
+        atomic_json(
+            run / "trial_failure.json",
+            {
+                "reason": "frozen_views_missing",
+                "required_views": required_views,
+                "missing_rendered": sorted(validation - rendered_sources),
+                "missing_sparse_support": sorted(validation - supported),
+            },
+        )
+        raise ValueError("Insufficient frozen validation views with renders and sparse point support")
     import spz
 
     ply = final_ply_path(run)
@@ -353,6 +369,8 @@ def main() -> None:
         "candidate_id": metadata["candidate_id"],
         "final_step": metrics["photometric_step"],
         "validation_sources": sorted(validation),
+        "rendered_validation_sources": sorted(rendered_sources),
+        "supported_validation_sources": sorted(supported),
         "ply_points": original.num_points,
         "spz_points": exported.num_points,
         "pose_and_gt_geometry": spec.get("pose_and_gt_geometry", "not measured for this scene"),
