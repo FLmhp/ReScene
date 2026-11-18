@@ -1,5 +1,6 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from threading import Barrier
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from rescene_api import main
 from rescene_api.auth import hash_password, issue_token
+from rescene_api.config import settings
 from rescene_api.db import Base
 from rescene_api.models import Asset, Project, ReconstructionJob, User
 
@@ -45,6 +47,53 @@ def postgres_sessions(monkeypatch):
         with admin_engine.begin() as connection:
             connection.exec_driver_sql(f'DROP SCHEMA "{schema}" CASCADE')
         admin_engine.dispose()
+
+
+def test_postgres_reapers_fence_late_heartbeat(postgres_sessions):
+    with postgres_sessions.begin() as db:
+        owner = User(email="lease@example.com", password_hash=hash_password("correct-horse"))
+        db.add(owner)
+        db.flush()
+        project = Project(name="Recovery", owner_id=owner.id)
+        db.add(project)
+        db.flush()
+        job = ReconstructionJob(
+            project_id=project.id,
+            profile="balanced",
+            status="RUNNING",
+            leased_by="w1",
+            attempt=1,
+            lease_expires_at=datetime.now(UTC) - timedelta(seconds=30),
+            resume_artifact_key="checkpoint/test-bundle",
+        )
+        db.add(job)
+        db.flush()
+        job_id = job.id
+
+    barrier = Barrier(3)
+
+    def reap():
+        barrier.wait(timeout=10)
+        main.reap_once()
+
+    def late_heartbeat(client):
+        barrier.wait(timeout=10)
+        return client.post(
+            f"/v1/worker/jobs/{job_id}/heartbeat",
+            headers={"Authorization": f"Bearer {settings().worker_token}", "X-Worker-ID": "w1", "X-Lease-Attempt": "1"},
+            json={"progress": 0.9},
+        )
+
+    with TestClient(main.app) as client, ThreadPoolExecutor(max_workers=3) as pool:
+        reapers = [pool.submit(reap) for _ in range(2)]
+        late = pool.submit(late_heartbeat, client)
+        assert late.result(timeout=15).status_code == 409
+        for result in reapers:
+            result.result(timeout=15)
+    with postgres_sessions() as db:
+        job = db.get(ReconstructionJob, job_id)
+        assert job.status == "QUEUED" and job.attempt == 1 and job.leased_by is None and job.lease_expires_at is None
+        assert job.resume_artifact_key == "checkpoint/test-bundle"
 
 
 @pytest.mark.parametrize("operation", ["create", "retry"])

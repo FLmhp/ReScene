@@ -14,12 +14,14 @@ import {
   AnnouncementSchema,
   ApiErrorSchema,
   ArtifactSchema,
+  AssetPageSchema,
   AssetPreviewSchema,
   AuditPageSchema,
   AuthTokenSchema,
   CompleteAssetSchema,
   InvitationSchema,
   JobLogPageSchema,
+  JobPageSchema,
   JobSchema,
   JobStageSchema,
   ManifestSchema,
@@ -28,6 +30,7 @@ import {
   ProjectDetailSchema,
   ProjectMemberSchema,
   ProjectSchema,
+  ProjectSummarySchema,
   PublicShareSchema,
   ShareSchema,
   ShareSummarySchema,
@@ -55,6 +58,8 @@ import {
   type ProjectDetail,
   type ProjectInvitation,
   type ProjectMember,
+  type ProjectSummary,
+  type ProjectWorkspace,
   type PublicShare,
   type Share,
   type ShareSummary,
@@ -315,6 +320,23 @@ export class ResceneClient {
 
   async getProject(id: string): Promise<ProjectDetail> {
     return this.send(`/v1/projects/${encodeURIComponent(id)}`, ProjectDetailSchema);
+  }
+
+  getProjectSummary(id: string): Promise<ProjectSummary> {
+    return this.send(`/v1/projects/${encodeURIComponent(id)}?view=summary`, ProjectSummarySchema);
+  }
+
+  async getWorkspace(id: string, assetCursor = "", jobCursor = ""): Promise<ProjectWorkspace> {
+    const path = `/v1/projects/${encodeURIComponent(id)}`;
+    const [project, assets, jobs] = await Promise.all([
+      this.getProjectSummary(id),
+      this.send(`${path}/assets?cursor=${encodeURIComponent(assetCursor)}`, AssetPageSchema),
+      this.send(`${path}/jobs?cursor=${encodeURIComponent(jobCursor)}`, JobPageSchema),
+    ]);
+    return {
+      ...project, assets: assets.items, jobs: jobs.items,
+      nextAssetCursor: assets.next_cursor, nextJobCursor: jobs.next_cursor,
+    };
   }
 
   async updateProject(id: string, name: string): Promise<Project> {

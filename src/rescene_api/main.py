@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import math
 import secrets
 from contextlib import asynccontextmanager, suppress
@@ -23,7 +24,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, sta
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy import delete, func, or_, select, text, tuple_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -75,6 +76,7 @@ from rescene_api.schemas import (
 from rescene_api.storage import POST_OBJECT_LIMIT, POST_OBJECT_TTL_SECONDS, OssStorage, credentials_dict
 
 bearer = HTTPBearer(auto_error=False)
+logger = logging.getLogger(__name__)
 
 
 def fail(status_code: int, detail: str, code: str, headers: dict[str, str] | None = None) -> NoReturn:
@@ -246,7 +248,13 @@ def bootstrap_admin() -> None:
 async def lifespan(_: FastAPI):
     init_db()
     bootstrap_admin()
-    yield
+    reaper = asyncio.create_task(reap_expired_leases())
+    try:
+        yield
+    finally:
+        reaper.cancel()
+        with suppress(asyncio.CancelledError):
+            await reaper
 
 
 app = FastAPI(title="ReScene API", version=package_version("rescene"), lifespan=lifespan)
@@ -470,8 +478,47 @@ def update_project(project_id: str, payload: CreateProjectRequest, db: Db, user:
 
 
 @app.get("/v1/projects/{project_id}")
-def get_project(project_id: str, db: Db, user: UserDep) -> dict[str, object]:
+def get_project(project_id: str, db: Db, user: UserDep, view: Literal["full", "summary"] = "full") -> dict[str, object]:
     project = project_for_user(db, project_id, user)
+    summary = {
+        "id": project.id,
+        "name": project.name,
+        "owner_id": project.owner_id,
+        "effective_role": effective_role(db, project, user),
+    }
+    if view == "summary":
+        job_filter = ReconstructionJob.project_id == project.id
+        latest = db.execute(
+            select(ReconstructionJob, Reconstruction.id)
+            .outerjoin(Reconstruction, Reconstruction.job_id == ReconstructionJob.id)
+            .where(job_filter)
+            .order_by(ReconstructionJob.created_at.desc(), ReconstructionJob.id.desc())
+            .limit(1)
+        ).first()
+        cover = db.scalar(
+            select(Asset)
+            .where(
+                Asset.project_id == project.id,
+                Asset.status == "READY",
+                or_(*(func.lower(Asset.filename).endswith(suffix) for suffix in sorted(IMAGE_SUFFIXES))),
+            )
+            .order_by(Asset.created_at.desc(), Asset.id.desc())
+            .limit(1)
+        )
+        return {
+            **summary,
+            "asset_count": db.scalar(select(func.count()).select_from(Asset).where(Asset.project_id == project.id)),
+            "job_count": db.scalar(select(func.count()).select_from(ReconstructionJob).where(job_filter)),
+            "has_active_jobs": bool(
+                db.scalar(
+                    select(ReconstructionJob.id)
+                    .where(job_filter, ReconstructionJob.status.in_(["QUEUED", "LEASED", "RUNNING"]))
+                    .limit(1)
+                )
+            ),
+            "cover": asset_summary(cover) if cover else None,
+            "latest_job": job_view(latest[0], latest[1]) if latest else None,
+        }
     expire_stale_uploads(db, project)
     assets = db.scalars(select(Asset).where(Asset.project_id == project.id).order_by(Asset.created_at)).all()
     jobs = db.scalars(
@@ -484,14 +531,65 @@ def get_project(project_id: str, db: Db, user: UserDep) -> dict[str, object]:
         for row in db.scalars(select(Reconstruction).where(Reconstruction.project_id == project.id)).all()
     }
     return {
-        "id": project.id,
-        "name": project.name,
-        "owner_id": project.owner_id,
-        "effective_role": effective_role(db, project, user),
-        "assets": [
-            {"id": item.id, "filename": item.filename, "size": item.size, "status": item.status} for item in assets
-        ],
+        **summary,
+        "assets": [asset_summary(item) for item in assets],
         "jobs": [job_view(item, reconstructions.get(item.id)) for item in jobs],
+    }
+
+
+def asset_summary(asset: Asset) -> dict[str, object]:
+    return {"id": asset.id, "filename": asset.filename, "size": asset.size, "status": asset.status}
+
+
+def page_anchor(cursor: str) -> tuple[datetime, str]:
+    try:
+        timestamp, item_id = cursor.split("|", 1)
+        date = datetime.fromisoformat(timestamp)
+        if not item_id or len(item_id) > 36 or "|" in item_id:
+            raise ValueError
+        return date.astimezone(UTC) if date.tzinfo else date.replace(tzinfo=UTC), item_id
+    except (ValueError, OverflowError):
+        fail(422, "Invalid pagination cursor", "page.invalid_cursor")
+
+
+def next_cursor(item: Asset | ReconstructionJob) -> str:
+    return f"{item.created_at.isoformat()}|{item.id}"
+
+
+PageLimit = Annotated[int, Query(ge=1, le=100)]
+PageCursor = Annotated[str, Query(max_length=100)]
+
+
+@app.get("/v1/projects/{project_id}/assets")
+def list_project_assets(project_id: str, db: Db, user: UserDep, limit: PageLimit = 24, cursor: PageCursor = ""):
+    project = project_for_user(db, project_id, user)
+    expire_stale_uploads(db, project)
+    query = select(Asset).where(Asset.project_id == project.id)
+    if cursor:
+        query = query.where(tuple_(Asset.created_at, Asset.id) < page_anchor(cursor))
+    rows = db.scalars(query.order_by(Asset.created_at.desc(), Asset.id.desc()).limit(limit + 1)).all()
+    return {
+        "items": [asset_summary(row) for row in rows[:limit]],
+        "next_cursor": next_cursor(rows[limit - 1]) if len(rows) > limit else None,
+    }
+
+
+@app.get("/v1/projects/{project_id}/jobs")
+def list_project_jobs(project_id: str, db: Db, user: UserDep, limit: PageLimit = 24, cursor: PageCursor = ""):
+    project = project_for_user(db, project_id, user)
+    query = (
+        select(ReconstructionJob, Reconstruction.id)
+        .outerjoin(Reconstruction, Reconstruction.job_id == ReconstructionJob.id)
+        .where(ReconstructionJob.project_id == project.id)
+    )
+    if cursor:
+        query = query.where(tuple_(ReconstructionJob.created_at, ReconstructionJob.id) < page_anchor(cursor))
+    rows = db.execute(
+        query.order_by(ReconstructionJob.created_at.desc(), ReconstructionJob.id.desc()).limit(limit + 1)
+    ).all()
+    return {
+        "items": [job_view(job, reconstruction_id) for job, reconstruction_id in rows[:limit]],
+        "next_cursor": next_cursor(rows[limit - 1][0]) if len(rows) > limit else None,
     }
 
 
@@ -1325,16 +1423,14 @@ def expire_stale_uploads(db: Session, project: Project) -> None:
     db.commit()
 
 
-@app.post("/v1/worker/lease")
-def lease_job(db: Db, worker_id: WorkerDep, gpu_name: Annotated[str | None, Header(alias="X-GPU-Name")] = None):
+def recover_expired_leases(db: Session, current_time: datetime) -> None:
     if db.get_bind().dialect.name == "postgresql":
         db.execute(text("SELECT pg_advisory_xact_lock(52492371)"))
-    current_time = now()
     expired = db.scalars(
         select(ReconstructionJob)
         .where(
             ReconstructionJob.status.in_(["LEASED", "RUNNING"]),
-            ReconstructionJob.lease_expires_at < current_time,
+            ReconstructionJob.lease_expires_at <= current_time,
         )
         .with_for_update()
     ).all()
@@ -1346,6 +1442,27 @@ def lease_job(db: Db, worker_id: WorkerDep, gpu_name: Annotated[str | None, Head
         job.error_message = "Worker heartbeat expired"
         job.leased_by = None
         job.lease_expires_at = None
+        job.updated_at = current_time
+
+
+def reap_once() -> None:
+    with SessionLocal.begin() as db:
+        recover_expired_leases(db, now())
+
+
+async def reap_expired_leases() -> None:
+    while True:
+        await asyncio.sleep(30)
+        try:
+            await asyncio.to_thread(reap_once)
+        except Exception:
+            logger.exception("Could not recover expired reconstruction leases")
+
+
+@app.post("/v1/worker/lease")
+def lease_job(db: Db, worker_id: WorkerDep, gpu_name: Annotated[str | None, Header(alias="X-GPU-Name")] = None):
+    current_time = now()
+    recover_expired_leases(db, current_time)
     worker = db.get(WorkerNode, worker_id)
     if not worker:
         worker = WorkerNode(id=worker_id)

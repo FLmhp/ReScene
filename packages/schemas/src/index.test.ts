@@ -10,6 +10,8 @@ import {
   NotificationCountSchema,
   NotificationSchema,
   ProjectDetailSchema,
+  reconcileWorkspaceSelection,
+  selectWorkspaceAssets,
   UploadGrantSchema,
 } from "./index";
 
@@ -28,6 +30,23 @@ const job = {
   updated_at: "2026-01-01T00:05:00Z",
   reconstruction_id: null,
 };
+
+describe("workspace selection", () => {
+  const image = { id: "image", filename: "frame.jpg", status: "READY", size: 1024 } as const;
+  const video = { ...image, id: "video", filename: "clip.mp4" };
+  it("adds ready images across pages and preserves the selection on refresh", () => {
+    const second = { ...image, id: "image-two" };
+    const selected = selectWorkspaceAssets([image], [second, video, { ...image, id: "pending", status: "UPLOADING" }], true);
+    expect(selected.map((item) => item.id)).toEqual(["image", "image-two"]);
+    expect(reconcileWorkspaceSelection(selected, [{ ...second, status: "FAILED" }])).toEqual([image]);
+  });
+  it("rejects mixed media, multiple videos and selections over the upload limits", () => {
+    expect(() => selectWorkspaceAssets([image], [video])).toThrow("一组图片或一个视频");
+    expect(() => selectWorkspaceAssets([video], [{ ...video, id: "second-video" }])).toThrow();
+    expect(() => selectWorkspaceAssets([], [{ ...image, size: 8 * 1024 ** 3 + 1 }])).toThrow("8 GiB");
+    expect(() => selectWorkspaceAssets([], Array.from({ length: 501 }, (_, i) => ({ ...image, id: String(i) })), true)).toThrow("500");
+  });
+});
 
 describe("job contract", () => {
   it("accepts the server payload", () => {

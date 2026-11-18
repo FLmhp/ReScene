@@ -9,8 +9,86 @@ from fastapi.testclient import TestClient
 from rescene_api.auth import hash_password, issue_token
 from rescene_api.config import settings
 from rescene_api.db import SessionLocal
-from rescene_api.main import app
+from rescene_api.main import app, reap_once
 from rescene_api.models import Asset, JobStage, ProjectMember, Reconstruction, ReconstructionJob, User
+
+
+def test_project_pagination_is_bounded_and_preserves_full_detail(accounts, project):
+    project_id = project["id"]
+    time = datetime(2026, 1, 1, tzinfo=UTC)
+    with SessionLocal.begin() as db:
+        for index in range(500):
+            db.add(
+                Asset(
+                    id=f"page-asset-{index:03d}",
+                    project_id=project_id,
+                    object_key=f"page/{index}",
+                    filename=f"frame-{index}.jpg",
+                    content_type="image/jpeg",
+                    size=500,
+                    status="READY",
+                    created_at=time,
+                )
+            )
+        for index in range(25):
+            db.add(
+                ReconstructionJob(id=f"page-job-{index:02d}", project_id=project_id, profile="fast", created_at=time)
+            )
+    base = f"/v1/projects/{project_id}"
+    viewer = accounts["viewer"]["headers"]
+    with TestClient(app) as client:
+        for path in ("?view=summary", "/assets", "/jobs"):
+            assert client.get(base + path, headers=accounts["outsider"]["headers"]).status_code == 403
+        summary = client.get(base, params={"view": "summary"}, headers=viewer).json()
+        assert summary["asset_count"] == 500 and summary["job_count"] == 25 and summary["has_active_jobs"]
+        assert "assets" not in summary and "jobs" not in summary
+        assert summary["cover"]["id"] == "page-asset-499"
+        assert summary["latest_job"]["id"] == "page-job-24"
+        legacy = client.get(base, headers=viewer).json()
+        assert len(legacy["assets"]) == 500 and len(legacy["jobs"]) == 25
+        page = client.get(base + "/assets", headers=viewer).json()
+        assert len(page["items"]) == 24
+        with SessionLocal.begin() as db:
+            db.delete(db.get(Asset, page["items"][-1]["id"]))
+        following = client.get(base + "/assets", params={"cursor": page["next_cursor"]}, headers=viewer).json()
+        assert following["items"][0]["id"] == "page-asset-475"
+        assert not {item["id"] for item in page["items"]} & {item["id"] for item in following["items"]}
+        assert client.get(base + "/assets", params={"limit": 101}, headers=viewer).status_code == 422
+        assert client.get(base + "/assets", params={"cursor": "bad"}, headers=viewer).status_code == 422
+        jobs = client.get(base + "/jobs", headers=viewer).json()
+        tail = client.get(base + "/jobs", params={"cursor": jobs["next_cursor"]}, headers=viewer).json()
+        assert len(jobs["items"]) == 24 and [item["id"] for item in tail["items"]] == ["page-job-00"]
+        assert tail["next_cursor"] is None
+
+
+def test_expired_leases_recover_without_a_worker_poll(accounts, project):
+    time = datetime.now(UTC)
+    with SessionLocal.begin() as db:
+        for reason in ("retry", "exhausted", "cancel", "valid"):
+            db.add(
+                ReconstructionJob(
+                    id=reason,
+                    project_id=project["id"],
+                    profile="fast",
+                    status="RUNNING",
+                    leased_by="w1",
+                    lease_expires_at=time + timedelta(seconds=90 if reason == "valid" else -1),
+                    attempt=3 if reason == "exhausted" else 1,
+                    cancel_requested_at=time if reason == "cancel" else None,
+                )
+            )
+    reap_once()
+    reap_once()
+    with TestClient(app) as client:
+        for job_id, expected in {
+            "retry": "QUEUED",
+            "exhausted": "FAILED",
+            "cancel": "CANCELLED",
+            "valid": "RUNNING",
+        }.items():
+            job = client.get(f"/v1/jobs/{job_id}", headers=accounts["owner"]["headers"]).json()
+            assert job["status"] == expected
+            assert job["error_code"] == (None if job_id == "valid" else "WORKER_LEASE_EXPIRED")
 
 
 def test_asset_preview_permissions_and_unavailable_inputs(accounts, project, monkeypatch):
