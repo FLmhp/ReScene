@@ -29,6 +29,14 @@ afterEach(() => {
 });
 
 describe("request handling", () => {
+  it("uses the platform transport when the runtime has no fetch binding", async () => {
+    vi.stubGlobal("fetch", undefined);
+    const transport = vi.fn(async () => jsonResponse([project]));
+    const projects = await new ResceneClient("https://api.example", "token-1", transport).listProjects();
+    expect(projects[0]?.id).toBe("p1");
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
   it("sends the bearer token and validates the payload", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse([project]));
     vi.stubGlobal("fetch", fetchMock);

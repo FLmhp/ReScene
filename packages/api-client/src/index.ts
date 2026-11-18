@@ -189,6 +189,7 @@ export class ResceneClient {
   constructor(
     private readonly baseUrl: string,
     token?: string | null,
+    private readonly fetcher: typeof fetch = (...args) => fetch(...args),
   ) {
     this.token = token ?? null;
   }
@@ -202,7 +203,7 @@ export class ResceneClient {
   }
 
   private async raw(path: string, init: RequestInit = {}): Promise<Response> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const response = await this.fetcher(`${this.baseUrl}${path}`, {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -580,7 +581,7 @@ export class ResceneClient {
       try {
         controller = new AbortController();
         const query = lastEventId ? `?lastEventId=${encodeURIComponent(lastEventId)}` : "";
-        const response = await fetch(`${this.baseUrl}/v1/jobs/${encodeURIComponent(id)}/events${query}`, {
+        const response = await this.fetcher(`${this.baseUrl}/v1/jobs/${encodeURIComponent(id)}/events${query}`, {
           headers: {
             Accept: "text/event-stream",
             ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),

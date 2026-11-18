@@ -1,4 +1,4 @@
-import { setUnauthorizedHandler } from "./polyfill";
+import { miniappFetch, setUnauthorizedHandler } from "./polyfill";
 
 import { ResceneClient } from "@rescene/api-client";
 import Taro from "@tarojs/taro";
@@ -14,7 +14,7 @@ const ANONYMOUS_AUTH_PATHS = ["/v1/auth/login", "/v1/auth/register"];
 export const apiBaseUrl = process.env.TARO_APP_API_URL;
 export const webBaseUrl = process.env.TARO_APP_WEB_URL;
 
-export const client = new ResceneClient(apiBaseUrl, Taro.getStorageSync<string>(TOKEN_KEY) || null);
+export const client = new ResceneClient(apiBaseUrl, Taro.getStorageSync<string>(TOKEN_KEY) || null, miniappFetch);
 
 const expiryListeners = new Set<() => void>();
 let expired = false;

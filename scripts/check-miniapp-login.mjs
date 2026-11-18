@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import { createContext, runInContext } from "node:vm";
 
 const dist = new URL("../apps/miniapp/dist/", import.meta.url);
-const context = createContext({ wx: {} });
+// The WeChat module wrapper has a local fetch binding independent of globalThis.
+const context = createContext({ wx: {}, fetch: undefined });
+Object.defineProperty(context, "fetch", { get: () => undefined, set: () => {} });
 runInContext(`
   let evalAttempts = 0;
   Function = new Proxy(Function, {

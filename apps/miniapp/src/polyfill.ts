@@ -50,38 +50,34 @@ function normalizePayload(payload: unknown): unknown {
   }
 }
 
-export function installFetchShim(): void {
-  if (typeof globalThis.fetch === "function") return;
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request = (init ?? {}) as RequestInitLike;
-    const method = (request.method ?? "GET").toUpperCase() as
-      | "GET"
-      | "POST"
-      | "PUT"
-      | "PATCH"
-      | "DELETE";
-    const header = headerRecord(request.headers);
-    const response = await Taro.request({
-      url: String(input),
-      method,
-      header,
-      data: request.body,
-    });
-    if (response.statusCode === 401) {
-      unauthorizedHandler?.({ url: String(input), authorization: headerValue(header, "authorization") });
-    }
-    const payload = normalizePayload(response.data);
-    const text = typeof response.data === "string" ? response.data : (JSON.stringify(response.data) ?? "");
-    const responseHeaders = response.header ?? {};
-    // Adapter boundary: the client only reads ok/status/headers.get/json/text.
-    return {
-      ok: response.statusCode >= 200 && response.statusCode < 300,
-      status: response.statusCode,
-      headers: { get: (name: string) => headerValue(responseHeaders, name) || null },
-      json: async () => payload,
-      text: async () => text,
-    } as unknown as Response;
-  }) as typeof fetch;
-}
-
-installFetchShim();
+// WeChat's per-module global bindings do not reliably share globalThis.fetch.
+export const miniappFetch: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const request = (init ?? {}) as RequestInitLike;
+  const method = (request.method ?? "GET").toUpperCase() as
+    | "GET"
+    | "POST"
+    | "PUT"
+    | "PATCH"
+    | "DELETE";
+  const header = headerRecord(request.headers);
+  const response = await Taro.request({
+    url: String(input),
+    method,
+    header,
+    data: request.body,
+  });
+  if (response.statusCode === 401) {
+    unauthorizedHandler?.({ url: String(input), authorization: headerValue(header, "authorization") });
+  }
+  const payload = normalizePayload(response.data);
+  const text = typeof response.data === "string" ? response.data : (JSON.stringify(response.data) ?? "");
+  const responseHeaders = response.header ?? {};
+  // Adapter boundary: the client only reads ok/status/headers.get/json/text.
+  return {
+    ok: response.statusCode >= 200 && response.statusCode < 300,
+    status: response.statusCode,
+    headers: { get: (name: string) => headerValue(responseHeaders, name) || null },
+    json: async () => payload,
+    text: async () => text,
+  } as unknown as Response;
+};
