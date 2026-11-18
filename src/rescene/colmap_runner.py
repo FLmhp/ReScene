@@ -55,6 +55,10 @@ def run(
     camera_model: str = "SIMPLE_RADIAL",
     mvs_max_image_size: int = 0,
     poisson_depth: int = 10,
+    *,
+    mapper: str = "incremental",
+    matching_db: Path | None = None,
+    seed: int | None = None,
 ) -> None:
     import pycolmap
 
@@ -64,22 +68,29 @@ def run(
     sparse = scene_dir / "sparse" / "0"
     reader_options = pycolmap.ImageReaderOptions()
     reader_options.camera_model = camera_model
-    pycolmap.extract_features(
-        database,
-        images,
-        reader_options=reader_options,
-        device=pycolmap.Device.cuda,
-    )
-    if matcher == "sequential":
-        pycolmap.match_sequential(database, device=pycolmap.Device.cuda)
+    if seed is not None:
+        pycolmap.set_random_seed(seed)
+    if matching_db is not None:
+        if database.exists() or Path(str(matching_db) + "-wal").exists():
+            raise ValueError("Matching database must be closed and the trial database must be new")
+        shutil.copyfile(matching_db, database)
     else:
-        pycolmap.match_exhaustive(database, device=pycolmap.Device.cuda)
-    maps = pycolmap.incremental_mapping(database, images, sparse_work)
-    if not maps and matcher == "sequential":
+        pycolmap.extract_features(database, images, reader_options=reader_options, device=pycolmap.Device.cuda)
+        if matcher == "sequential":
+            pycolmap.match_sequential(database, device=pycolmap.Device.cuda)
+        else:
+            pycolmap.match_exhaustive(database, device=pycolmap.Device.cuda)
+    maps = (
+        pycolmap.global_mapping(database, images, sparse_work)
+        if mapper == "global"
+        else pycolmap.incremental_mapping(database, images, sparse_work)
+    )
+    experimental = mapper != "incremental" or matching_db is not None
+    if not maps and matcher == "sequential" and not experimental:
         pycolmap.match_exhaustive(database, device=pycolmap.Device.cuda)
         shutil.rmtree(sparse_work, ignore_errors=True)
         maps = pycolmap.incremental_mapping(database, images, sparse_work)
-    if not maps:
+    if not maps and not experimental:
         maps = _relaxed_single_camera_mapping(pycolmap, database, images, sparse_work, reader_options)
     reconstruction = _largest_reconstruction(maps)
     pycolmap.bundle_adjustment(reconstruction)
@@ -146,6 +157,9 @@ def main() -> None:
     )
     parser.add_argument("--mvs-max-image-size", type=int, default=0)
     parser.add_argument("--poisson-depth", type=int, default=10)
+    parser.add_argument("--mapper", choices=("incremental", "global"), default="incremental")
+    parser.add_argument("--matching-db", type=Path)
+    parser.add_argument("--seed", type=int)
     dense_group = parser.add_mutually_exclusive_group()
     dense_group.add_argument("--dense", action="store_true")
     dense_group.add_argument("--dense-only", action="store_true")
@@ -162,6 +176,9 @@ def main() -> None:
             args.camera_model,
             args.mvs_max_image_size,
             args.poisson_depth,
+            mapper=args.mapper,
+            matching_db=args.matching_db,
+            seed=args.seed,
         )
 
 

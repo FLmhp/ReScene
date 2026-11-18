@@ -222,11 +222,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--split-file", type=Path, required=True)
     parser.add_argument("--init-points", choices=("sparse", "dense"), default="sparse")
+    parser.add_argument("--seed", type=int, default=42)
     args, remaining = parser.parse_known_args()
     sys.argv = [sys.argv[0], *remaining]
     root = Path(os.environ.get("RESCENE_ROOT", Path.cwd())).resolve()
     sys.path.insert(0, str(root / "third_party" / "gsplat" / "examples"))
     import simple_trainer as trainer
+
+    seed_upstream = trainer.set_random_seed
+    trainer.set_random_seed = lambda seed: seed_upstream(seed + args.seed - 42)
 
     configure_trainer(trainer, args.split_file, args.init_points)
     configs = {

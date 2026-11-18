@@ -36,6 +36,7 @@ class ProfileConfig:
     vggt_max_reprojection_error: float = 8.0
     vggt_fine_tracking: bool = False
     colmap_camera_model: str = "SIMPLE_RADIAL"
+    colmap_mapper: str = "incremental"
     colmap_mvs_max_image_size: int = 0
     colmap_poisson_depth: int = 10
 
@@ -68,6 +69,7 @@ class ProfileConfig:
             "vggt_max_reprojection_error",
             "vggt_fine_tracking",
             "colmap_camera_model",
+            "colmap_mapper",
             "colmap_mvs_max_image_size",
             "colmap_poisson_depth",
         }
@@ -85,7 +87,12 @@ class ProfileConfig:
                 "VGGT bundle adjustment overrides are not applicable to "
                 f"{self.name}: {', '.join(sorted(vggt_overrides))}"
             )
-        colmap_overrides = set(overrides) & {"colmap_camera_model", "colmap_mvs_max_image_size", "colmap_poisson_depth"}
+        colmap_overrides = set(overrides) & {
+            "colmap_camera_model",
+            "colmap_mapper",
+            "colmap_mvs_max_image_size",
+            "colmap_poisson_depth",
+        }
         if colmap_overrides and self.geometry_backend != "colmap":
             raise ValueError(
                 f"COLMAP overrides are not applicable to {self.name}: {', '.join(sorted(colmap_overrides))}"
@@ -128,6 +135,8 @@ class ProfileConfig:
             raise ValueError("vggt_query_frames cannot exceed max_frames")
         if updated.colmap_camera_model not in {"SIMPLE_RADIAL", "OPENCV", "PINHOLE", "SIMPLE_PINHOLE"}:
             raise ValueError("colmap_camera_model must be SIMPLE_RADIAL, OPENCV, PINHOLE, or SIMPLE_PINHOLE")
+        if updated.colmap_mapper not in ("incremental", "global"):
+            raise ValueError("colmap_mapper must be incremental or global")
         if (
             not isinstance(updated.colmap_mvs_max_image_size, int)
             or isinstance(updated.colmap_mvs_max_image_size, bool)

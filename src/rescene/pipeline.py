@@ -344,6 +344,9 @@ def run_pipeline(
     reuse_bundle: Path | None = None,
     reuse_sha256: str | None = None,
     reuse_stage: str | None = None,
+    random_seed: int | None = None,
+    matching_db: Path | None = None,
+    selected_sources: set[str] | None = None,
 ) -> Path:
     root = project_root()
     run_dir = (output_dir if output_dir else root / "runs" / run_id).resolve()
@@ -353,7 +356,9 @@ def run_pipeline(
         config = config_override or profile_config(profile)
         if config.name.value != profile:
             raise ValueError(f"Profile override is for {config.name.value}, not {profile}")
-        if frame_limit is not None or validation_sources is not None:
+        if any(
+            value is not None for value in (frame_limit, validation_sources, random_seed, matching_db, selected_sources)
+        ):
             raise ValueError("Reuse comparisons use the bundle's fixed image selection")
         return _run_reuse_comparison(root, run_dir, config, reuse_bundle, reuse_sha256, reuse_stage)
     if _run_dir_has_results(run_dir) and not resume:
@@ -398,10 +403,19 @@ def run_pipeline(
                 max_side=config.preprocess_max_side,
                 record_hashes=record_hashes,
                 validation_sources=validation_sources,
+                seed=42 if random_seed is None else random_seed,
             )
     seed = 42
     if manifest_path.is_file():
         seed = int(json.loads(manifest_path.read_text(encoding="utf-8")).get("settings", {}).get("seed", 42))
+    if random_seed is not None and seed != random_seed:
+        raise ValueError("Cannot resume with a different random seed")
+    if selected_sources is not None:
+        selection = json.loads((run_dir / "photometric_selection.json").read_text(encoding="utf-8"))
+        if set(selection["train_source_ids"] + selection["validation_source_ids"]) != selected_sources:
+            raise ValueError("Actual selected sources differ from the frozen selection")
+    if matching_db is not None and config.geometry_backend != "colmap":
+        raise ValueError("A matching database requires the COLMAP route")
 
     sparse_outputs = [run_dir / "sparse"]
     degradation_path = run_dir / "degradation.json"
@@ -423,11 +437,16 @@ def run_pipeline(
                     camera_model=config.colmap_camera_model,
                     mvs_max_image_size=config.colmap_mvs_max_image_size,
                     poisson_depth=config.colmap_poisson_depth,
+                    mapper=config.colmap_mapper,
+                    matching_db=matching_db,
+                    seed=random_seed,
                 )
             )
             try:
                 run_command(command, geometry_log, cwd=root)
             except Exception as error:
+                if config.colmap_mapper != "incremental" or matching_db is not None:
+                    raise
                 if config.geometry_backend == "colmap":
                     fallback = {**config.to_dict(), "matcher": "sequential" if not sequential else "exhaustive"}
                     degraded = {"stage": "geometry", "reason": "matcher_retry", "config": fallback}
@@ -442,6 +461,7 @@ def run_pipeline(
                                 camera_model=config.colmap_camera_model,
                                 mvs_max_image_size=config.colmap_mvs_max_image_size,
                                 poisson_depth=config.colmap_poisson_depth,
+                                seed=random_seed,
                             ),
                             geometry_log,
                             cwd=root,
@@ -573,7 +593,7 @@ def run_pipeline(
         with _timed(timings, "training"), stages.running("training", stage="training", steps=config.gsplat_steps):
             _ensure_downsampled_images(run_dir, config.gsplat_data_factor)
             try:
-                run_command(gsplat_command(root, run_dir, gsplat_dir, config), training_log, cwd=root)
+                run_command(gsplat_command(root, run_dir, gsplat_dir, config, seed=seed), training_log, cwd=root)
             except Exception as error:
                 if not is_cuda_oom(error, training_log):
                     raise
@@ -583,7 +603,7 @@ def run_pipeline(
                 shutil.rmtree(gsplat_dir, ignore_errors=True)
                 _ensure_downsampled_images(run_dir, fallback.gsplat_data_factor)
                 with _timed(timings, "fallback_training"):
-                    run_command(gsplat_command(root, run_dir, gsplat_dir, fallback), training_log, cwd=root)
+                    run_command(gsplat_command(root, run_dir, gsplat_dir, fallback, seed=seed), training_log, cwd=root)
 
     spz_path = run_dir / "scene.spz"
     if not (resume and stages.complete("export", [spz_path])):

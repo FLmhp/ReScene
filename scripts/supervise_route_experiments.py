@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -143,23 +145,43 @@ def require_idle_worker() -> None:
         raise RuntimeError(f"external GPU compute PIDs present before start: {sorted(processes)}")
 
 
-def monitor(trial: dict[str, object]) -> dict[str, object]:
+def trial_requirement(trial: dict, deadline: float | None, free: int, now: float) -> str | None:
+    expected = trial.get("expected_write_bytes", 0)
+    if free < max(10 * 1024**3, (expected * 13 + 9) // 10):
+        return "insufficient_disk"
+    estimate = trial.get("wall_estimate_seconds", GPU_BOUNDS[trial["profile"]])
+    if deadline is not None and now + estimate >= deadline:
+        return "insufficient_time"
+    return None
+
+
+def sha256_spec(trial: dict) -> str:
+    return hashlib.sha256(Path(trial["spec"]).read_bytes()).hexdigest()
+
+
+def trial_command(trial: dict) -> list[str]:
+    return [
+        sys.executable,
+        "-u",
+        str(ROOT / "scripts" / "route_experiments_v3.py"),
+        str(trial["spec"]),
+        str(RUNS / "runs" / trial["name"]),
+        "--repeat",
+        str(trial["repeat"]),
+    ]
+
+
+def monitor(trial: dict[str, object], deadline: float | None = None) -> dict[str, object]:
     name = str(trial["name"])
     run = RUNS / "runs" / name
     log_path = RUNS / "logs" / f"{name}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    if log_path.exists():
+    if log_path.exists() and not trial.get("resume"):
         raise FileExistsError(log_path)
-    command = [
-        str(ROOT / ".venv/bin/python"),
-        "-u",
-        str(ROOT / "scripts" / "route_experiments_v3.py"),
-        str(trial["spec"]),
-        str(run),
-        "--repeat",
-        str(trial["repeat"]),
-    ]
-    with log_path.open("xb") as log:
+    command = trial_command(trial)
+    if trial.get("resume"):
+        command.append("--resume")
+    with log_path.open("ab" if trial.get("resume") else "xb") as log:
         process = subprocess.Popen(
             command, cwd=ROOT, env=environment(), stdout=log, stderr=subprocess.STDOUT, start_new_session=True
         )
@@ -170,6 +192,7 @@ def monitor(trial: dict[str, object]) -> dict[str, object]:
         peak = 0
         samples = 0
         reason = None
+        failure = None
         foreign_seen: dict[int, int] = {}
         try:
             while process.poll() is None:
@@ -199,6 +222,10 @@ def monitor(trial: dict[str, object]) -> dict[str, object]:
                 samples += 1
                 if foreign:
                     reason = f"external GPU compute PIDs appeared: {foreign}"
+                if reason is None and deadline is not None and time.time() >= deadline:
+                    reason = "batch deadline reached"
+                if reason is None and free_bytes() < STOP_FREE_BYTES:
+                    reason = "data volume below emergency free-space threshold"
                 if samples % 30 == 1:
                     stages = {}
                     for path in (run / "stages").glob("*.json"):
@@ -225,6 +252,7 @@ def monitor(trial: dict[str, object]) -> dict[str, object]:
                     warning = True
                 if reason is None and now - start >= GPU_BOUNDS[str(trial["profile"])]:
                     reason = f"stage runtime bound {GPU_BOUNDS[str(trial['profile'])]}s exceeded"
+                    failure = "trial_timeout"
                 if reason is None and now - progress >= STALL_BOUNDS[str(trial["profile"])] and used == 0:
                     reason = (
                         f"no stage/log progress for {STALL_BOUNDS[str(trial['profile'])]}s with no owned GPU memory"
@@ -263,27 +291,40 @@ def monitor(trial: dict[str, object]) -> dict[str, object]:
             "returncode": process.wait(),
             "abort_reason": reason,
             "valid": reason is None and process.returncode == 0,
+            "spec_sha256": sha256_spec(trial),
         }
+        failure_path = run / "trial_failure.json"
+        if reason is None and process.returncode and failure_path.is_file():
+            failure = json.loads(failure_path.read_text(encoding="utf-8"))["reason"]
+        result["trial_failure"] = failure
         atomic_json(RUNS / "resources" / f"{name}.json", result)
         emit(json.dumps(result, sort_keys=True))
         return result
 
 
-def locked(plan: list[dict[str, object]]) -> int:
+def locked(plan: list[dict[str, object]], deadline: float | None = None) -> int:
     status: dict[str, object] = {"trials": {}, "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     code = 0
     for trial in plan:
         name = str(trial["name"])
         existing = RUNS / "resources" / f"{name}.json"
-        if existing.exists() and json.loads(existing.read_text()).get("valid") is True:
+        if existing.exists() and (previous := json.loads(existing.read_text())).get("valid") is True:
+            if previous.get("spec_sha256") != sha256_spec(trial):
+                raise ValueError(f"Existing valid result has a different or missing specification hash: {name}")
+            subprocess.run([*trial_command(trial), "--verify-completed"], check=True, cwd=ROOT)
             status["trials"][name] = "already-valid"
             continue
-        if free_bytes() < STOP_FREE_BYTES:
-            status["stopped"] = f"free space below {STOP_FREE_BYTES} bytes before {name}"
+        requirement = trial_requirement(trial, deadline, free_bytes(), time.time())
+        if requirement == "insufficient_time":
+            status["trials"][name] = requirement
+            code = code or 2
+            continue
+        if requirement is not None:
+            status["stopped"] = f"{requirement} before {name}"
             code = code or 2
             break
         try:
-            result = monitor(trial)
+            result = monitor(trial, deadline)
         except Exception as error:
             status["trials"][name] = f"supervisor-error: {type(error).__name__}: {error}"
             code = code or 1
@@ -296,7 +337,8 @@ def locked(plan: list[dict[str, object]]) -> int:
             break
         if not result["valid"]:
             code = code or 1
-            break
+            if not result.get("trial_failure"):
+                break
     atomic_json(RUNS / "plan-status" / f"{Path(str(plan[0]['spec'])).parent.name}-{plan[0]['name']}.json", status)
     return code
 
@@ -305,18 +347,33 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("plan", type=Path)
     parser.add_argument("--locked", action="store_true")
+    parser.add_argument("--deadline-epoch", type=int)
     args = parser.parse_args()
     plan = json.loads(args.plan.read_text(encoding="utf-8"))
     if not plan:
         raise ValueError("Empty trial plan")
+    names = set()
     for trial in plan:
+        name = trial["name"]
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or name in names:
+            raise ValueError(f"Invalid or duplicate trial name: {name}")
+        names.add(name)
         if not Path(str(trial["spec"])).is_file():
             raise FileNotFoundError(trial["spec"])
+        if trial["profile"] not in GPU_BOUNDS or type(trial["repeat"]) is not int or trial["repeat"] < 1:
+            raise ValueError(f"Invalid trial profile or repeat: {name}")
+        for field in ("expected_write_bytes", "wall_estimate_seconds"):
+            if (args.deadline_epoch is not None or field in trial) and (
+                type(trial.get(field)) is not int or trial[field] <= 0
+            ):
+                raise ValueError(f"{name} requires positive {field}")
+    if args.deadline_epoch is not None and time.time() >= args.deadline_epoch:
+        return 2
     (RUNS / "resources").mkdir(parents=True, exist_ok=True)
     (RUNS / "plan-status").mkdir(parents=True, exist_ok=True)
     (RUNS / "runs").mkdir(parents=True, exist_ok=True)
     if args.locked:
-        return locked(plan)
+        return locked(plan, args.deadline_epoch)
     require_free(MIN_FREE_BYTES, "start")
     require_idle_worker()
     subprocess.run([str(ROOT / "workerctl"), "drain"], check=True, timeout=20)
@@ -335,6 +392,7 @@ def main() -> int:
                 __file__,
                 str(args.plan),
                 "--locked",
+                *(["--deadline-epoch", str(args.deadline_epoch)] if args.deadline_epoch is not None else []),
             ],
             cwd=ROOT,
             start_new_session=True,

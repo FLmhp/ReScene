@@ -83,6 +83,9 @@ def colmap_command(
     camera_model: str = "SIMPLE_RADIAL",
     mvs_max_image_size: int = 0,
     poisson_depth: int = 10,
+    mapper: str = "incremental",
+    matching_db: Path | None = None,
+    seed: int | None = None,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -101,10 +104,18 @@ def colmap_command(
     ]
     if dense:
         command.append("--dense")
+    if mapper != "incremental":
+        command.extend(("--mapper", mapper))
+    if matching_db is not None:
+        command.extend(("--matching-db", str(matching_db)))
+    if seed is not None:
+        command.extend(("--seed", str(seed)))
     return command
 
 
-def gsplat_command(root: Path, scene_dir: Path, output_dir: Path, config: ProfileConfig) -> list[str]:
+def gsplat_command(
+    root: Path, scene_dir: Path, output_dir: Path, config: ProfileConfig, *, seed: int = 42
+) -> list[str]:
     command = [
         sys.executable,
         "-m",
@@ -131,6 +142,8 @@ def gsplat_command(root: Path, scene_dir: Path, output_dir: Path, config: Profil
         "--save_ply",
         "--init-points",
         config.gsplat_init_points,
+        "--seed",
+        str(seed),
     ]
     if config.gsplat_packed:
         command.append("--packed")
