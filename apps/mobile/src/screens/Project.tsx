@@ -10,7 +10,8 @@ import { AssetThumbnail } from "../AssetThumbnail";
 import { enqueue, loadQueue, replayQueued, saveQueue } from "../queue";
 import { useAppearance } from "../appearance";
 import type { Palette } from "@rescene/design-tokens";
-import { type PickedFile, uploadFile } from "../upload";
+import { mediaType, summarizeMediaWarnings } from "@rescene/uploader";
+import { inspectPickedFiles, type PickedFile, uploadFile } from "../upload";
 import { Button, Card, ErrorText, Field, Screen, useTextStyles } from "../ui";
 
 const PROFILES: Profile[] = ["fast", "balanced", "quality"];
@@ -46,6 +47,8 @@ export function ProjectScreen({ project, onJob, onBack }: {
   const jobFlight = useRef(false);
   const uploadFlights = useRef(new Set<string>());
   const uploadSequence = useRef(0);
+  const picking = useRef(false);
+  const [checkingMedia, setCheckingMedia] = useState(false);
   const replayed = useRef(false);
   const [timeline, setTimeline] = useState<TimelineRow[]>([]);
   const [inviteNotice, setInviteNotice] = useState("");
@@ -133,18 +136,32 @@ export function ProjectScreen({ project, onJob, onBack }: {
   }
 
   async function pickAndUpload() {
+    if (picking.current || !canWrite) return;
+    picking.current = true;
+    setCheckingMedia(true);
     try {
+      setError("");
       const result = await DocumentPicker.getDocumentAsync({ multiple: true, type: ["image/*", "video/*"], copyToCacheDirectory: true });
       if (result.canceled) return;
-      for (const asset of result.assets) {
-        if (!asset.size) { setError(`${asset.name} 无法读取文件大小，请重新选择`); continue; }
-        const file: PickedFile = { uri: asset.uri, name: asset.name, mimeType: asset.mimeType ?? "application/octet-stream", size: asset.size };
+      const files = result.assets.map((asset): PickedFile => ({
+        uri: asset.uri, name: asset.name, mimeType: mediaType(asset.name) ?? "application/octet-stream", size: asset.size ?? 0,
+      }));
+      const warnings = await inspectPickedFiles(files);
+      if (warnings.length) {
+        const confirmed = await new Promise<boolean>((resolve) => Alert.alert("素材检查提示", summarizeMediaWarnings(warnings), [
+          { text: "重新选择", style: "cancel", onPress: () => resolve(false) },
+          { text: "仍然上传", onPress: () => resolve(true) },
+        ], { cancelable: true, onDismiss: () => resolve(false) }));
+        if (!confirmed) return;
+      }
+      for (const file of files) {
         const id = `${Date.now()}-${++uploadSequence.current}`;
         await enqueue({ kind: "upload", id, projectId: project.id, uri: file.uri, name: file.name, mimeType: file.mimeType, size: file.size, createdAt: Date.now() });
         setUploads((current) => [...current, { id, file, progress: 0, status: "uploading" }]);
         void runUpload(id, file);
       }
     } catch (reason) { setError(explainError(reason, "选择文件失败")); }
+    finally { picking.current = false; setCheckingMedia(false); }
   }
 
   async function createJob() {
@@ -233,7 +250,7 @@ export function ProjectScreen({ project, onJob, onBack }: {
             <Button tone="ghost" disabled={!selected.length} label="清空选择" onPress={() => setSelected([])} />
           </View> : null}
           {canWrite ? <>
-            <Button label="选择图片或视频上传" onPress={pickAndUpload} />
+            <Button disabled={checkingMedia} label={checkingMedia ? "正在检查素材…" : "选择图片或视频上传"} onPress={pickAndUpload} />
             <Text style={textStyles.muted}>一组 JPG / PNG 图片或一个视频。单文件 ≤ 5 GiB，单任务 ≤ 8 GiB。</Text>
           </> : null}
           {uploads.map((item) => <View key={item.id}>

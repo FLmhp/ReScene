@@ -1,5 +1,6 @@
 import { isOfflineError, ResceneApiError, type ResceneClient } from "@rescene/api-client";
 import type { UploadGrant } from "@rescene/schemas";
+import { inspectMedia, mediaType, SAMPLE_SIDE } from "@rescene/uploader";
 import { sha256 } from "@noble/hashes/sha2.js";
 import Taro from "@tarojs/taro";
 
@@ -58,17 +59,30 @@ function hashOf(path: string): string {
   return Array.from(sha256(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function contentTypeOf(name: string): string | null {
-  const lower = name.toLowerCase();
-  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
-  if (lower.endsWith(".png")) return "image/png";
-  if (lower.endsWith(".webm")) return "video/webm";
-  if (lower.endsWith(".m4v")) return "video/x-m4v";
-  if (lower.endsWith(".mov")) return "video/quicktime";
-  if (lower.endsWith(".mp4")) return "video/mp4";
-  if (lower.endsWith(".mkv")) return "video/x-matroska";
-  if (lower.endsWith(".avi")) return "video/x-msvideo";
-  return null;
+export function inspectChosenFiles(files: ChosenFile[]): Promise<string[]> {
+  return inspectMedia(files, async (file) => new Uint8Array(
+    Taro.getFileSystemManager().readFileSync(file.path, undefined, 0, Math.min(file.size, 16)) as ArrayBuffer,
+  ), async (file) => {
+    if (typeof Taro.createOffscreenCanvas !== "function") {
+      await Taro.getImageInfo({ src: file.path });
+      return null;
+    }
+    const canvas = Taro.createOffscreenCanvas({ type: "2d", width: SAMPLE_SIDE, height: SAMPLE_SIDE });
+    const context = canvas.getContext("2d") as CanvasRenderingContext2D | null;
+    if (!context) {
+      await Taro.getImageInfo({ src: file.path });
+      return null;
+    }
+    const image = canvas.createImage();
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("图片检查超时")), 10000);
+      image.onload = () => { clearTimeout(timer); resolve(); };
+      image.onerror = () => { clearTimeout(timer); reject(new Error("无法解码图片")); };
+      image.src = file.path;
+    });
+    context.drawImage(image as unknown as CanvasImageSource, 0, 0, SAMPLE_SIDE, SAMPLE_SIDE);
+    return context.getImageData(0, 0, SAMPLE_SIDE, SAMPLE_SIDE).data;
+  });
 }
 
 /**
@@ -129,7 +143,7 @@ export async function chooseMedia(): Promise<ChosenFile[]> {
   const unsupported: string[] = [];
   const files = result.tempFiles.map((file) => {
     const name = file.tempFilePath.split("/").pop() ?? "upload.jpg";
-    const contentType = contentTypeOf(name);
+    const contentType = mediaType(name);
     if (!contentType) unsupported.push(name);
     return { path: file.tempFilePath, size: file.size, name, contentType: contentType ?? "" };
   });

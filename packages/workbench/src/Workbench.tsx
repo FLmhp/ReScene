@@ -20,7 +20,7 @@ import type {
   User,
   WorkerStatus,
 } from "@rescene/schemas";
-import type { UploadAdapter } from "@rescene/uploader";
+import { inspectMedia, SAMPLE_SIDE, summarizeMediaWarnings, type UploadAdapter } from "@rescene/uploader";
 import { type ComponentType, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { AdminConsole } from "./AdminConsole";
@@ -412,10 +412,27 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     if (!files?.length || !selected || uploading || !canWrite) return;
     const list = Array.from(files);
     setUploading(true);
-    setUploads(list.map((file) => ({ name: file.name, progress: 0, status: "等待上传", file, projectId: selected })));
     try {
+      setMessage("正在检查素材…");
+      const warnings = await inspectMedia(list, async (file) => new Uint8Array(await file.slice(0, 16).arrayBuffer()), async (file) => {
+        const bitmap = await createImageBitmap(file, { resizeWidth: SAMPLE_SIDE, resizeHeight: SAMPLE_SIDE })
+          .catch(() => { throw new Error("无法解码图片"); });
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = canvas.height = SAMPLE_SIDE;
+          const context = canvas.getContext("2d");
+          if (!context) return null;
+          context.drawImage(bitmap, 0, 0, SAMPLE_SIDE, SAMPLE_SIDE);
+          return context.getImageData(0, 0, SAMPLE_SIDE, SAMPLE_SIDE).data;
+        } finally { bitmap.close(); }
+      });
+      setMessage("");
+      if (warnings.length && !window.confirm(`素材检查提示\n${summarizeMediaWarnings(warnings)}\n仍然上传？`)) return;
+      setUploads(list.map((file) => ({ name: file.name, progress: 0, status: "等待上传", file, projectId: selected })));
       for (let index = 0; index < list.length; index++) await transfer(list[index], index, selected);
       await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "素材检查失败");
     } finally {
       setUploading(false);
     }

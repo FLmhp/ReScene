@@ -3,6 +3,7 @@ import { AssetThumbnail } from "../../asset-thumbnail";
 import { explainError, isOfflineError, ResceneApiError } from "@rescene/api-client";
 import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, jobErrorHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
 import type { Asset, Job, JobLog, MemberRole, Profile, ProjectWorkspace, ProjectMember, ShareSummary, WorkerStatus } from "@rescene/schemas";
+import { summarizeMediaWarnings } from "@rescene/uploader";
 import { Button, Image, Input, Progress, Text, View } from "@tarojs/components";
 import Taro, { useDidHide, useDidShow, useRouter } from "@tarojs/taro";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -11,6 +12,7 @@ import { apiBaseUrl, client, webBaseUrl } from "../../api";
 import { enqueue, loadQueue, replayQueued, saveQueue } from "../../queue";
 import {
   chooseMedia,
+  inspectChosenFiles,
   uploadFile,
   UploadError,
   UploadSelectionError,
@@ -303,8 +305,15 @@ export default function ProjectPage() {
   async function upload() {
     if (selectLock.current || uploadLock.current) return;
     selectLock.current = true;
+    setUploading(true);
     try {
+      setError("");
       const files = await chooseMedia();
+      const warnings = await inspectChosenFiles(files);
+      if (warnings.length) {
+        const result = await Taro.showModal({ title: "素材检查提示", content: summarizeMediaWarnings(warnings), confirmText: "仍然上传", cancelText: "重新选择" });
+        if (!result.confirm) return;
+      }
       const failed = uploads.filter((item) => item.status === "failed");
       const pending: UploadItem[] = [];
       for (const file of files) {
@@ -329,6 +338,7 @@ export default function ProjectPage() {
       setError(message(reason, "选择文件失败"));
     } finally {
       selectLock.current = false;
+      setUploading(false);
     }
   }
 

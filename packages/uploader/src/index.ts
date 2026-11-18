@@ -11,6 +11,7 @@ export const MINIAPP_FILE_LIMIT = 10 * 1024 * 1024;
 export const MINIAPP_FILE_COUNT = 8;
 
 export * from "./queue";
+export * from "./media-preflight";
 
 export type UploadRequest = {
   projectId: string;

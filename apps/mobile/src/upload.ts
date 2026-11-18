@@ -1,5 +1,8 @@
 import type { ResceneClient } from "@rescene/api-client";
+import { inspectMedia, SAMPLE_SIDE } from "@rescene/uploader";
 import { File, Paths } from "expo-file-system";
+import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
+import { decode } from "jpeg-js";
 
 export type PickedFile = {
   uri: string;
@@ -9,6 +12,26 @@ export type PickedFile = {
 };
 
 export type JobFile = { uri: string; name: string; type: string };
+
+export function inspectPickedFiles(files: PickedFile[]): Promise<string[]> {
+  return inspectMedia(files, async (file) => {
+    const reader = new File(file.uri).open();
+    try { return await reader.readBytes(Math.min(file.size, 16)); }
+    finally { reader.close(); }
+  }, async (file) => {
+    const context = ImageManipulator.manipulate(file.uri, { maxWidth: SAMPLE_SIDE, maxHeight: SAMPLE_SIDE });
+    try {
+      const image = await context.resize({ width: SAMPLE_SIDE, height: SAMPLE_SIDE }).renderAsync();
+      try {
+        const sample = await image.saveAsync({ format: SaveFormat.JPEG, compress: 0.95 });
+        const temporary = new File(sample.uri);
+        try { return decode(await temporary.bytes(), { useTArray: true }).data; }
+        finally { temporary.delete(); }
+      } finally { image.release(); }
+    } catch { throw new Error("无法解码图片"); }
+    finally { context.release(); }
+  });
+}
 
 /** Native streaming digest: never materializes the video in the JS heap. */
 export function sha256Of(file: PickedFile): Promise<string> {

@@ -3,11 +3,44 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from playwright.sync_api import Browser, expect, sync_playwright
+from PIL import Image
+from playwright.sync_api import Browser, Page, expect, sync_playwright
+
+
+def verify_media_selection(page: Page, output: Path, client: str) -> None:
+    requests = []
+    dialogs = []
+
+    def record(request):
+        if "/upload-session" in request.url:
+            requests.append(request.url)
+
+    page.on("request", record)
+    upload = page.locator('input[type="file"]')
+    upload.set_input_files({"name": "renamed.jpg", "mimeType": "image/jpeg", "buffer": b"not a JPEG"})
+    expect(page.get_by_text("内容与扩展名不符", exact=False)).to_be_visible()
+    page.screenshot(path=str(output / f"{client}-material-validation.png"))
+    with io.BytesIO() as raw:
+        Image.new("RGB", (96, 96), (128, 128, 128)).save(raw, format="JPEG")
+        photo = raw.getvalue()
+
+    def dismiss(dialog):
+        dialogs.append(dialog.message)
+        dialog.dismiss()
+
+    page.once("dialog", dismiss)
+    upload.set_input_files(
+        [{"name": name, "mimeType": "image/jpeg", "buffer": photo} for name in ("blur.jpg", "copy.jpg")]
+    )
+    expect(upload).to_be_enabled()
+    assert len(dialogs) == 1 and "可能模糊" in dialogs[0] and "可能重复" in dialogs[0], dialogs
+    assert not requests, requests
+    page.remove_listener("request", record)
 
 
 def verify_viewer(browser: Browser, web_url: str, output: Path, scene: Path) -> None:
@@ -185,6 +218,11 @@ def verify(web_url: str, desktop_url: str, output: Path, image: Path, scene: Pat
                     page.screenshot(path=str(output / f"{client}-{width}-{appearance}-projects.png"), full_page=True)
                     page.get_by_role("button", name="打开项目").click()
                     expect(page.get_by_role("heading", name=project["name"])).to_be_visible()
+                    if width >= 1280 and appearance == "light":
+                        verify_media_selection(page, output, client)
+                        results.append(
+                            {"client": client, "check": "format, blur, duplicate preflight", "status": "PASS"}
+                        )
                     start = page.get_by_role("button", name="开始三维重建")
                     expect(start).to_be_disabled()
                     expect(page.get_by_role("checkbox", name="正在上传", exact=False)).to_be_disabled()
