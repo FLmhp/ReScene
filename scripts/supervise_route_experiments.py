@@ -162,8 +162,9 @@ def sha256_spec(trial: dict) -> str:
 
 def require_archive_mount() -> None:
     if archive := os.environ.get("RESCENE_EXPERIMENT_ARCHIVE"):
+        shared = SHARED.resolve()
         target = Path(archive).resolve()
-        if not target.is_relative_to(SHARED) or not SHARED.is_mount():
+        if not target.is_relative_to(shared) or not shared.is_mount():
             raise RuntimeError("Experiment archive requires the mounted /root/autodl-fs volume")
 
 
