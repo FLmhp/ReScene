@@ -155,6 +155,8 @@ def gsplat_command(
         command.append("--app_opt")
     if config.gsplat_depth_loss:
         command.append("--depth_loss")
+    if config.gsplat_cache_images:
+        command.append("--cache_images")
     return command
 
 

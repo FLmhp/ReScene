@@ -41,6 +41,7 @@ class ProfileConfig:
     colmap_poisson_depth: int = 10
     vggt_depth_confidence: float | None = None
     vggt_track_observation_limit: int | None = None
+    gsplat_cache_images: bool = False
 
     def degraded(self) -> ProfileConfig:
         """Return the single bounded CUDA OOM fallback configuration."""
@@ -57,6 +58,8 @@ class ProfileConfig:
         for name in ("vggt_depth_confidence", "vggt_track_observation_limit"):
             if config[name] is None:
                 del config[name]
+        if not self.gsplat_cache_images:
+            del config["gsplat_cache_images"]
         return config
 
     def with_overrides(self, overrides: dict[str, Any]) -> ProfileConfig:
@@ -70,6 +73,7 @@ class ProfileConfig:
             "gsplat_app_opt",
             "gsplat_depth_loss",
             "gsplat_init_points",
+            "gsplat_cache_images",
             "vggt_query_frames",
             "vggt_max_query_points",
             "vggt_max_reprojection_error",
@@ -150,9 +154,17 @@ class ProfileConfig:
             raise ValueError("gsplat_init_points must be sparse or dense")
         if updated.gsplat_init_points == "dense" and not updated.dense_reconstruction:
             raise ValueError("gsplat_init_points=dense requires a dense-capable route")
-        for name in ("gsplat_packed", "gsplat_app_opt", "gsplat_depth_loss", "vggt_fine_tracking"):
+        for name in (
+            "gsplat_packed",
+            "gsplat_app_opt",
+            "gsplat_depth_loss",
+            "gsplat_cache_images",
+            "vggt_fine_tracking",
+        ):
             if not isinstance(getattr(updated, name), bool):
                 raise ValueError(f"{name} must be true or false")
+        if updated.gsplat_cache_images and updated.max_frames * updated.preprocess_max_side**2 * 3 > 2 * 1024**3:
+            raise ValueError("gsplat_cache_images exceeds the 2 GiB decoded RGB budget")
         if updated.vggt_query_frames > updated.max_frames:
             raise ValueError("vggt_query_frames cannot exceed max_frames")
         if updated.colmap_camera_model not in {"SIMPLE_RADIAL", "OPENCV", "PINHOLE", "SIMPLE_PINHOLE"}:

@@ -44,3 +44,11 @@ def test_vggt_screening_options_are_opt_in(tmp_path: Path) -> None:
     command = vggt_command(tmp_path, tmp_path, config)
     assert command[command.index("--depth-confidence") + 1] == "3.0"
     assert command[command.index("--track-observation-limit") + 1] == "65536"
+
+
+def test_gsplat_image_cache_is_opt_in(tmp_path: Path) -> None:
+    baseline = profile_config("fast")
+    assert "gsplat_cache_images" not in baseline.to_dict()
+    assert "--cache_images" not in gsplat_command(tmp_path, tmp_path, tmp_path, baseline)
+    config = baseline.with_overrides({"gsplat_cache_images": True})
+    assert "--cache_images" in gsplat_command(tmp_path, tmp_path, tmp_path, config)
