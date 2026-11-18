@@ -112,13 +112,13 @@ Python/API 改动至少运行相关测试和 Python 检查；共享契约改动�
 | Android | `pnpm --filter @rescene/mobile typecheck` 和 `pnpm --filter @rescene/mobile export` |
 | 小程序 | `pnpm --filter @rescene/miniapp typecheck`，生产模式构建见下方环境变量 |
 
-小程序生产模式编译需要三个变量，以下 POSIX 示例只用于编译验证，不能用于正式发布：
+小程序生产模式编译需要三个变量。ReScene 当前使用 AppID `wxedb245fb415d436e`：
 
 ```bash
-TARO_APP_API_URL=https://api.example.com TARO_APP_WEB_URL=https://app.example.com TARO_APP_WECHAT_APP_ID=wx0123456789abcdef pnpm --filter @rescene/miniapp build:weapp
+TARO_APP_API_URL=https://api.rescene.xyz TARO_APP_WEB_URL=https://app.rescene.xyz TARO_APP_WECHAT_APP_ID=wxedb245fb415d436e pnpm --filter @rescene/miniapp build:weapp
 ```
 
-PowerShell 可先分别用 `$env:TARO_APP_API_URL`、`$env:TARO_APP_WEB_URL`、`$env:TARO_APP_WECHAT_APP_ID` 设置相同示例值，再运行 `pnpm --filter @rescene/miniapp build:weapp`。示例 AppID、域名和编译成功不代表具备小程序发布资格。
+PowerShell 可先分别用 `$env:TARO_APP_API_URL`、`$env:TARO_APP_WEB_URL`、`$env:TARO_APP_WECHAT_APP_ID` 设置相同值，再运行 `pnpm --filter @rescene/miniapp build:weapp`。AppID 和域名必须与微信公众平台后台一致；编译成功不代表已经通过平台审核或发布。
 
 [check.yml](.github/workflows/check.yml) 定义五个检查：
 
