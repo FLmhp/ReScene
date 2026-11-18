@@ -19,10 +19,12 @@ export function Screen({
   children,
   title,
   scroll = false,
+  footer,
 }: {
   children: ReactNode;
   title: string;
   scroll?: boolean;
+  footer?: ReactNode;
 }) {
   const { theme } = useAppearance();
   const styles = makeStyles(theme);
@@ -38,6 +40,7 @@ export function Screen({
           {header}
           {children}
         </ScrollView>
+        {footer}
       </View>
     );
   }

@@ -323,3 +323,16 @@ page { background: #f3f5f9; font-family: -apple-system, 'PingFang SC', sans-seri
 .preview-placeholder { display: flex; align-items: center; justify-content: center; font-size: 24px; color: var(--muted); }
 .selection-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .button.selected { border-color: var(--accent); background: var(--surface-strong); color: var(--accent); }
+.asset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.asset-tile { min-width: 0; overflow: hidden; border: 1px solid var(--border-soft); border-radius: 16px; background: var(--panel-alt); }
+.asset-tile.selected { border-color: var(--accent); background: var(--surface-strong); }
+.asset-tile .preview-image { display: block; width: 100%; height: 180px; border-radius: 0; }
+.asset-tile .preview-placeholder { display: flex; }
+.asset-tile .asset-choice { padding: 16px; min-height: 88px; overflow-wrap: anywhere; }
+.asset-tile > .button { margin: 0 12px 12px; }
+.page-controls { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 16px; }
+.page-controls .button { margin: 0; }
+.selection-spacer { height: calc(148px + env(safe-area-inset-bottom)); }
+.selection-bar { position: fixed; z-index: 20; bottom: 0; left: 0; right: 0; padding: 16px 24px calc(16px + env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--border-soft); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.selection-bar .button { margin: 0; flex-shrink: 0; }
+.selection-bar text { display: block; }

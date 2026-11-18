@@ -45,7 +45,8 @@ if ($gradle -notmatch "(?m)^\s*versionName\s+`"$version`"\s*$" -or
 
 Push-Location $android
 try {
-    & .\gradlew.bat --no-daemon -I (Join-Path $PSScriptRoot "android-windows-cmake.init.gradle") :app:assembleRelease "-PreactNativeArchitectures=arm64-v8a,x86_64"
+    # React Native's bundle task can miss changes in sibling workspace packages.
+    & .\gradlew.bat --no-daemon -I (Join-Path $PSScriptRoot "android-windows-cmake.init.gradle") :app:createBundleReleaseJsAndAssets --rerun :app:assembleRelease "-PreactNativeArchitectures=arm64-v8a,x86_64"
     if ($LASTEXITCODE -ne 0) { throw "Gradle release build failed" }
 } finally {
     Pop-Location

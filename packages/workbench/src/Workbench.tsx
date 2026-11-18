@@ -1,10 +1,11 @@
 "use client";
 
 import { ResceneApiError, explainError, type JobEvent, type ResceneClient } from "@rescene/api-client";
-import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, stageLabel } from "@rescene/schemas";
+import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, jobErrorHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
 import type {
   AppNotification,
   Artifact,
+  Asset,
   AuditEntry,
   Job,
   JobLog,
@@ -12,7 +13,7 @@ import type {
   MemberRole,
   Profile,
   Project,
-  ProjectDetail,
+  ProjectWorkspace,
   ProjectInvitation,
   ProjectMember,
   ShareSummary,
@@ -20,7 +21,7 @@ import type {
   WorkerStatus,
 } from "@rescene/schemas";
 import type { UploadAdapter } from "@rescene/uploader";
-import { type ComponentType, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ComponentType, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { AdminConsole } from "./AdminConsole";
 import { BrandMark } from "./BrandMark";
@@ -36,8 +37,8 @@ const TOKEN_KEY = "rescene-token";
 const PROJECT_KEY = "rescene-project";
 const JOB_KEY = "rescene-job";
 const ACTIVE: Record<string, boolean> = { QUEUED: true, LEASED: true, RUNNING: true };
-const VIDEO_FILE = /\.(mp4|mov|mkv|avi|webm|m4v)$/i;
 const PROFILES: Profile[] = ["fast", "balanced", "quality"];
+const PANES = [{ key: "materials", label: "素材" }, { key: "tasks", label: "任务" }, { key: "results", label: "结果" }] as const;
 const NOTIFY_PAGE_SIZE = 20;
 type UploadItem = { name: string; progress: number; status: string; file?: File; projectId?: string; retryable?: boolean };
 type TimelineRow = { key: string; stage: string; status: string; progress: number; message?: string | null; metrics: Record<string, unknown> };
@@ -58,13 +59,17 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [projects, setProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState("");
   const [selectedJob, setSelectedJob] = useState("");
-  const [detail, setDetail] = useState<ProjectDetail | null>(null);
+  const [detail, setDetail] = useState<ProjectWorkspace | null>(null);
+  const [assetPages, setAssetPages] = useState([""]);
+  const [jobPages, setJobPages] = useState([""]);
+  const [pane, setPane] = useState<(typeof PANES)[number]["key"]>("materials");
+  const workspaceRequest = useRef(0);
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [shares, setShares] = useState<ShareSummary[]>([]);
   const [online, setOnline] = useState(false);
   const [search, setSearch] = useState("");
   const [profile, setProfile] = useState<Profile>("balanced");
-  const [selectedAssets, setSelectedAssets] = useState<string[]>([]);
+  const [selectedAssets, setSelectedAssets] = useState<Asset[]>([]);
   const [liveJob, setLiveJob] = useState<Job | null>(null);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -72,6 +77,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const createLock = useRef(false);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [scene, setScene] = useState<{ reconstructionId: string; kind: string } | null>(null);
+  const sceneDialog = useRef<HTMLDialogElement>(null);
   const [viewerStatus, setViewerStatus] = useState("");
   const [createdLink, setCreatedLink] = useState("");
   const [createdShareToken, setCreatedShareToken] = useState("");
@@ -114,10 +120,10 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     };
   }, []);
   useEffect(() => {
-    if (!scene) return;
-    const close = (event: KeyboardEvent) => { if (event.key === "Escape") setScene(null); };
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
+    const dialog = sceneDialog.current;
+    if (!scene || !dialog) return;
+    dialog.showModal();
+    return () => dialog.close();
   }, [scene]);
   useEffect(() => {
     if (!navOpen) return;
@@ -159,28 +165,31 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   }, [client, expire]);
   const refresh = useCallback(async () => {
     if (!token) return;
+    const request = ++workspaceRequest.current;
     try {
       const [user, list, worker] = await Promise.all([client.getMe(), client.listProjects(), client.getWorkerStatus()]);
       setMe(user); setProjects(list); setOnline(worker.online); setWorkerStatus(worker); setLoaded(true);
       await loadNotifications();
       void loadUnread();
-      if (selected) {
+      if (selected && selectedRef.current === selected && request === workspaceRequest.current) {
         if (!detailRef.current) setDetailLoading(true);
         try {
-          const project = await client.getProject(selected);
-          if (selectedRef.current === selected) {
+          const project = await client.getWorkspace(selected, assetPages[assetPages.length - 1], jobPages[jobPages.length - 1]);
+          if (selectedRef.current === selected && request === workspaceRequest.current) {
             setDetail(project);
+            setSelectedAssets((current) => reconcileWorkspaceSelection(current, project.assets));
             setDetailError("");
           }
         } catch (error) {
           if (error instanceof ResceneApiError && error.status === 401) throw error;
-          if (selectedRef.current === selected) {
+          if (selectedRef.current === selected && request === workspaceRequest.current) {
+            if (error instanceof ResceneApiError && [403, 404].includes(error.status)) setDetail(null);
             setDetailError(error instanceof ResceneApiError && error.status === 403
               ? "当前账号无权访问该项目。"
               : error instanceof Error ? error.message : "无法加载项目。");
           }
         } finally {
-          setDetailLoading(false);
+          if (request === workspaceRequest.current) setDetailLoading(false);
         }
       }
     } catch (error) {
@@ -188,7 +197,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       if (error instanceof ResceneApiError && error.status === 401) expire();
       else setMessage(error instanceof Error ? error.message : "请求失败，请重试");
     }
-  }, [client, expire, loadNotifications, loadUnread, selected, token]);
+  }, [assetPages, client, expire, jobPages, loadNotifications, loadUnread, selected, token]);
   useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 15000); return () => clearInterval(timer); }, [refresh]);
   useEffect(() => {
     if (!token) return;
@@ -207,9 +216,26 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   useEffect(() => {
     if (previousSelection.current === selected) return;
     previousSelection.current = selected;
-    setSelectedAssets([]); setSelectedJob(""); setDetail(null); setLiveJob(null); setScene(null); setArtifacts([]); setMembers([]); setShares([]); setCreatedLink(""); setCreatedShareToken(""); setTimeline([]); setUploads([]); setInvitations([]); setAudit([]);
+    setSelectedAssets([]); setDetail(null); setLiveJob(null); setScene(null); setArtifacts([]); setMembers([]); setShares([]); setCreatedLink(""); setCreatedShareToken(""); setTimeline([]); setUploads([]); setInvitations([]); setAudit([]);
   }, [selected]);
-  const latest = useMemo(() => liveJob?.id === selectedJob ? liveJob : detail?.jobs.find((job) => job.id === selectedJob) ?? detail?.jobs[0], [detail, liveJob, selectedJob]);
+  const listedJob = detail?.jobs.find((job) => job.id === selectedJob);
+  const currentJob = listedJob ?? (selectedJob ? undefined : detail?.jobs[0]);
+  const latest = liveJob && liveJob.id === (selectedJob || currentJob?.id) ? liveJob : currentJob;
+  const loadedProjectId = detail?.id;
+  useEffect(() => {
+    if (!loadedProjectId || !selectedJob || listedJob) return;
+    let active = true;
+    void client.getJob(selectedJob).then((job) => {
+      if (!active) return;
+      if (job.project_id === loadedProjectId) setLiveJob(job);
+      else setSelectedJob("");
+    }).catch((error: unknown) => {
+      if (!active) return;
+      if (error instanceof ResceneApiError && error.status === 401) expire();
+      else { setSelectedJob(""); setMessage(explainError(error, "无法加载选中的任务")); }
+    });
+    return () => { active = false; };
+  }, [client, expire, listedJob?.id, loadedProjectId, selectedJob]);
   const reconstructionId = latest?.reconstruction_id ?? "";
   const activeReconstruction = useRef(reconstructionId);
   activeReconstruction.current = reconstructionId;
@@ -303,6 +329,9 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     setNavOpen(false);
     setSelected(id);
     setSelectedJob("");
+    setAssetPages([""]);
+    setJobPages([""]);
+    setPane("materials");
     setDetail(null);
     setDetailError("");
     tokenStore.remove(JOB_KEY);
@@ -310,6 +339,17 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     else tokenStore.remove(PROJECT_KEY);
   }
   function selectJob(id: string) { setSelectedJob(id); tokenStore.set(JOB_KEY, id); setLiveJob(null); setScene(null); setArtifacts([]); setTimeline([]); }
+  function changePage(which: "assets" | "jobs", cursor?: string) {
+    if (detailLoading) return;
+    setDetailLoading(true);
+    const setPages = which === "assets" ? setAssetPages : setJobPages;
+    setPages((current) => cursor ? [...current, cursor] : current.slice(0, -1));
+    if (which === "jobs") { selectJob(""); tokenStore.remove(JOB_KEY); }
+  }
+  function chooseAssets(assets: Asset[], imagesOnly = false) {
+    try { setSelectedAssets(selectWorkspaceAssets(selectedAssets, assets, imagesOnly)); }
+    catch (error) { setMessage(explainError(error, "无法选择素材")); }
+  }
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -394,11 +434,8 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   async function createJob() {
     if (createLock.current || !selected || !canWrite) return;
     if (!selectedAssets.length) throw new Error("请先选择至少一个素材");
-    const chosen = detail?.assets.filter((asset) => selectedAssets.includes(asset.id)) ?? [];
-    if (chosen.length !== selectedAssets.length || chosen.some((asset) => asset.status !== "READY")) throw new Error("只能选择 READY 状态的素材");
-    if (chosen.some((asset) => VIDEO_FILE.test(asset.filename)) && chosen.some((asset) => !VIDEO_FILE.test(asset.filename))) throw new Error("图片和视频不能混合重建");
     createLock.current = true; setCreating(true);
-    try { const job = await client.createJob(selected, profile, selectedAssets); selectJob(job.id); setLiveJob(job); setMessage("任务已进入队列"); await refresh(); } finally { createLock.current = false; setCreating(false); }
+    try { const job = await client.createJob(selected, profile, selectedAssets.map((asset) => asset.id)); selectJob(job.id); setLiveJob(job); setPane("tasks"); setMessage("任务已进入队列"); await refresh(); } finally { createLock.current = false; setCreating(false); }
   }
   async function openScene(id: string, kind?: string) { const manifest = await client.getManifest(id); if (activeReconstruction.current !== id) return; const artifactRow = kind ? manifest.artifacts.find((item) => item.kind === kind) : manifest.artifacts.find((item) => item.kind === "spz") ?? manifest.artifacts.find((item) => item.kind === "ply"); if (!artifactRow) throw new Error(kind ? `该重建没有 ${kind.toUpperCase()} 产物` : "该重建没有可查看的 SPZ 或 PLY 产物"); setArtifacts(manifest.artifacts); setViewerStatus(""); setScene({ reconstructionId: id, kind: artifactRow.kind }); }
   async function copy(text: string) { try { await navigator.clipboard.writeText(text); } catch { const area = document.createElement("textarea"); area.value = text; document.body.append(area); area.select(); document.execCommand("copy"); area.remove(); } setMessage("链接已复制"); }
@@ -496,7 +533,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                   <button type="button" onClick={() => runAction(async () => {
                     await client.markNotificationsRead([item.id]);
                     if (item.project_id) selectProject(item.project_id);
-                    if (item.job_id) selectJob(item.job_id);
+                    if (item.job_id) { selectJob(item.job_id); setPane("tasks"); }
                     setView("project");
                     setNavOpen(false);
                     await loadNotifications();
@@ -561,7 +598,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
               detailLoading ? (
                 <div className="empty"><span>…</span><h2>正在加载项目…</h2></div>
               ) : detailError ? (
-                <div className="empty" role="alert"><span>!</span><h2>无法打开项目</h2><p>{detailError}</p><button onClick={() => selectProject("")}>返回项目列表</button></div>
+                <div className="empty" role="alert"><h2>无法打开项目</h2><p>{detailError}</p><button onClick={() => void refresh()}>重试加载</button><button onClick={() => selectProject("")}>返回项目列表</button></div>
               ) : !loaded ? (
                 <div className="empty"><span>…</span><h2>正在加载工作台…</h2></div>
               ) : (
@@ -581,7 +618,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                     <button className="back-link" type="button" onClick={() => selectProject("")}>← 所有项目</button>
                     <h1>{detail.name}</h1>
                   </div>
-                  <p className="project-summary">{detail.assets.length} 个素材 · {detail.jobs.length} 个任务</p>
+                  <p className="project-summary">{detail.asset_count} 个素材 · {detail.job_count} 个任务</p>
                 </header>
                 {!canWrite && <p>只读访问：您可以查看素材、任务和结果。</p>}
                 {canManage && (
@@ -592,8 +629,8 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                       <button>重命名</button>
                     </form>
                     <button
-                      disabled={detail.jobs.some((job) => ACTIVE[job.status])}
-                      title={detail.jobs.some((job) => ACTIVE[job.status]) ? "存在进行中的任务，需先取消" : undefined}
+                      disabled={detail.has_active_jobs}
+                      title={detail.has_active_jobs ? "存在进行中的任务，需先取消" : undefined}
                       onClick={() => {
                         if (!window.confirm(`确定删除项目“${detail.name}”？此操作不可撤销。`)) return;
                         runAction(async () => { await client.deleteProject(selected); selectProject(""); setDetail(null); setProjects(await client.listProjects()); setMessage("项目已删除"); });
@@ -641,13 +678,16 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                     </form>
                   )}
                 </details>
-                <div className="grid">
+                <nav className="workspace-panes" aria-label="项目工作区">
+                  {PANES.map((item) => <button type="button" key={item.key} aria-pressed={pane === item.key} onClick={() => setPane(item.key)}>{item.label}</button>)}
+                </nav>
+                <div className={`grid workspace-grid pane-${pane}`} aria-busy={detailLoading}>
                   <section className="panel upload-panel">
                     <div className="panel-title"><h2>素材</h2>{canWrite && <small>已选 {selectedAssets.length} 个</small>}</div>
                     {canWrite && detail.assets.length > 0 ? <div className="selection-tools">
-                      <button type="button" onClick={() => setSelectedAssets(detail.assets.filter((item) => item.status === "READY" && /\.(jpg|jpeg|png)$/i.test(item.filename)).map((item) => item.id))}>全选图片</button>
+                      <button type="button" onClick={() => chooseAssets(detail.assets, true)}>全选本页图片</button>
                       <button type="button" disabled={!selectedAssets.length} onClick={() => setSelectedAssets([])}>清空选择</button>
-                      <span>{(detail.assets.filter((item) => selectedAssets.includes(item.id)).reduce((sum, item) => sum + item.size, 0) / 1024 ** 2).toFixed(1)} MiB</span>
+                      <span aria-live="polite">{(selectionBytes(selectedAssets) / 1024 ** 2).toFixed(1)} MiB</span>
                     </div> : null}
                     {canWrite && (
                       <label className="dropzone">
@@ -669,15 +709,17 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                         <div className="asset-row" key={assetRow.id}>
                           <AssetPreview client={client} id={assetRow.id} filename={assetRow.filename} ready={assetRow.status === "READY"} />
                           <label>
-                            <input type="checkbox" disabled={!canWrite || assetRow.status !== "READY"} checked={selectedAssets.includes(assetRow.id)} onChange={() => setSelectedAssets((items) => items.includes(assetRow.id) ? items.filter((id) => id !== assetRow.id) : [...items, assetRow.id])} />
+                            <input type="checkbox" disabled={!canWrite || assetRow.status !== "READY"} checked={selectedAssets.some((item) => item.id === assetRow.id)} onChange={() => chooseAssets([assetRow])} />
                             <span title={assetRow.filename}>{assetRow.filename}</span>
                             <small>{(assetRow.size / 1024 / 1024).toFixed(1)} MiB · {ASSET_STATUS_LABELS[assetRow.status]}</small>
                           </label>
-                          {canWrite && <button type="button" aria-label={`删除 ${assetRow.filename}`} disabled={uploading} onClick={() => { if (!window.confirm(`删除素材「${assetRow.filename}」？`)) return; runAction(async () => { await client.deleteAsset(assetRow.id); setSelectedAssets((ids) => ids.filter((id) => id !== assetRow.id)); await refresh(); setMessage("素材已删除"); }); }}>删除</button>}
+                          {canWrite && <button type="button" aria-label={`删除 ${assetRow.filename}`} disabled={uploading} onClick={() => { if (!window.confirm(`删除素材「${assetRow.filename}」？`)) return; runAction(async () => { await client.deleteAsset(assetRow.id); setSelectedAssets((items) => items.filter((item) => item.id !== assetRow.id)); await refresh(); setMessage("素材已删除"); }); }}>删除</button>}
                         </div>
                       ))}
                     </div>
+                    <PageControls label="素材" page={assetPages.length} next={detail.nextAssetCursor} busy={detailLoading} onChange={(cursor) => changePage("assets", cursor)} />
                   </section>
+                  <div className="workspace-side">
                   <section className="panel route-panel">
                     <div className="panel-title"><h2>重建路线</h2></div>
                     <div className="profiles" role="group" aria-label="重建路线">
@@ -699,15 +741,17 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                   <section className="panel status-panel">
                     <div className="panel-title"><h2>重建任务</h2></div>
                     {detail.jobs.length > 0 && (
-                      <label>任务记录<select value={latest?.id ?? ""} onChange={(event) => selectJob(event.target.value)}>{detail.jobs.map((job) => <option key={job.id} value={job.id}>{RECONSTRUCTION_PROFILES[job.profile].title} · {JOB_STATUS_LABELS[job.status]} · {job.id.slice(0, 8)}</option>)}</select></label>
+                      <label>任务记录<select value={latest?.id ?? ""} onChange={(event) => selectJob(event.target.value)}>{(latest && !detail.jobs.some((job) => job.id === latest.id) ? [latest, ...detail.jobs] : detail.jobs).map((job) => <option key={job.id} value={job.id}>{RECONSTRUCTION_PROFILES[job.profile].title} · {JOB_STATUS_LABELS[job.status]} · {job.id.slice(0, 8)}</option>)}</select></label>
                     )}
+                    <PageControls label="任务" page={jobPages.length} next={detail.nextJobCursor} busy={detailLoading} onChange={(cursor) => changePage("jobs", cursor)} />
                     {latest ? (
                       <>
+                        <div className="task-detail">
                         <div className="job-head"><strong className="job-state" data-status={latest.status}>{JOB_STATUS_LABELS[latest.status]}{latest.cancel_requested ? " · 已请求取消" : ""}</strong><small>{stageLabel(latest.current_stage)}</small></div>
                         <div className="bar" role="progressbar" aria-label="任务进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(latest.progress * 100)}><i style={{ width: `${Math.round(latest.progress * 100)}%` }} /></div>
                         <p>{Math.round(latest.progress * 100)}% · {RECONSTRUCTION_PROFILES[latest.profile].title}{latest.attempt > 0 ? ` · 第 ${latest.attempt} 次尝试` : ""}</p>
                         {latest.status === "QUEUED" ? <p className="muted">{online ? "已排队，等待 Worker 领取任务。" : "已排队：Worker 当前离线，任务会保留到 Worker 上线。"}</p> : null}
-                        {latest.error_message && <p className="error">{latest.error_code} {latest.error_message}</p>}
+                        {latest.error_message && <p className="error" role="status">{jobErrorHint(latest.error_code) || latest.error_message}</p>}
                         {timeline.length > 0 && (
                           <details>
                             <summary>阶段记录</summary>
@@ -731,9 +775,10 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                           {logs.length > 0 && <button onClick={() => runAction(loadEarlierLogs)}>加载更早</button>}
                         </details>
                         {canWrite && ACTIVE[latest.status] && <button className="task-action" disabled={latest.cancel_requested} onClick={() => runAction(async () => { setLiveJob(await client.cancelJob(latest.id)); await refresh(); })}>取消任务</button>}
-                        {canWrite && (latest.status === "FAILED" || latest.status === "CANCELLED") && <button className="task-action" onClick={() => runAction(async () => { setLiveJob(await client.retryJob(latest.id)); await refresh(); })}>重试任务</button>}
-                        {reconstructionId && (
-                          <div className="result-actions">
+                        {canWrite && latest.error_code !== "INVALID_INPUT" && (latest.status === "FAILED" || latest.status === "CANCELLED") && <button className="task-action" onClick={() => runAction(async () => { setLiveJob(await client.retryJob(latest.id)); await refresh(); })}>重试任务</button>}
+                        </div>
+                        {reconstructionId ? (
+                          <div className="result-actions result-panel">
                             <button className="primary" onClick={() => runAction(() => openScene(reconstructionId))}>打开场景</button>
                             {artifacts.some((item) => item.kind === "ply") ? <button onClick={() => runAction(() => openScene(reconstructionId, "ply"))}>打开 PLY 场景</button> : null}
                             <button onClick={() => runAction(() => refreshArtifacts(reconstructionId))}>刷新产物链接</button>
@@ -778,13 +823,14 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                               </details>
                             )}
                           </div>
-                        )}
+                        ) : <p className="result-panel muted">任务完成后可以查看场景和下载文件。</p>}
                       </>
                     ) : <p className="muted">尚未创建任务。</p>}
                   </section>
+                  </div>
                 </div>
                 {scene && artifact && (
-                  <section className="scene" role="dialog" aria-modal="true" aria-label="场景查看器">
+                  <dialog ref={sceneDialog} className="scene" aria-label="场景查看器" onCancel={(event) => { event.preventDefault(); setScene(null); }}>
                     <Viewer
                       src={artifact.url}
                       artifactKind={artifact.kind}
@@ -794,9 +840,12 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                       onStatus={(status, statusDetail) => setViewerStatus(statusDetail ?? (status === "ready" ? "" : status === "loading" ? "正在加载场景" : "场景加载失败"))}
                       onRetry={() => runAction(() => openScene(scene.reconstructionId, scene.kind))}
                     />
-                    <button autoFocus onClick={() => setScene(null)}>关闭查看器</button>
+                    <div className="scene-actions">
+                      <a href={artifact.url} download target="_blank" rel="noreferrer">下载 {artifact.kind.toUpperCase()}</a>
+                      <button autoFocus onClick={() => setScene(null)}>关闭查看器</button>
+                    </div>
                     {viewerStatus ? <span className="viewer-status" role="status">{viewerStatus}</span> : null}
-                  </section>
+                  </dialog>
                 )}
               </>
             )}
@@ -806,4 +855,15 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       </section>
     </main>
   );
+}
+
+function PageControls({ label, page, next, busy, onChange }: {
+  label: string; page: number; next: string | null; busy: boolean; onChange: (cursor?: string) => void;
+}) {
+  if (page === 1 && !next) return null;
+  return <nav className="page-controls" aria-label={`${label}分页`}>
+    <button type="button" disabled={busy || page === 1} onClick={() => onChange()}>上一页</button>
+    <span aria-live="polite">第 {page} 页</span>
+    <button type="button" disabled={busy || !next} onClick={() => { if (next) onChange(next); }}>下一页</button>
+  </nav>;
 }

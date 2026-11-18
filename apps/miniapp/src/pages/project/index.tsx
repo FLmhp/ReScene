@@ -1,8 +1,8 @@
 import { Screen } from "../../screen";
 import { AssetThumbnail } from "../../asset-thumbnail";
 import { explainError, isOfflineError, ResceneApiError } from "@rescene/api-client";
-import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, stageLabel } from "@rescene/schemas";
-import type { Asset, Job, JobLog, MemberRole, Profile, ProjectDetail, ProjectMember, ShareSummary, WorkerStatus } from "@rescene/schemas";
+import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, jobErrorHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
+import type { Asset, Job, JobLog, MemberRole, Profile, ProjectWorkspace, ProjectMember, ShareSummary, WorkerStatus } from "@rescene/schemas";
 import { Button, Image, Input, Progress, Text, View } from "@tarojs/components";
 import Taro, { useDidHide, useDidShow, useRouter } from "@tarojs/taro";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -56,18 +56,20 @@ const message = (reason: unknown, fallback: string) => {
   }
   return reason instanceof Error ? reason.message : fallback;
 };
-const isVideo = (filename: string) => /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(filename);
 
 export default function ProjectPage() {
   const router = useRouter();
   const [showManagement, setShowManagement] = useState(false);
-  const [visibleAssets, setVisibleAssets] = useState(24);
+  const [assetPages, setAssetPages] = useState([""]);
+  const [jobPages, setJobPages] = useState([""]);
+  const [pageLoading, setPageLoading] = useState(false);
+  const requestId = useRef(0);
   const [showLogs, setShowLogs] = useState(false);
   const projectId = router.params.id ?? "";
-  const [detail, setDetail] = useState<ProjectDetail | null>(null);
+  const [detail, setDetail] = useState<ProjectWorkspace | null>(null);
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [worker, setWorker] = useState<WorkerStatus | null>(null);
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selected, setSelected] = useState<Asset[]>([]);
   const [profile, setProfile] = useState<Profile>("balanced");
   const [job, setJob] = useState<Job | null>(null);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
@@ -98,26 +100,28 @@ export default function ProjectPage() {
   const role = detail?.effective_role;
   const canManage = role === "owner" || role === "admin";
   const canWrite = canManage || role === "member";
-  const jobs = [...(detail?.jobs ?? [])].sort((left, right) => right.created_at.localeCompare(left.created_at));
+  const jobs = detail?.jobs ?? [];
 
   const load = useCallback(async () => {
     if (!projectId) return;
+    const request = ++requestId.current;
+    setPageLoading(true);
     try {
-      const value = await client.getProject(projectId);
+      const value = await client.getWorkspace(projectId, assetPages[assetPages.length - 1], jobPages[jobPages.length - 1]);
+      if (request !== requestId.current) return;
       setDetail(value);
       void Taro.setNavigationBarTitle({ title: value.name }).catch(() => undefined);
       setName((current) => current || value.name);
-      setSelected((current) => current.filter((id) => value.assets.some((asset) => asset.id === id && asset.status === "READY")));
-      const latest = value.jobs.reduce<Job | null>(
-        (best, item) => (!best || item.created_at > best.created_at ? item : best),
-        null,
-      );
-      setJob((current) => (current ? value.jobs.find((item) => item.id === current.id) ?? latest : latest));
+      setSelected((current) => reconcileWorkspaceSelection(current, value.assets));
+      setJob((current) => current ? value.jobs.find((item) => item.id === current.id) ?? current : value.jobs[0] ?? null);
       setError("");
     } catch (reason) {
-      setError(message(reason, "加载项目失败"));
+      if (request === requestId.current) setError(message(reason, "加载项目失败"));
+    } finally {
+      if (request === requestId.current) setPageLoading(false);
     }
-  }, [projectId]);
+  }, [assetPages, jobPages, projectId]);
+  useEffect(() => { if (visible) void load(); }, [load, visible]);
 
   const loadMembers = useCallback(async () => {
     if (!projectId) return;
@@ -147,6 +151,11 @@ export default function ProjectPage() {
   });
 
   useDidHide(() => setVisible(false));
+  useEffect(() => {
+    if (!visible) return;
+    const timer = setInterval(() => void loadWorker(), 15000);
+    return () => clearInterval(timer);
+  }, [loadWorker, visible]);
 
   const jobId = job?.id;
   const jobActive = visible && Boolean(job && ACTIVE[job.status]);
@@ -324,20 +333,11 @@ export default function ProjectPage() {
   }
 
   async function createJob() {
-    if (createLock.current || !selected.length) return;
-    const chosen = (detail?.assets ?? []).filter((asset) => selected.includes(asset.id));
-    if (chosen.length !== selected.length || chosen.some((asset) => asset.status !== "READY")) {
-      setError("部分素材尚未就绪，请重新选择");
-      return;
-    }
-    if (new Set(chosen.map((asset) => isVideo(asset.filename))).size > 1) {
-      setError("同一任务不能混合图片与视频，请重新选择");
-      return;
-    }
+    if (createLock.current || !canWrite || !selected.length) return;
     createLock.current = true;
     setCreating(true);
     try {
-      const created = await client.createJob(projectId, profile, selected);
+      const created = await client.createJob(projectId, profile, selected.map((asset) => asset.id));
       setJob(created);
       setSelected([]);
       await load();
@@ -449,18 +449,25 @@ export default function ProjectPage() {
     } catch (reason) { setError(message(reason, "加载更早日志失败")); }
   }
 
-  function toggle(asset: Asset) {
-    if (!canWrite || asset.status !== "READY") return;
-    if (selected.includes(asset.id)) {
-      setSelected((current) => current.filter((id) => id !== asset.id));
-      return;
-    }
-    const first = detail?.assets.find((item) => item.id === selected[0]);
-    if (first && isVideo(first.filename) !== isVideo(asset.filename)) {
-      setError("同一任务不能混合图片与视频，请先取消已选素材");
-      return;
-    }
-    setSelected((current) => [...current, asset.id]);
+  function choose(assets: Asset[], imagesOnly = false) {
+    try { setSelected(selectWorkspaceAssets(selected, assets, imagesOnly)); setError(""); }
+    catch (reason) { void Taro.showModal({ title: "无法选择素材", content: message(reason, "请检查已选素材"), showCancel: false }); }
+  }
+
+  function pageControls(label: string, pages: string[], next: string | null, setPages: (pages: string[]) => void) {
+    if (pages.length === 1 && !next) return null;
+    const move = (cursor?: string) => { setPageLoading(true); setPages(cursor ? [...pages, cursor] : pages.slice(0, -1)); };
+    return <View className="page-controls">
+      <Button className="button ghost compact" disabled={pageLoading || pages.length === 1} onClick={() => move()}>{label}上一页</Button>
+      <Text className="muted">第 {pages.length} 页</Text>
+      <Button className="button ghost compact" disabled={pageLoading || !next} onClick={() => { if (next) move(next); }}>{label}下一页</Button>
+    </View>;
+  }
+
+  async function copyViewer(id: string) {
+    if (!webBaseUrl) { setError("查看器地址未配置"); return; }
+    try { await Taro.setClipboardData({ data: `${webBaseUrl.replace(/\/$/, "")}/viewer?reconstruction=${encodeURIComponent(id)}` }); }
+    catch (reason) { setError(message(reason, "复制查看链接失败")); }
   }
 
   async function removeAsset(asset: Asset) {
@@ -468,7 +475,7 @@ export default function ProjectPage() {
     if (!result.confirm) return;
     try {
       await client.deleteAsset(asset.id);
-      setSelected((current) => current.filter((id) => id !== asset.id));
+      setSelected((current) => current.filter((item) => item.id !== asset.id));
       await load();
     } catch (reason) { setError(message(reason, "删除失败，请稍后重试。")); }
   }
@@ -477,7 +484,7 @@ export default function ProjectPage() {
     <Screen>
       <Text className="title">{detail?.name ?? "项目"}</Text>
       {detail && role ? <View className="project-heading">
-        <Text className="muted">{EFFECTIVE_ROLE_LABEL[role]} · {detail.assets.length} 个素材</Text>
+        <Text className="muted">{EFFECTIVE_ROLE_LABEL[role]} · {detail.asset_count} 个素材 · {detail.job_count} 个任务</Text>
         <Button className="button ghost compact" aria-expanded={showManagement} onClick={() => setShowManagement((value) => !value)}>
           {showManagement ? "收起管理" : canManage ? "项目管理" : "查看成员"}
         </Button>
@@ -526,18 +533,20 @@ export default function ProjectPage() {
         </View>)}
         {!detail.assets.length && !uploads.length ? <Text className="muted">暂无素材</Text> : null}
         {canWrite && detail.assets.length > 0 ? <View className="selection-tools">
-          <Button className="button ghost compact" onClick={() => setSelected(detail.assets.filter((asset) => asset.status === "READY" && /\.(jpe?g|png)$/i.test(asset.filename)).map((asset) => asset.id))}>全选图片</Button>
+          <Button className="button ghost compact" onClick={() => choose(detail.assets, true)}>全选本页图片</Button>
           <Button className="button ghost compact" disabled={!selected.length} onClick={() => setSelected([])}>清空选择</Button>
         </View> : null}
-        {detail.assets.slice(0, visibleAssets).map((asset) => <View className={`row asset-row${selected.includes(asset.id) ? " selected" : ""}`} key={asset.id}>
+        <View className="asset-grid">
+        {detail.assets.map((asset) => <View className={`asset-tile${selected.some((item) => item.id === asset.id) ? " selected" : ""}`} key={asset.id}>
           <AssetThumbnail asset={asset} />
-          <View className="asset-choice" role={canWrite ? "checkbox" : undefined} aria-checked={canWrite ? selected.includes(asset.id) : undefined} aria-disabled={!canWrite || asset.status !== "READY"} onClick={() => toggle(asset)}>
+          <View className="asset-choice" role={canWrite ? "checkbox" : undefined} aria-checked={canWrite ? selected.some((item) => item.id === asset.id) : undefined} aria-disabled={!canWrite || asset.status !== "READY"} onClick={() => { if (canWrite && asset.status === "READY") choose([asset]); }}>
             <Text>{asset.filename}</Text>
-            <Text className="muted">{selected.includes(asset.id) ? "已选" : ASSET_STATUS_LABELS[asset.status]}</Text>
+            <Text className="muted">{selected.some((item) => item.id === asset.id) ? "已选" : ASSET_STATUS_LABELS[asset.status]}</Text>
           </View>
           {canWrite ? <Button className="button ghost compact danger-action" aria-label={`删除 ${asset.filename}`} onClick={() => void removeAsset(asset)}>删除</Button> : null}
         </View>)}
-        {detail.assets.length > visibleAssets ? <Button className="button ghost" onClick={() => setVisibleAssets((count) => count + 24)}>加载更多素材（{visibleAssets}/{detail.assets.length}）</Button> : null}
+        </View>
+        {pageControls("素材", assetPages, detail.nextAssetCursor, setAssetPages)}
       </View> : null}
       {canWrite ? <View className="card">
         <Text className="section-heading">重建路线</Text>
@@ -554,9 +563,6 @@ export default function ProjectPage() {
           </Text>
           <Button className="button ghost compact" onClick={loadWorker}>刷新</Button>
         </View>
-        <Button className="button" disabled={creating || !selected.length || uploading} loading={creating} onClick={createJob}>
-          {selected.length ? `开始重建（${selected.length}）` : "开始重建"}
-        </Button>
         {!selected.length ? <Text className="muted">请先从素材列表选择要重建的文件</Text> : null}
       </View> : null}
       {detail ? <View className="card">
@@ -565,6 +571,7 @@ export default function ProjectPage() {
           <Text className="label">{RECONSTRUCTION_PROFILES[item.profile].title} · {JOB_STATUS_LABELS[item.status]}</Text>
           <Text className="muted">{new Date(item.created_at).toLocaleString()} · {item.id.slice(0, 8)}</Text>
         </Button>)}
+        {pageControls("任务", jobPages, detail.nextJobCursor, setJobPages)}
         {job ? <View className="task-detail">
           <Text className={job.status === "SUCCEEDED" ? "success-state" : job.status === "FAILED" ? "error" : "label"}>{JOB_STATUS_LABELS[job.status]} · 第 {job.attempt} 次</Text>
           <Text className="muted">{stageLabel(job.current_stage)} · {Math.round(job.progress * 100)}%</Text>
@@ -576,10 +583,14 @@ export default function ProjectPage() {
             {Object.keys(row.metrics).length > 0 ? <Text className="muted">{JSON.stringify(row.metrics)}</Text> : null}
           </View>)}
           {job.status === "QUEUED" ? <Text className="muted">任务已排队，Worker 上线或前序任务结束后会自动开始；这不是失败。</Text> : null}
-          {job.error_message ? <Text className="error">{job.error_code ? `${job.error_code}: ` : ""}{job.error_message}</Text> : null}
-          {canWrite && ACTIVE[job.status] ? <Button className="button ghost" disabled={jobBusy} loading={jobBusy} onClick={() => void changeJob("cancel")}>取消任务</Button> : null}
-          {canWrite && (job.status === "FAILED" || job.status === "CANCELLED") ? <Button className="button ghost" disabled={jobBusy} loading={jobBusy} onClick={() => void changeJob("retry")}>重试任务</Button> : null}
-          {reconstructionId ? <Button className="button" onClick={() => void Taro.navigateTo({ url: `/pages/viewer/index?id=${encodeURIComponent(reconstructionId)}` })}>打开三维场景</Button> : null}
+          {job.error_message ? <Text className="error">{jobErrorHint(job.error_code) || job.error_message}</Text> : null}
+          {canWrite && ACTIVE[job.status] ? <Button className="button ghost" disabled={jobBusy || job.cancel_requested} loading={jobBusy} onClick={() => void changeJob("cancel")}>{job.cancel_requested ? "取消中" : "取消任务"}</Button> : null}
+          {canWrite && job.error_code !== "INVALID_INPUT" && (job.status === "FAILED" || job.status === "CANCELLED") ? <Button className="button ghost" disabled={jobBusy} loading={jobBusy} onClick={() => void changeJob("retry")}>重试任务</Button> : null}
+          {reconstructionId ? <>
+            <Button className="button" onClick={() => void copyViewer(reconstructionId)}>复制查看链接</Button>
+            <Text className="muted">在手机浏览器中粘贴链接，登录后即可查看。</Text>
+            <Button className="button ghost" onClick={() => void Taro.navigateTo({ url: `/pages/viewer/index?id=${encodeURIComponent(reconstructionId)}` })}>场景查看选项</Button>
+          </> : null}
         </View> : <Text className="muted">暂无任务</Text>}
       </View> : null}
       {job ? <View className="card">
@@ -614,6 +625,14 @@ export default function ProjectPage() {
           {!share.revoked_at ? <Button className="button ghost" onClick={() => void revokeShare(share.id)}>撤销</Button> : null}
         </View>)}
       </View> : null}
+      {canWrite ? <>
+        <View className="selection-spacer" />
+        <View className="selection-bar">
+          <View><Text className="label">已选 {selected.length} 个 · {(selectionBytes(selected) / 1024 ** 2).toFixed(1)} MiB</Text>
+            <Text className="muted">{RECONSTRUCTION_PROFILES[profile].title}{worker?.online === false ? " · 离线排队" : ""}</Text></View>
+          <Button className="button" disabled={creating || !selected.length || uploading} loading={creating} onClick={createJob}>{creating ? "正在创建…" : "开始重建"}</Button>
+        </View>
+      </> : null}
     </Screen>
   );
 }

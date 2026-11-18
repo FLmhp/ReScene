@@ -1,6 +1,6 @@
 import { explainError, isOfflineError } from "@rescene/api-client";
-import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, stageLabel } from "@rescene/schemas";
-import type { Asset, MemberRole, Profile, ProjectDetail, ProjectMember } from "@rescene/schemas";
+import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
+import type { Asset, MemberRole, Profile, ProjectWorkspace, ProjectMember } from "@rescene/schemas";
 import * as DocumentPicker from "expo-document-picker";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
@@ -18,14 +18,6 @@ const ROLE_LABEL = { owner: "所有者", admin: "管理员", member: "成员", v
 type Upload = { id: string; file: PickedFile; progress: number; status: "uploading" | "failed" | "done"; error?: string };
 type TimelineRow = { key: string; stage: string; status: string; progress: number; message?: string | null; metrics: Record<string, unknown> };
 
-// Asset responses contain filenames but not MIME types.
-function mediaType(asset: Asset): "image" | "video" | null {
-  const extension = asset.filename.split(".").pop()?.toLowerCase();
-  if (extension && ["jpg", "jpeg", "png"].includes(extension)) return "image";
-  if (extension && ["mp4", "mov", "mkv", "avi", "webm", "m4v"].includes(extension)) return "video";
-  return null;
-}
-
 export function ProjectScreen({ project, onJob, onBack }: {
   project: { id: string; name: string };
   onJob: (jobId: string) => void;
@@ -35,11 +27,14 @@ export function ProjectScreen({ project, onJob, onBack }: {
   const textStyles = useTextStyles();
   const styles = makeStyles(theme);
   const [showManagement, setShowManagement] = useState(false);
-  const [visibleAssets, setVisibleAssets] = useState(24);
+  const [assetPages, setAssetPages] = useState([""]);
+  const [jobPages, setJobPages] = useState([""]);
+  const [pageLoading, setPageLoading] = useState(false);
+  const requestId = useRef(0);
   const [workerOnline, setWorkerOnline] = useState<boolean | null>(null);
-  const [detail, setDetail] = useState<ProjectDetail | null>(null);
+  const [detail, setDetail] = useState<ProjectWorkspace | null>(null);
   const [members, setMembers] = useState<ProjectMember[]>([]);
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selected, setSelected] = useState<Asset[]>([]);
   const [profile, setProfile] = useState<Profile>("balanced");
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [name, setName] = useState(project.name);
@@ -57,16 +52,24 @@ export function ProjectScreen({ project, onJob, onBack }: {
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
+    const request = ++requestId.current;
+    setPageLoading(true);
     try {
-      const [next, nextMembers] = await Promise.all([client.getProject(project.id), client.listMembers(project.id)]);
+      const [next, nextMembers] = await Promise.all([
+        client.getWorkspace(project.id, assetPages[assetPages.length - 1], jobPages[jobPages.length - 1]),
+        client.listMembers(project.id),
+      ]);
+      if (request !== requestId.current) return;
       setDetail(next);
       setName(next.name);
       setMembers(nextMembers);
-      setSelected((current) => current.filter((id) => next.assets.some((asset) => asset.id === id && asset.status === "READY")));
+      setSelected((current) => reconcileWorkspaceSelection(current, next.assets));
     } catch (reason) {
-      setError(explainError(reason, "加载失败"));
+      if (request === requestId.current) setError(explainError(reason, "加载失败"));
+    } finally {
+      if (request === requestId.current) setPageLoading(false);
     }
-  }, [project.id]);
+  }, [assetPages, jobPages, project.id]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     let active = true;
@@ -85,7 +88,7 @@ export function ProjectScreen({ project, onJob, onBack }: {
     void replayQueued(client, () => undefined).then(({ uploaded }) => { if (uploaded) void load(); }).catch(() => undefined);
   }, [load]);
 
-  const latestJobId = detail?.jobs[0]?.id;
+  const latestJobId = detail?.latest_job?.id;
   useEffect(() => {
     if (!latestJobId) { setTimeline([]); return; }
     let active = true;
@@ -146,44 +149,43 @@ export function ProjectScreen({ project, onJob, onBack }: {
 
   async function createJob() {
     if (jobFlight.current || !canWrite || !detail || !selected.length) return;
-    const assets = selected.map((id) => detail.assets.find((asset) => asset.id === id));
-    const types = assets.map((asset) => asset && mediaType(asset));
-    const singleVideo = types.length === 1 && types[0] === "video";
-    const imagesOnly = types.every((type) => type === "image");
-    if (assets.some((asset) => !asset || asset.status !== "READY") || !(singleVideo || imagesOnly)) {
-      setError("请选择一组已就绪的图片，或一个视频。");
-      return;
-    }
     jobFlight.current = true;
     setCreating(true);
     setError("");
-    try { const job = await client.createJob(project.id, profile, selected); onJob(job.id); }
+    try { const job = await client.createJob(project.id, profile, selected.map((asset) => asset.id)); onJob(job.id); }
     catch (reason) { setError(explainError(reason, "创建任务失败")); }
     finally { jobFlight.current = false; setCreating(false); }
   }
 
-  function toggleAsset(asset: Asset) {
-    if (asset.status !== "READY") return;
-    if (selected.includes(asset.id)) { setSelected((current) => current.filter((id) => id !== asset.id)); return; }
-    const type = mediaType(asset);
-    const first = detail?.assets.find((item) => item.id === selected[0]);
-    const currentType = first ? mediaType(first) : null;
-    if (!type || (selected.length > 0 && (type === "video" || currentType === "video" || currentType !== type))) {
-      setError("请选择一组图片，或一个视频。");
-      return;
-    }
-    setError("");
-    setSelected((current) => [...current, asset.id]);
+  function choose(assets: Asset[], imagesOnly = false) {
+    try { setSelected(selectWorkspaceAssets(selected, assets, imagesOnly)); setError(""); }
+    catch (reason) { Alert.alert("无法选择素材", explainError(reason, "请检查已选素材")); }
+  }
+
+  function pageControls(label: string, pages: string[], next: string | null, setPages: (pages: string[]) => void) {
+    if (pages.length === 1 && !next) return null;
+    const move = (cursor?: string) => { setPageLoading(true); setPages(cursor ? [...pages, cursor] : pages.slice(0, -1)); };
+    return <View style={styles.rowHeader}>
+      <Button tone="ghost" label={`${label}上一页`} disabled={pageLoading || pages.length === 1} onPress={() => move()} />
+      <Text style={textStyles.muted}>第 {pages.length} 页</Text>
+      <Button tone="ghost" label={`${label}下一页`} disabled={pageLoading || !next} onPress={() => { if (next) move(next); }} />
+    </View>;
   }
 
   return (
-    <Screen scroll title={detail?.name ?? project.name}>
+    <Screen scroll title={detail?.name ?? project.name} footer={canWrite ? <View style={styles.selectionBar}>
+      <View style={styles.selectionText}>
+        <Text accessibilityLiveRegion="polite" style={textStyles.body}>已选 {selected.length} 个 · {(selectionBytes(selected) / 1024 ** 2).toFixed(1)} MiB</Text>
+        <Text style={textStyles.muted}>{RECONSTRUCTION_PROFILES[profile].title}{workerOnline === false ? " · 离线排队" : ""}</Text>
+      </View>
+      <Button disabled={creating || !selected.length} label={creating ? "正在创建…" : "开始重建"} onPress={createJob} />
+    </View> : null}>
       {error ? <Card>
         <ErrorText>{error}</ErrorText>
         <Button label="刷新项目" onPress={() => void load()} tone="ghost" />
       </Card> : null}
         {detail ? <View style={styles.projectHeader}>
-          <Text style={textStyles.muted}>{ROLE_LABEL[detail.effective_role]} · {detail.assets.length} 个素材 · {detail.jobs.length} 个任务</Text>
+          <Text style={textStyles.muted}>{ROLE_LABEL[detail.effective_role]} · {detail.asset_count} 个素材 · {detail.job_count} 个任务</Text>
           <Pressable accessibilityRole="button" accessibilityState={{ expanded: showManagement }} style={styles.action} onPress={() => setShowManagement((value) => !value)}>
             <Text style={styles.link}>{showManagement ? "收起管理" : canManage ? "项目管理" : "查看成员"}</Text>
           </Pressable>
@@ -227,7 +229,7 @@ export function ProjectScreen({ project, onJob, onBack }: {
             {canWrite ? <Text style={styles.link}>已选 {selected.length} 个</Text> : null}
           </View>
           {canWrite && detail.assets.length > 0 ? <View style={styles.rowHeader}>
-            <Button tone="ghost" label="全选图片" onPress={() => setSelected(detail.assets.filter((asset) => asset.status === "READY" && mediaType(asset) === "image").map((asset) => asset.id))} />
+            <Button tone="ghost" label="全选本页图片" onPress={() => choose(detail.assets, true)} />
             <Button tone="ghost" disabled={!selected.length} label="清空选择" onPress={() => setSelected([])} />
           </View> : null}
           {canWrite ? <>
@@ -240,31 +242,33 @@ export function ProjectScreen({ project, onJob, onBack }: {
             {item.status === "failed" ? <Button label="重试上传" onPress={() => void runUpload(item.id, item.file)} tone="ghost" /> : null}
           </View>)}
           {!detail.assets.length && !uploads.length ? <Text style={textStyles.muted}>暂无素材</Text> : null}
-          {detail.assets.slice(0, visibleAssets).map((asset) => <View key={asset.id} style={[styles.asset, selected.includes(asset.id) && styles.selected]}>
+          <View style={styles.assetGrid}>
+          {detail.assets.map((asset) => <View key={asset.id} style={[styles.asset, selected.some((item) => item.id === asset.id) && styles.selected]}>
             <AssetThumbnail asset={asset} />
             <Pressable
               accessibilityRole={canWrite ? "checkbox" : undefined}
-              accessibilityState={canWrite ? { checked: selected.includes(asset.id), disabled: asset.status !== "READY" } : undefined}
+              accessibilityState={canWrite ? { checked: selected.some((item) => item.id === asset.id), disabled: asset.status !== "READY" } : undefined}
               disabled={!canWrite || asset.status !== "READY"}
-              onPress={() => toggleAsset(asset)}
+              onPress={() => choose([asset])}
               style={styles.assetChoice}
             >
-              <Text style={textStyles.body}>{asset.filename}</Text>
-              <Text style={textStyles.muted}>{selected.includes(asset.id) ? "已选" : ASSET_STATUS_LABELS[asset.status]}{!mediaType(asset) ? " · 未知媒体类型" : ""}</Text>
+              <Text numberOfLines={2} style={textStyles.body}>{asset.filename}</Text>
+              <Text style={textStyles.muted}>{selected.some((item) => item.id === asset.id) ? "已选" : ASSET_STATUS_LABELS[asset.status]}</Text>
             </Pressable>
             {canWrite ? <Pressable
               accessibilityRole="button"
               accessibilityLabel={`删除 ${asset.filename}`}
               onPress={() => Alert.alert("删除素材", `确定删除「${asset.filename}」？`, [
                 { text: "取消", style: "cancel" },
-                { text: "删除", style: "destructive", onPress: () => void mutate(async () => { await client.deleteAsset(asset.id); await load(); }, "删除失败，请稍后重试。") },
+                { text: "删除", style: "destructive", onPress: () => void mutate(async () => { await client.deleteAsset(asset.id); setSelected((items) => items.filter((item) => item.id !== asset.id)); await load(); }, "删除失败，请稍后重试。") },
               ])}
               style={styles.action}
             >
               <Text style={textStyles.error}>删除</Text>
             </Pressable> : null}
           </View>)}
-          {detail.assets.length > visibleAssets ? <Button tone="ghost" label={`加载更多素材（${visibleAssets}/${detail.assets.length}）`} onPress={() => setVisibleAssets((count) => count + 24)} /> : null}
+          </View>
+          {pageControls("素材", assetPages, detail.nextAssetCursor, setAssetPages)}
         </Card> : null}
         {canWrite ? <Card>
           <Text accessibilityRole="header" style={textStyles.heading}>重建路线</Text>
@@ -280,7 +284,6 @@ export function ProjectScreen({ project, onJob, onBack }: {
           {workerOnline != null ? <Text style={workerOnline ? styles.online : textStyles.muted}>
             {workerOnline ? "计算节点在线" : "计算节点离线，提交后排队"}
           </Text> : null}
-          <Button disabled={creating || !selected.length} label={creating ? "正在创建…" : selected.length ? `开始重建（${selected.length}）` : "开始重建"} onPress={createJob} />
           {!selected.length ? <Text style={textStyles.muted}>请先从素材列表选择要重建的文件</Text> : null}
         </Card> : null}
         <Card>
@@ -301,6 +304,7 @@ export function ProjectScreen({ project, onJob, onBack }: {
             </View>
             <Text style={textStyles.muted}>{new Date(job.created_at).toLocaleString()} · {job.id.slice(0, 8)}</Text>
           </Pressable>)}
+          {detail ? pageControls("任务", jobPages, detail.nextJobCursor, setJobPages) : null}
         </Card>
         <Button label="返回项目列表" onPress={onBack} tone="ghost" />
     </Screen>
@@ -313,8 +317,11 @@ const makeStyles = (theme: Palette) => StyleSheet.create({
   action: { minHeight: 44, minWidth: 44, justifyContent: "center", alignItems: "center", paddingHorizontal: 8 },
   link: { color: theme.accent, fontWeight: "600" },
   online: { color: theme.success },
-  asset: { flexDirection: "row", alignItems: "center", borderWidth: 1, borderColor: theme.divider, borderRadius: 12 },
+  assetGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", rowGap: 10 },
+  asset: { width: "48.5%", overflow: "hidden", borderWidth: 1, borderColor: theme.borderSoft, borderRadius: 12 },
   assetChoice: { flex: 1, minHeight: 48, padding: 10, gap: 4 },
+  selectionBar: { flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderTopWidth: 1, borderTopColor: theme.borderSoft, backgroundColor: theme.panel },
+  selectionText: { flex: 1, gap: 3 },
   selected: { borderColor: theme.accent, backgroundColor: theme.surfaceStrong },
   route: { gap: 5, minHeight: 48, padding: 12, borderWidth: 1, borderColor: theme.borderSoft, borderRadius: 12 },
 });

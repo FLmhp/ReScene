@@ -242,6 +242,7 @@ export function AppRoot() {
   } else if (route.name === "project") {
     content = (
       <ProjectScreen
+        key={route.id}
         onBack={back}
         onJob={(id) => push({ name: "job", id })}
         project={{ id: route.id, name: route.label }}

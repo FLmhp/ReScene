@@ -17,8 +17,8 @@ export function AssetThumbnail({ asset }: { asset: Asset }) {
     void client.getAssetPreview(asset.id).then((value) => { if (active) setUrl(value.url); }).catch(() => { if (active) setFailed(true); });
     return () => { active = false; };
   }, [asset.id, eligible, attempt]);
-  return <Pressable disabled={!eligible} accessibilityRole="button" accessibilityLabel={`预览 ${asset.filename}`} onPress={() => { setUrl(""); setAttempt((value) => value + 1); }} style={{ width: 68, height: 68, margin: 8, borderRadius: 8, overflow: "hidden", backgroundColor: theme.bgDeep, alignItems: "center", justifyContent: "center" }}>
-    {url && !failed ? <Image accessibilityLabel={asset.filename} source={{ uri: url }} resizeMode="cover" style={{ width: 68, height: 68 }} onError={() => setFailed(true)} /> :
+  return <Pressable disabled={!failed} accessibilityRole={failed ? "button" : undefined} accessibilityLabel={failed ? `重试预览 ${asset.filename}` : undefined} onPress={() => { setUrl(""); setAttempt((value) => value + 1); }} style={{ width: "100%", aspectRatio: 4 / 3, overflow: "hidden", backgroundColor: theme.bgDeep, alignItems: "center", justifyContent: "center" }}>
+    {url && !failed ? <Image accessibilityLabel={asset.filename} source={{ uri: url }} resizeMode="cover" style={{ width: "100%", height: "100%" }} onError={() => setFailed(true)} /> :
       <Text style={{ color: theme.muted, fontSize: 12 }}>{failed ? "重试预览" : eligible ? "图片" : "文件"}</Text>}
   </Pressable>;
 }

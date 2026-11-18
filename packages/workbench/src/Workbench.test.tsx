@@ -50,7 +50,7 @@ function routeTable(overrides: Record<string, unknown> = {}): Record<string, unk
   };
 }
 
-type RouteValue = unknown | (() => unknown);
+type RouteValue = unknown | ((url: URL) => unknown);
 
 function stubFetch(routes: Record<string, RouteValue>) {
   vi.stubGlobal(
@@ -58,9 +58,19 @@ function stubFetch(routes: Record<string, RouteValue>) {
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input));
       const method = (init?.method ?? "GET").toUpperCase();
-      const route = routes[`${method} ${url.pathname}`] ?? routes[url.pathname];
+      const path = url.pathname;
+      let route = routes[`${method} ${path}${url.search}`] ?? routes[`${method} ${path}`] ?? routes[path];
+      if (method === "GET" && route === undefined && /^\/v1\/projects\/[^/]+\/(assets|jobs)$/.test(path)) {
+        const kind = path.endsWith("/assets") ? "assets" : "jobs";
+        const full = routes[path.slice(0, path.lastIndexOf("/"))] as { assets?: unknown[]; jobs?: unknown[] } | undefined;
+        if (full) route = { items: full[kind] ?? [], next_cursor: null };
+      }
       if (route === undefined) return new Response("{}", { status: 404 });
-      const value = typeof route === "function" ? (route as () => unknown)() : route;
+      let value = typeof route === "function" ? (route as (url: URL) => unknown)(url) : route;
+      if (url.searchParams.get("view") === "summary" && value && typeof value === "object" && "assets" in value && "jobs" in value) {
+        const { assets, jobs, ...summary } = value as ReturnType<typeof projectDetail>;
+        value = { ...summary, asset_count: assets.length, job_count: jobs.length, has_active_jobs: false, cover: assets[0] ?? null, latest_job: jobs[0] ?? null };
+      }
       if (value && typeof value === "object" && "status" in value && typeof (value as { status: unknown }).status === "number") {
         const spec = value as { status: number; body?: unknown };
         return new Response(spec.body === undefined ? null : JSON.stringify(spec.body), {
@@ -115,6 +125,32 @@ afterEach(() => {
 });
 
 describe("session gate", () => {
+  it("keeps off-page selections and sends both pages' asset IDs", async () => {
+    const second = { ...asset, id: "a2", filename: "second.jpg" };
+    const job = { id: "new-job", project_id: "p1", profile: "balanced", status: "QUEUED", progress: 0, attempt: 0,
+      cancel_requested: false, created_at: "2026-01-01", updated_at: "2026-01-01" };
+    const client = new ResceneClient("https://api.example");
+    const submit = vi.spyOn(client, "createJob").mockResolvedValue(job as Awaited<ReturnType<typeof client.createJob>>);
+    stubFetch(routeTable({
+      "/v1/projects/p1/assets": (url: URL) => url.searchParams.get("cursor") === "second"
+        ? { items: [second], next_cursor: null } : { items: [asset], next_cursor: "second" },
+      "/v1/jobs/new-job": job,
+    }));
+    renderWorkbench(client, memoryStore({ "rescene-token": "token-1", "rescene-project": "p1" }));
+
+    await userEvent.click(await screen.findByRole("checkbox", { name: /frame.jpg/ }));
+    await userEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await screen.findByRole("checkbox", { name: /second.jpg/ });
+    expect(screen.queryByRole("checkbox", { name: /frame.jpg/ })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "全选本页图片" }));
+    expect(screen.getByText("已选 2 个素材")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "上一页" }));
+    const previous = await screen.findByRole<HTMLInputElement>("checkbox", { name: /frame.jpg/ });
+    expect(previous.checked).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "开始三维重建" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith("p1", "balanced", ["a1", "a2"]));
+  });
+
   it("registers a new account and keeps the token", async () => {
     stubFetch(routeTable());
 

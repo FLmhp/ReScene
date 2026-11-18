@@ -5,12 +5,91 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
-from playwright.sync_api import expect, sync_playwright
+from playwright.sync_api import Browser, expect, sync_playwright
 
 
-def verify(web_url: str, desktop_url: str, output: Path, image: Path) -> None:
+def verify_viewer(browser: Browser, web_url: str, output: Path, scene: Path) -> None:
+    """Render a real SPZ after a mocked object URL expires."""
+    page = browser.new_page(viewport={"width": 1100, "height": 790}, color_scheme="dark")
+    project = {"id": "p1", "name": "结果验证", "owner_id": "u1", "effective_role": "owner"}
+    job = {
+        "id": "j1",
+        "project_id": "p1",
+        "profile": "balanced",
+        "status": "SUCCEEDED",
+        "progress": 1,
+        "attempt": 1,
+        "cancel_requested": False,
+        "created_at": "2026-11-18T00:00:00Z",
+        "updated_at": "2026-11-18T00:10:00Z",
+        "reconstruction_id": "r1",
+    }
+    expired_requests = 0
+
+    def api(route):
+        path = urlsplit(route.request.url).path
+        if path.endswith("/manifest"):
+            key = "fresh" if expired_requests else "expired"
+            route.fulfill(
+                json={
+                    "reconstruction_id": "r1",
+                    "artifacts": [{"kind": "spz", "url": f"https://preview.test/{key}.spz"}],
+                }
+            )
+            return
+        route.fulfill(
+            json={
+                "/v1/auth/me": {"id": "u1", "email": "demo@example.test", "is_admin": False},
+                "/v1/projects": [project],
+                "/v1/projects/p1": {
+                    **project,
+                    "asset_count": 0,
+                    "job_count": 1,
+                    "has_active_jobs": False,
+                    "cover": None,
+                    "latest_job": job,
+                },
+                "/v1/projects/p1/assets": {"items": [], "next_cursor": None},
+                "/v1/projects/p1/jobs": {"items": [job], "next_cursor": None},
+                "/v1/jobs/j1": job,
+                "/v1/jobs/j1/logs": {"items": []},
+                "/v1/workers/status": {"online": False, "workers": []},
+                "/v1/notifications/count": {"unread": 0},
+            }.get(path, [])
+        )
+
+    def objects(route):
+        nonlocal expired_requests
+        if route.request.url.endswith("expired.spz"):
+            expired_requests += 1
+            route.fulfill(status=403)
+        else:
+            route.fulfill(body=scene.read_bytes(), content_type="application/octet-stream")
+
+    page.route("https://api.rescene.xyz/**", api)
+    page.route("https://preview.test/**", objects)
+    page.add_init_script(
+        "localStorage.setItem('rescene-token','fixture');localStorage.setItem('rescene-project','p1');"
+    )
+    page.goto(web_url, wait_until="domcontentloaded")
+    page.get_by_role("navigation", name="项目工作区").get_by_role("button", name="结果").click()
+    open_scene = page.get_by_role("button", name="打开场景", exact=True)
+    open_scene.click()
+    dialog = page.get_by_role("dialog", name="场景查看器")
+    expect(dialog.get_by_role("alert")).to_contain_text("过期", timeout=30_000)
+    page.screenshot(path=str(output / "web-viewer-expired.png"))
+    dialog.get_by_role("button", name="重试", exact=True).click()
+    expect(dialog.locator(".viewer[data-rendered=true]")).to_be_visible(timeout=60_000)
+    expect(dialog.get_by_role("link", name="下载 SPZ")).to_have_attribute("href", "https://preview.test/fresh.spz")
+    page.screenshot(path=str(output / "web-viewer-recovered.png"))
+    page.keyboard.press("Escape")
+    expect(dialog).to_have_count(0)
+    page.close()
+
+
+def verify(web_url: str, desktop_url: str, output: Path, image: Path, scene: Path | None = None) -> None:
     output.mkdir(parents=True, exist_ok=True)
     project = {"id": "p1", "name": "厨房空间", "owner_id": "u1", "effective_role": "owner"}
     assets = [
@@ -34,7 +113,9 @@ def verify(web_url: str, desktop_url: str, output: Path, image: Path) -> None:
     }
     results = []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(channel="msedge")
+        browser = playwright.chromium.launch(
+            channel="msedge", args=["--enable-unsafe-swiftshader", "--use-angle=swiftshader"]
+        )
         for client, base, widths in [("web", web_url, [1440, 1024, 768, 390]), ("windows-ui", desktop_url, [1280])]:
             for width in widths:
                 for appearance in ("light", "dark"):
@@ -45,7 +126,8 @@ def verify(web_url: str, desktop_url: str, output: Path, image: Path) -> None:
                     page.on("pageerror", lambda error, errors=errors: errors.append(str(error)))
 
                     def api(route, request, *, jobs=jobs, posts=posts):
-                        path = urlsplit(route.request.url).path
+                        url = urlsplit(route.request.url)
+                        path = url.path
                         if path.endswith("/events"):
                             route.fulfill(body="", content_type="text/event-stream")
                         elif path.endswith("/logs"):
@@ -55,12 +137,30 @@ def verify(web_url: str, desktop_url: str, output: Path, image: Path) -> None:
                                 json={"url": "https://preview.test/fixture.jpg", "expires_at": "2099-01-01T00:00:00Z"}
                             )
                         elif path == "/v1/projects/p1":
-                            route.fulfill(json={**project, "assets": assets, "jobs": jobs})
+                            assert url.query == "view=summary", "Workspace requested the unbounded project detail"
+                            route.fulfill(
+                                json={
+                                    **project,
+                                    "asset_count": 500,
+                                    "job_count": len(jobs),
+                                    "has_active_jobs": True,
+                                    "cover": assets[0],
+                                    "latest_job": jobs[0],
+                                }
+                            )
+                        elif path == "/v1/projects/p1/assets":
+                            page_two = parse_qs(url.query).get("cursor") == ["page2"]
+                            items = [{**assets[0], "id": "a7", "filename": "厨房视角-07.jpg"}] if page_two else assets
+                            route.fulfill(json={"items": items, "next_cursor": None if page_two else "page2"})
                         elif path == "/v1/projects/p1/jobs" and route.request.method == "POST":
                             posts.append(route.request.post_data_json)
                             job = {**base_job, "id": "new-job", "profile": posts[-1]["profile"]}
                             jobs.insert(0, job)
                             route.fulfill(status=201, json=job)
+                        elif path == "/v1/projects/p1/jobs":
+                            route.fulfill(json={"items": jobs, "next_cursor": None})
+                        elif path in {f"/v1/jobs/{item['id']}" for item in jobs}:
+                            route.fulfill(json=next(item for item in jobs if path.endswith(f"/{item['id']}")))
                         else:
                             route.fulfill(
                                 json={
@@ -88,7 +188,7 @@ def verify(web_url: str, desktop_url: str, output: Path, image: Path) -> None:
                     start = page.get_by_role("button", name="开始三维重建")
                     expect(start).to_be_disabled()
                     expect(page.get_by_role("checkbox", name="正在上传", exact=False)).to_be_disabled()
-                    page.get_by_role("button", name="全选图片", exact=True).click()
+                    page.get_by_role("button", name="全选本页图片", exact=True).click()
                     expect(start).to_be_enabled()
                     expect(page.get_by_text("已选 6 个素材", exact=False)).to_contain_text("离线")
                     quality = page.get_by_role("button", name="精细重建", exact=False)
@@ -107,17 +207,39 @@ def verify(web_url: str, desktop_url: str, output: Path, image: Path) -> None:
                         expect(page.locator("html")).to_have_attribute(
                             "data-theme", "dark" if appearance == "light" else "light"
                         )
-                        page.get_by_role("button", name="全选图片", exact=True).click()
+                        page.get_by_role("button", name="全选本页图片", exact=True).click()
                         page.get_by_role("button", name="精细重建", exact=False).click()
+                    asset_pages = page.get_by_role("navigation", name="素材分页")
+                    asset_pages.get_by_role("button", name="下一页").click()
+                    additional = page.get_by_role("checkbox", name="厨房视角-07.jpg", exact=False)
+                    expect(additional).to_be_visible()
+                    additional.check()
+                    asset_pages.get_by_role("button", name="上一页").click()
+                    expect(page.get_by_role("checkbox", name="厨房视角-02.jpg", exact=False)).to_be_checked()
                     start.click()
                     expect(page.get_by_role("status").filter(has_text="任务已进入队列")).to_be_visible()
                     assert (
-                        len(posts) == 1 and posts[0]["profile"] == "quality" and "pending" not in posts[0]["asset_ids"]
+                        len(posts) == 1
+                        and posts[0]["profile"] == "quality"
+                        and "pending" not in posts[0]["asset_ids"]
+                        and "a7" in posts[0]["asset_ids"]
                     )
+                    expect(page.locator(".job-state")).to_have_text("排队中")
+                    if width == 390:
+                        expect(
+                            page.get_by_role("navigation", name="项目工作区").get_by_role("button", name="任务")
+                        ).to_have_attribute("aria-pressed", "true")
+                        page.screenshot(
+                            path=str(output / f"{client}-{width}-{appearance}-offline-queue.png"), full_page=True
+                        )
                     assert not errors, errors
                     results.append({"client": client, "width": width, "theme": appearance, "status": "PASS"})
                     print(client, width, appearance, "PASS", flush=True)
                     page.close()
+        if scene:
+            verify_viewer(browser, web_url, output, scene)
+            results.append({"client": "web", "check": "expired SPZ link refreshed and rendered", "status": "PASS"})
+            print("web Viewer refresh PASS", flush=True)
         browser.close()
     (output / "results.json").write_text(
         json.dumps({"data_source": "isolated API fixtures", "checks": results}, ensure_ascii=False, indent=2) + "\n",
@@ -131,5 +253,6 @@ if __name__ == "__main__":
     parser.add_argument("--desktop-url", default="http://127.0.0.1:4311")
     parser.add_argument("--output", type=Path, default=Path(".cache/ui-review-0.4.0"))
     parser.add_argument("--image", type=Path, required=True)
+    parser.add_argument("--scene", type=Path, help="Optional local SPZ fixture for the Viewer recovery check")
     args = parser.parse_args()
-    verify(args.web_url, args.desktop_url, args.output, args.image)
+    verify(args.web_url, args.desktop_url, args.output, args.image, args.scene)

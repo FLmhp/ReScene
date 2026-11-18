@@ -586,19 +586,32 @@ nav button.active {
   position: fixed;
   z-index: 10;
   inset: 24px;
+  margin: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  padding: 0;
   overflow: hidden;
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-xl);
   background: var(--bg-deep);
   box-shadow: var(--shadow-panel);
 }
+.scene::backdrop { background: rgba(5, 8, 14, 0.64); }
+.scene .viewer-message { top: 64px; }
 .scene .viewer-shell {
   height: 100%;
 }
-.scene > button {
+.scene-actions {
   position: absolute;
   top: 14px;
   right: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.scene-actions > :is(a, button) {
   padding: var(--space-sm) var(--space-md);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-full);
@@ -606,8 +619,31 @@ nav button.active {
   backdrop-filter: blur(16px);
   color: var(--fg);
 }
-.scene > button:hover {
+.scene-actions > :is(a, button):hover {
   border-color: var(--accent);
+}
+
+.workspace-panes { display: none; }
+.workspace-side { display: grid; align-content: start; gap: 16px; min-width: 0; }
+.workspace-grid .upload-panel { grid-row: auto; }
+.page-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-block: 12px; }
+.page-controls span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.task-detail { display: grid; gap: 10px; }
+.task-detail .task-action { justify-self: start; }
+.result-panel { margin-top: 16px; }
+.workspace-grid .assets { grid-template-columns: repeat(auto-fit, minmax(min(100%, 155px), 1fr)); align-items: start; max-height: none; }
+.workspace-grid .asset-row { grid-template-columns: minmax(0, 1fr); padding: 8px; }
+.workspace-grid .asset-row > .asset-preview { width: 100%; height: auto; aspect-ratio: 4 / 3; }
+.workspace-grid .asset-row > button { justify-self: end; }
+@media (max-width: 1100px) {
+  .workspace-side { display: contents; }
+  .workspace-panes { display: flex; gap: 8px; margin-block: 12px; }
+  .workspace-panes button { flex: 1; min-height: 44px; }
+  .workspace-panes button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  .workspace-grid.pane-materials .status-panel,
+  .workspace-grid:not(.pane-materials) :is(.upload-panel, .route-panel),
+  .workspace-grid.pane-results .task-detail,
+  .workspace-grid.pane-tasks .result-panel { display: none; }
 }
 .shared-scene {
   width: 100vw;

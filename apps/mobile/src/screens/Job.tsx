@@ -1,5 +1,5 @@
 import { explainError } from "@rescene/api-client";
-import { JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, stageLabel } from "@rescene/schemas";
+import { JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, jobErrorHint, stageLabel } from "@rescene/schemas";
 import type { Artifact, Job, JobLog, ShareSummary } from "@rescene/schemas";
 import { useEffect, useRef, useState } from "react";
 import { Alert, Image, Linking, Platform, Share, Text, View } from "react-native";
@@ -69,7 +69,7 @@ export function JobScreen({ jobId, onOpenScene, onBack }: {
     void client.getJob(jobId).then(async (value) => {
       if (!active) return;
       setJob(value);
-      const project = await client.getProject(value.project_id);
+      const project = await client.getProjectSummary(value.project_id);
       if (active) setWriter(project.effective_role !== "viewer");
     }).catch((reason: unknown) => { if (active) setError(explainError(reason, "操作失败，请检查网络后重试")); });
     void client.getWorkerStatus().then((status) => { if (active) setOnline(status.online); }).catch(() => { if (active) setOnline(null); });
@@ -199,9 +199,9 @@ export function JobScreen({ jobId, onOpenScene, onBack }: {
           <Text selectable style={textStyles.muted}>{RECONSTRUCTION_PROFILES[job.profile].title} · 第 {job.attempt} 次 · {job.id.slice(0, 8)}</Text>
         </> : null}
         {job?.status === "QUEUED" ? <Text style={textStyles.muted}>{online === false ? "Worker 离线，任务将在其上线后执行" : online === true ? "任务排队中" : "正在等待 Worker（状态未知）"}</Text> : null}
-        {job?.error_message || job?.error_code ? <Text style={textStyles.error}>{job.error_code} {job.error_message}</Text> : null}
-        {writer && job && ACTIVE[job.status] ? <Button label="取消任务" tone="ghost" disabled={busy} onPress={() => Alert.alert("取消任务", "确定取消此任务？", [{ text: "返回", style: "cancel" }, { text: "取消任务", style: "destructive", onPress: () => void action(async () => setJob(await client.cancelJob(job.id))) }])} /> : null}
-        {writer && job && (job.status === "FAILED" || job.status === "CANCELLED") ? <Button label="重试任务" disabled={busy} onPress={() => void action(async () => setJob(await client.retryJob(job.id)))} /> : null}
+        {job?.error_message || job?.error_code ? <Text accessibilityLiveRegion="polite" style={textStyles.error}>{jobErrorHint(job.error_code) || job.error_message || job.error_code}</Text> : null}
+        {writer && job && ACTIVE[job.status] ? <Button label={job.cancel_requested ? "取消中" : "取消任务"} tone="ghost" disabled={busy || job.cancel_requested} onPress={() => Alert.alert("取消任务", "确定取消此任务？", [{ text: "返回", style: "cancel" }, { text: "取消任务", style: "destructive", onPress: () => void action(async () => setJob(await client.cancelJob(job.id))) }])} /> : null}
+        {writer && job && job.error_code !== "INVALID_INPUT" && (job.status === "FAILED" || job.status === "CANCELLED") ? <Button label="重试任务" disabled={busy} onPress={() => void action(async () => setJob(await client.retryJob(job.id)))} /> : null}
         {job?.reconstruction_id && artifacts.some((a) => a.kind === "spz" || a.kind === "ply") ? <Button label="打开三维场景" onPress={() => onOpenScene(job.reconstruction_id!)} /> : null}
       </Card>
       {timeline.length > 0 ? <Card>
