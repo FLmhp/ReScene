@@ -37,6 +37,10 @@ def test_supervisor_enforces_budget_and_continues_after_model_failure(tmp_path, 
     assert supervisor.trial_requirement(trial, None, 12 * gib, 10) == "insufficient_disk"
     assert supervisor.trial_requirement(trial, 40, 13 * gib, 10) == "insufficient_time"
     assert supervisor.trial_requirement(trial, 41, 13 * gib, 10) is None
+    with monkeypatch.context() as isolated:
+        isolated.setenv("RESCENE_EXPERIMENT_ARCHIVE", str(tmp_path / "archive"))
+        with pytest.raises(RuntimeError, match="mounted /root/autodl-fs"):
+            supervisor.require_archive_mount()
     (tmp_path / "plan-status").mkdir()
     monkeypatch.setattr(supervisor, "RUNS", tmp_path)
     monkeypatch.setattr(supervisor, "free_bytes", lambda: 20 * gib)

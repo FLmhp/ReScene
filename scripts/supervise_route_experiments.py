@@ -17,6 +17,7 @@ from pathlib import Path
 
 ROOT = Path("/root/ReScene")
 DATA = Path("/root/autodl-tmp/rescene")
+SHARED = Path("/root/autodl-fs")
 RUNS = Path(os.environ.get("RESCENE_DELIVERY_ROOT", DATA / "delivery-v4"))
 GPU_BOUNDS = {"fast": 2400, "balanced": 5400, "quality": 9000}
 STALL_BOUNDS = {"fast": 900, "balanced": 1800, "quality": 3600}
@@ -157,6 +158,13 @@ def trial_requirement(trial: dict, deadline: float | None, free: int, now: float
 
 def sha256_spec(trial: dict) -> str:
     return hashlib.sha256(Path(trial["spec"]).read_bytes()).hexdigest()
+
+
+def require_archive_mount() -> None:
+    if archive := os.environ.get("RESCENE_EXPERIMENT_ARCHIVE"):
+        target = Path(archive).resolve()
+        if not target.is_relative_to(SHARED) or not SHARED.is_mount():
+            raise RuntimeError("Experiment archive requires the mounted /root/autodl-fs volume")
 
 
 def trial_command(trial: dict) -> list[str]:
@@ -324,6 +332,7 @@ def locked(plan: list[dict[str, object]], deadline: float | None = None) -> int:
             code = code or 2
             break
         try:
+            require_archive_mount()
             result = monitor(trial, deadline)
         except Exception as error:
             status["trials"][name] = f"supervisor-error: {type(error).__name__}: {error}"
@@ -369,6 +378,7 @@ def main() -> int:
                 raise ValueError(f"{name} requires positive {field}")
     if args.deadline_epoch is not None and time.time() >= args.deadline_epoch:
         return 2
+    require_archive_mount()
     (RUNS / "resources").mkdir(parents=True, exist_ok=True)
     (RUNS / "plan-status").mkdir(parents=True, exist_ok=True)
     (RUNS / "runs").mkdir(parents=True, exist_ok=True)
