@@ -172,6 +172,8 @@ python -m rescene report --run-id my-scene
 
 引擎环境与 Worker 操作见 [部署与运维](docs/单5090系统部署与运维.md)；质量结论见 [5090 v3 优化报告](docs/RESCENE_5090_DELIVERY_OPTIMIZATION.md)。历史标定存在冻结帧、渲染分割和坐标变换口径问题，不能直接作为新候选的晋级基线。
 
+5090 下次实验使用 `/root/autodl-fs` 的共享存储归档大型数据集，逐场景复制到实例本地数据盘运行。本轮仅整理计划，实验仍待开机后执行。[5090 大数据集训练运行手册](docs/5090大数据集训练运行手册.md)
+
 ### 后续 A100 优化
 
 1. 在独立 `/home/loch/ReScene` 环境固定数据 SHA-256、选帧清单、验证集和依赖。先用 Golden Kitchen 和 ETH3D 复测三条现有路线，各重复三次，记录运行波动。
@@ -185,7 +187,7 @@ python -m rescene report --run-id my-scene
 | 使用工作台、查看场景或管理账号 | [用户手册](docs/用户手册.md) |
 | 理解 API、数据模型和各端实现 | [项目说明](docs/项目说明.md) |
 | 修改代码、提交 PR、验证或发布 | [开发与发布指南](CONTRIBUTING.md) |
-| 下载并核对当前安装包 | [0.3.0 发布说明](docs/0.3.0发布说明.md) |
+| 下载并核对当前安装包 | [0.4.0 发布说明](docs/0.4.0发布说明.md) |
 | 部署、升级、备份或回滚 | [单 5090 系统部署与运维](docs/单5090系统部署与运维.md) |
 | 查看截图、样例指标和发布哈希 | [验收与发布证据](artifacts/README.md) |
 | 复核算法实验 | [5090 v3](docs/RESCENE_5090_DELIVERY_OPTIMIZATION.md) · [质量标定](docs/5090_QUALITY_CALIBRATION.md) · [A100 历史报告](docs/A100_OPTIMIZATION_REPORT.md) |
