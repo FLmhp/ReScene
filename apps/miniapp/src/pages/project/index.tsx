@@ -3,7 +3,7 @@ import { AssetThumbnail } from "../../asset-thumbnail";
 import { explainError, isOfflineError, ResceneApiError } from "@rescene/api-client";
 import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, jobErrorHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
 import type { Asset, Job, JobLog, MemberRole, Profile, ProjectWorkspace, ProjectMember, ShareSummary, WorkerStatus } from "@rescene/schemas";
-import { summarizeMediaWarnings } from "@rescene/uploader";
+import { MediaPreflightError, summarizeMediaWarnings } from "@rescene/uploader";
 import { Button, Image, Input, Progress, Text, View } from "@tarojs/components";
 import Taro, { useDidHide, useDidShow, useRouter } from "@tarojs/taro";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -335,7 +335,7 @@ export default function ProjectPage() {
       await runUploads(items, pending.map((_, index) => failed.length + index));
     } catch (reason) {
       if (reason instanceof UploadSelectionError && reason.cancelled) return;
-      setError(message(reason, "选择文件失败"));
+      setError(reason instanceof MediaPreflightError ? reason.message : message(reason, "选择文件失败"));
     } finally {
       selectLock.current = false;
       setUploading(false);

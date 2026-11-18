@@ -1,5 +1,7 @@
 export const SAMPLE_SIDE = 96;
 
+export class MediaPreflightError extends Error {}
+
 const formats: Record<string, string> = {
   jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", mp4: "video/mp4",
   mov: "video/quicktime", m4v: "video/x-m4v", mkv: "video/x-matroska",
@@ -86,7 +88,7 @@ export async function inspectMedia<T extends { name: string; size: number }>(
       invalid.push(`${file.name}：${error instanceof Error ? error.message : "无法读取文件"}`);
     }
   }
-  if (invalid.length) throw new Error(`请重新选择素材。\n${summarizeMediaWarnings(invalid)}`);
+  if (invalid.length) throw new MediaPreflightError(`请重新选择素材。\n${summarizeMediaWarnings(invalid)}`);
   return warnings;
 }
 

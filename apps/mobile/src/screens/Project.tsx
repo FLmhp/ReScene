@@ -10,7 +10,7 @@ import { AssetThumbnail } from "../AssetThumbnail";
 import { enqueue, loadQueue, replayQueued, saveQueue } from "../queue";
 import { useAppearance } from "../appearance";
 import type { Palette } from "@rescene/design-tokens";
-import { mediaType, summarizeMediaWarnings } from "@rescene/uploader";
+import { MediaPreflightError, mediaType, summarizeMediaWarnings } from "@rescene/uploader";
 import { inspectPickedFiles, type PickedFile, uploadFile } from "../upload";
 import { Button, Card, ErrorText, Field, Screen, useTextStyles } from "../ui";
 
@@ -160,7 +160,7 @@ export function ProjectScreen({ project, onJob, onBack }: {
         setUploads((current) => [...current, { id, file, progress: 0, status: "uploading" }]);
         void runUpload(id, file);
       }
-    } catch (reason) { setError(explainError(reason, "选择文件失败")); }
+    } catch (reason) { setError(reason instanceof MediaPreflightError ? reason.message : explainError(reason, "选择文件失败")); }
     finally { picking.current = false; setCheckingMedia(false); }
   }
 

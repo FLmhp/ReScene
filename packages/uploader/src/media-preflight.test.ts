@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inspectMedia, mediaType, SAMPLE_SIDE } from "./media-preflight";
+import { inspectMedia, MediaPreflightError, mediaType, SAMPLE_SIDE } from "./media-preflight";
 
 const jpg = Uint8Array.of(255, 216, 255, 224);
 const photo = { name: "first.JPG", size: 150 };
@@ -11,7 +11,9 @@ describe("material selection preflight", () => {
     expect(mediaType("pic.PNG")).toBe("image/png");
     expect(mediaType("jpg")).toBeUndefined();
     expect(mediaType("file.constructor")).toBeUndefined();
-    await expect(inspectMedia([photo], async () => Uint8Array.of(1, 2), async () => sharp)).rejects.toThrow(/first.JPG.*扩展名/);
+    const badHeader = inspectMedia([photo], async () => Uint8Array.of(1, 2), async () => sharp);
+    await expect(badHeader).rejects.toBeInstanceOf(MediaPreflightError);
+    await expect(badHeader).rejects.toThrow(/first.JPG.*扩展名/);
     await expect(inspectMedia([photo], async () => jpg, async () => { throw new Error("无法解码"); })).rejects.toThrow(/无法解码/);
   });
   it("exposes blur and similar photos as advisory warnings", async () => {

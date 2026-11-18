@@ -59,7 +59,7 @@ await runInContext(`
       const files = [{ path: "one", name: "one.jpg", size: 12 }, { path: "copy", name: "copy.jpg", size: 12 }];
       const warnings = await inspect(files);
       let rejected = false;
-      try { await inspect([{path: "bad", name: "bad.jpg", size: 12}]); } catch { rejected = true; }
+      try { await inspect([{path: "bad", name: "bad.jpg", size: 12}]); } catch (error) { rejected = error.message.includes("bad.jpg") && error.message.includes("内容与扩展名不符"); }
       return [login.access_token, user.id, project.effective_role, workspace.asset_count, workspace.assets[0].id, warnings.length, rejected];
     })();
   }]);
