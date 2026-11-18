@@ -18,6 +18,7 @@ from rescene_worker.main import (
     artifacts,
     download_inputs,
     is_resumed_stage,
+    monitor_job,
     restore_archive,
     safe_cleanup,
     stage_progress,
@@ -186,6 +187,19 @@ def test_checkpoint_preserves_photometric_selection_and_rebases_images(tmp_path,
     else:
         with pytest.raises(IncompleteCheckpoint, match="photometric selection"):
             restore_archive(bucket, key, restored)
+
+
+def test_failed_oss_archive_does_not_publish_a_resume_key(tmp_path, monkeypatch):
+    run = tmp_path / "output"
+    (run / "stages").mkdir(parents=True)
+    (run / "stages" / "preprocess.json").write_text('{"status":"success"}', encoding="utf-8")
+    monkeypatch.setattr("oss2.resumable_upload", Mock(side_effect=OSError("temporary OSS outage")))
+    api = Mock()
+    with pytest.raises(OSError, match="temporary OSS outage"):
+        monitor_job(api, "/attempt", {"output_prefix": "job/"}, Mock(), run, Mock(), (Event(), Event()))
+    api.post.assert_not_called()
+    assert not (tmp_path / "output-preprocess.tar.gz").exists()
+    assert (run / "stages" / "preprocess.json").is_file()
 
 
 def test_log_shipper_tails_incrementally(tmp_path):
