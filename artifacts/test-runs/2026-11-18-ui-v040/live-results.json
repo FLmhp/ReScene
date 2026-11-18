@@ -1,0 +1,15 @@
+{
+  "preview": {
+    "status": 200,
+    "dimensions": [
+      320,
+      214
+    ],
+    "bytes": 139014
+  },
+  "new_jobs_created": 0,
+  "web": {
+    "existing_spz_rendered": true,
+    "page_errors": []
+  }
+}

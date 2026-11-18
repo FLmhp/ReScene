@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://rescene.xyz/">项目主页</a> ·
   <a href="https://app.rescene.xyz">在线工作台</a> ·
-  <a href="https://github.com/FLmhp/ReScene/releases/tag/v0.3.0">下载 0.3.0</a> ·
+  <a href="https://github.com/FLmhp/ReScene/releases/tag/v0.4.0">下载 0.4.0</a> ·
   <a href="docs/用户手册.md">用户手册</a> ·
   <a href="CONTRIBUTING.md">开发指南</a>
 </p>
@@ -32,6 +32,8 @@ ReScene 把团队工作台、GPU 重建引擎和 SPZ 查看器放在同一个仓
 
 截图来自本地验收，不代表生产环境的实时状态。其他客户端与 Viewer 截图见 [验收证据](artifacts/README.md)。
 
+0.4.0 四端改版与安装验证见 [验收报告](artifacts/test-runs/2026-11-18-ui-v040/report.md)。当前 5090 已关机，任务在 Worker 上线后执行。
+
 </details>
 
 ## 快速开始
@@ -40,13 +42,17 @@ ReScene 把团队工作台、GPU 重建引擎和 SPZ 查看器放在同一个仓
 
 | 入口 | 当前交付状态 |
 |---|---|
-| Web / API | 最近部署记录：2026-11-11，版本 0.3.0，数据库迁移 `0006`；[部署记录](docs/单5090系统部署与运维.md#14-030-部署记录2026-11-11) |
-| Windows / Linux / macOS | 0.3.0 提供 NSIS EXE、deb、AppImage、universal DMG；[下载与校验](docs/0.3.0发布说明.md) |
-| Android | 源码包含 0.3.0 功能；本次 Release 未构建 APK，需开启签名门禁后单独发布 |
-| 微信小程序 | 可本地构建；正式发布仍需真实 AppID、业务域名与平台审核 |
+| Web / API | 0.4.0 双主题工作台与素材预览接口，数据库迁移版本沿用 0006 |
+| Windows / Linux / macOS | 安装包与 SHA-256 以 [0.4.0 Release](https://github.com/FLmhp/ReScene/releases/tag/v0.4.0) 为准 |
+| Android | 签名 APK，版本码 5；已在 SLT_API35 完成安装和主题验证 |
+| 微信小程序 | 真实 AppID 的 0.4.0 双主题构建，支持复制场景链接到浏览器 |
+
+此前小程序与 Android 核心流程已由用户确认真机通过。0.4.0 的实际构建、上传、上线与待验收状态见 [本轮报告](artifacts/test-runs/2026-11-18-ui-v040/report.md)。
 
 > [!IMPORTANT]
-> 仓库和 GitHub Release 为私有，仅授权协作者可访问。桌面安装包未签名，macOS 未公证；构建成功不等于各平台安装验收完成。限制与已发布文件以 [0.3.0 发布说明](docs/0.3.0发布说明.md) 为准。
+> 仓库和 GitHub Release 为私有，仅授权协作者可访问。桌面安装包未签名，macOS 未公证；构建成功不等于各平台安装验收完成。限制与已发布文件以 [0.4.0 发布说明](docs/0.4.0发布说明.md) 为准。
+
+界面提供跟随系统、浅色和深色设置，偏好保存在当前设备。Web/桌面在外观菜单中切换，Android/小程序在页面右上角切换。开发者入口见 [AGENTS.md](AGENTS.md)。
 
 ## 系统架构
 
@@ -165,6 +171,12 @@ python -m rescene report --run-id my-scene
 ```
 
 引擎环境与 Worker 操作见 [部署与运维](docs/单5090系统部署与运维.md)；质量结论见 [5090 v3 优化报告](docs/RESCENE_5090_DELIVERY_OPTIMIZATION.md)。历史标定存在冻结帧、渲染分割和坐标变换口径问题，不能直接作为新候选的晋级基线。
+
+### 后续 A100 优化
+
+1. 在独立 `/home/loch/ReScene` 环境固定数据 SHA-256、选帧清单、验证集和依赖。先用 Golden Kitchen 和 ETH3D 复测三条现有路线，各重复三次，记录运行波动。
+2. FAST 逐项比较迭代数和训练分辨率；BALANCED 比较跟踪与 BA 参数；QUALITY 比较相机模型与 MVS 分辨率。每次只改变一项，用同一输入和验证集记录注册率、重投影误差、PSNR、SSIM、LPIPS、几何指标、耗时和峰值显存。
+3. 用独立场景复核候选，保留质量和稳定性无回归且有明确收益的配置。发布配置前校验 checkpoint、PLY 和 SPZ 可重载。A100 实验配置与生产 5090 配置独立管理。
 
 ## 文档导航
 

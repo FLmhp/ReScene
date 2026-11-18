@@ -7,6 +7,7 @@
 | `screenshots/` | 各端真实运行截图 | 每张都来自实际运行，不使用设计稿或合成图 |
 | `golden/` | 黄金样例的 `metrics.json` 与 `report.md` | 只保留指标与报告，`scene.spz` 由重建流程重新产出 |
 | `release/<版本>/` | `release-manifest.json`、`source-manifest.json` | 发布包的 SHA-256 与源码快照清单；安装包本体在 GitHub Release |
+| `test-runs/` | [2026-11-17 四端复测报告](test-runs/2026-11-18-ui-v040/report.md) | 新 5090、真 AppID、现场截图与阻塞项 |
 
 ## 截图
 
@@ -24,8 +25,10 @@
 | `android-back.png` | Android release APK | 系统返回后的项目页 |
 | `miniapp-login-required.png` | 微信开发者工具 | 工程可打开；未登录时无法启动模拟器，故不把该端标为真机发布 |
 
-微信小程序使用邮箱密码登录，正式发布仍需真实 AppID、合规的请求/上传及业务域名配置和平台审核；本目录不以欢迎页冒充小程序业务截图。
+微信小程序使用邮箱密码登录。当前真实 AppID 使用个人主体，验收记录分别列出真机原生功能和内嵌 Viewer 的状态。
 
 ## 发布清单
 
 `release/0.3.0/` 记录 0.3.0 的四个桌面安装包（Windows NSIS、Linux deb/AppImage、macOS universal dmg）的大小与 SHA-256。校验方式：从 Release 下载同名文件后计算 SHA-256，与 `release-manifest.json` 对照；`source-manifest.json` 列出打包时每个源文件的大小与哈希。
+
+0.4.0 双主题的宽窄屏与原生客户端截图保存在 test-runs/2026-11-18-ui-v040/screenshots，数据来源与平台状态以本轮报告为准。
