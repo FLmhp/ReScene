@@ -6,9 +6,90 @@ import argparse
 import json
 import shutil
 import sys
+from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
+from time import perf_counter
 from types import SimpleNamespace
+from unittest.mock import patch
+
+import numpy as np
+
+
+def grid_sample(confidence, depth, image_bounds, limit: int, seed: int):
+    """Reserve per-image tile coverage before sampling any remaining confident points."""
+    depth = depth.reshape(confidence.shape)
+    valid = np.isfinite(confidence) & np.isfinite(depth) & (depth > 0)
+    selected = np.zeros(confidence.shape, dtype=bool)
+    for index, bounds in enumerate(image_bounds):
+        x0, y0, x1, y1 = map(int, bounds)
+        valid[index, :y0] = valid[index, y1:] = False
+        valid[index, :, :x0] = valid[index, :, x1:] = False
+        for rows in np.array_split(np.arange(y0, y1), 4):
+            for columns in np.array_split(np.arange(x0, x1), 4):
+                tile = np.ix_(rows, columns)
+                scores = confidence[index][tile]
+                candidates = np.flatnonzero((valid[index][tile] & (scores >= 1.5)).ravel())
+                ranked = np.argsort(-scores.ravel()[candidates], kind="stable")
+                if len(ranked):
+                    row, column = np.unravel_index(candidates[ranked[:16]], scores.shape)
+                    selected[index, rows[row], columns[column]] = True
+    remaining_budget = limit - int(selected.sum())
+    if remaining_budget < 0:
+        raise ValueError("Tile reservation exceeds the VGGT point budget")
+    remaining = np.flatnonzero(valid & (confidence >= 5) & ~selected)
+    if remaining.size > remaining_budget:
+        remaining = np.random.default_rng(seed).choice(remaining, size=remaining_budget, replace=False)
+    selected.ravel()[remaining] = True
+    return selected
+
+
+def coverage_queries(distances, count: int) -> list[int]:
+    """Choose queries covering the most currently uncovered nearest-neighbor views."""
+    distances = np.array(distances, dtype=float, copy=True)
+    count = min(count, len(distances))
+    np.fill_diagonal(distances, np.inf)
+    neighbors = np.argsort(distances, axis=1, kind="stable")[:, : min(6, len(distances) - 1)]
+    coverage = np.eye(len(distances), dtype=bool)
+    coverage[np.arange(len(distances))[:, None], neighbors] = True
+    selected = [0]
+    covered = coverage[:, 0].copy()
+    while len(selected) < count:
+        gain = coverage[~covered].sum(axis=0)
+        gain[selected] = -1
+        query = int(gain.argmax())
+        selected.append(query)
+        covered |= coverage[:, query]
+    return selected
+
+
+def _grid_hooks(demo, seed: int, statistics: dict):
+    state = {}
+    load = demo.load_and_preprocess_images_square
+    infer = demo.run_VGGT
+
+    def load_images(*args, **kwargs):
+        images, bounds = load(*args, **kwargs)
+        state["bounds"] = bounds.cpu().numpy()[:, :4]
+        state["side"] = images.shape[-1]
+        return images, bounds
+
+    def predict(*args, **kwargs):
+        result = infer(*args, **kwargs)
+        state["depth"], state["confidence"] = result[2:]
+        return result
+
+    def sample(_mask, limit):
+        confidence = state["confidence"]
+        bounds = np.rint(state["bounds"] * confidence.shape[-1] / state["side"])
+        bounds = np.clip(bounds, 0, confidence.shape[-1]).astype(int)
+        selected = grid_sample(confidence, state["depth"], bounds, limit, seed)
+        statistics["sampled_points_per_image"] = selected.sum(axis=(1, 2)).tolist()
+        return selected
+
+    return patch.multiple(
+        demo, load_and_preprocess_images_square=load_images, run_VGGT=predict, randomly_limit_trues=sample
+    )
 
 
 def _load_checkpoint(path: Path) -> dict[str, object]:
@@ -128,6 +209,8 @@ def main() -> None:
     parser.add_argument("--max-reprojection-error", type=float, default=8.0)
     parser.add_argument("--depth-confidence", type=float, default=5.0)
     parser.add_argument("--track-observation-limit", type=int)
+    parser.add_argument("--grid-sampling", action="store_true")
+    parser.add_argument("--query-coverage", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--diagnostics", action="store_true")
     args = parser.parse_args()
@@ -140,15 +223,31 @@ def main() -> None:
     import demo_colmap
     import pycolmap
     import torch
-    from vggt.dependency import track_predict
+    from vggt.dependency import track_predict, vggsfm_utils
 
     _write_adapter_provenance(args.vendor_dir, args.scene_dir)
     torch.manual_seed(args.seed)
     pre_ba_dir = args.scene_dir / "sparse-pre-ba"
+    statistics = {}
     original_bundle_adjustment = None
     if args.use_ba:
         original_bundle_adjustment, patched = _capture_pre_bundle_adjustment(pycolmap, pre_ba_dir)
         pycolmap.bundle_adjustment = patched
+    ba = pycolmap.bundle_adjustment
+    forward_query = track_predict._forward_on_query
+
+    def tracked_query(query_index, *args, **kwargs):
+        statistics.setdefault("tracking_queries", []).append(int(query_index))
+        return forward_query(query_index, *args, **kwargs)
+
+    def timed_ba(*args, **kwargs):
+        start = perf_counter()
+        torch.cuda.reset_peak_memory_stats()
+        try:
+            return ba(*args, **kwargs)
+        finally:
+            statistics["bundle_adjustment_seconds"] = round(perf_counter() - start, 3)
+            statistics["bundle_adjustment_peak_allocated_mib"] = torch.cuda.max_memory_allocated() / 1024**2
 
     state_dict = _load_checkpoint(args.checkpoint)
     original_loader = torch.hub.load_state_dict_from_url
@@ -179,7 +278,20 @@ def main() -> None:
         demo_colmap.predict_tracks = partial(original_predict_tracks, max_points_num=args.track_observation_limit)
     demo_colmap.rename_colmap_recons_and_rescale_camera = _correct_padding_coordinates(original_rename)
     try:
-        with torch.inference_mode():
+        with ExitStack() as hooks, torch.inference_mode():
+            if args.grid_sampling:
+                hooks.enter_context(_grid_hooks(demo_colmap, args.seed, statistics))
+            if args.query_coverage:
+                hooks.enter_context(
+                    patch.object(
+                        vggsfm_utils,
+                        "farthest_point_sampling",
+                        lambda distances, count, _start: coverage_queries(distances.detach().cpu().numpy(), count),
+                    )
+                )
+            if args.diagnostics and args.use_ba:
+                hooks.enter_context(patch.object(track_predict, "_forward_on_query", tracked_query))
+                hooks.enter_context(patch.object(pycolmap, "bundle_adjustment", timed_ba))
             demo_colmap.demo_fn(options)
     finally:
         demo_colmap.rename_colmap_recons_and_rescale_camera = original_rename
@@ -190,6 +302,9 @@ def main() -> None:
         track_predict.initialize_feature_extractors = original_extractors
         if original_bundle_adjustment is not None:
             pycolmap.bundle_adjustment = original_bundle_adjustment
+        if statistics:
+            geometry = args.scene_dir / "vggt-phases.json"
+            geometry.write_text(json.dumps(statistics, indent=2) + "\n", encoding="utf-8")
     if args.diagnostics and args.use_ba and pre_ba_dir.is_dir():
         from rescene.geometry_metrics import compare_bundle_adjustment
 

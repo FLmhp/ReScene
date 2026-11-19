@@ -94,7 +94,13 @@ def archive_trial(run: Path, archive_root: Path, identity: str, verdict: dict, k
             raise ValueError("Expected one final single-GPU checkpoint")
         checkpoint = torch.load(checkpoints[0], map_location="cpu", weights_only=True)
         means = checkpoint["splats"]["means"]
-        if means.ndim != 2 or means.shape[1] != 3 or len(means) == 0 or not torch.isfinite(means).all():
+        if (
+            int(checkpoint["step"]) != verdict["final_step"]
+            or means.ndim != 2
+            or means.shape[1] != 3
+            or len(means) != verdict["ply_points"]
+            or not torch.isfinite(means).all()
+        ):
             raise ValueError("Final Gaussian checkpoint failed reload verification")
         files.extend((checkpoints[0], final_ply_path(run), run / "scene.spz"))
     hashes = {path.relative_to(run).as_posix(): sha256_file(path) for path in files}
@@ -232,6 +238,13 @@ def main() -> None:
     allow_missing = spec.get("allow_missing_validation", False)
     if type(allow_missing) is not bool or (allow_missing and (validation is None or len(validation) != 8)):
         raise ValueError("allow_missing_validation requires a boolean and exactly eight frozen views when enabled")
+    retain = spec.get("retain_frozen_sources", False)
+    if type(retain) is not bool or (
+        retain and (not validation or set(spec.get("selected_sources", [])) != set(source_hashes))
+    ):
+        raise ValueError("Retaining frozen sources requires a complete explicit source list and validation split")
+    if config.colmap_shared_camera and spec.get("capture") != "eth3d-dslr-single-camera":
+        raise ValueError("Shared intrinsics require an explicit single-camera DSLR trial")
     seed = spec.get("seed")
     if seed is not None and (type(seed) is not int or not 0 <= seed < 2**32):
         raise ValueError("Trial seed must be an unsigned 32-bit integer")
@@ -245,6 +258,7 @@ def main() -> None:
                 max_frames=min(config.max_frames, spec.get("frame_limit", config.max_frames)),
                 max_side=config.preprocess_max_side,
                 validation_sources=validation,
+                retain_frozen_sources=retain,
                 seed=42 if seed is None else seed,
             )
             selection = json.loads((scratch / "photometric_selection.json").read_text(encoding="utf-8"))
@@ -310,6 +324,7 @@ def main() -> None:
             random_seed=seed,
             matching_db=Path(spec["matching_db"]) if spec.get("matching_db") else None,
             selected_sources=set(spec["selected_sources"]) if "selected_sources" in spec else None,
+            retain_frozen_sources=retain,
             metadata=metadata,
             resume=args.resume,
             **(

@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 ROOT = Path("/root/ReScene")
+SOURCE = Path(os.environ.get("RESCENE_EXPERIMENT_SOURCE", ROOT))
 DATA = Path("/root/autodl-tmp/rescene")
 SHARED = Path("/root/autodl-fs")
 RUNS = Path(os.environ.get("RESCENE_DELIVERY_ROOT", DATA / "delivery-v4"))
@@ -81,7 +82,7 @@ def environment() -> dict[str, str]:
     env = os.environ.copy()
     env.update(
         {
-            "RESCENE_ROOT": str(ROOT),
+            "RESCENE_ROOT": str(SOURCE),
             "CUDA_VISIBLE_DEVICES": "0",
             "OMP_NUM_THREADS": "12",
             "MKL_NUM_THREADS": "12",
@@ -92,6 +93,8 @@ def environment() -> dict[str, str]:
             "HF_HUB_OFFLINE": "1",
         }
     )
+    if SOURCE != ROOT:
+        env["PYTHONPATH"] = str(SOURCE / "src")
     env["LD_LIBRARY_PATH"] = (
         f"{DATA}/runtime/system-libs/usr/lib/x86_64-linux-gnu:"
         f"{ROOT}/.venv/lib/python3.11/site-packages/nvidia/cuda_runtime/lib:"
@@ -186,7 +189,7 @@ def trial_command(trial: dict) -> list[str]:
     return [
         sys.executable,
         "-u",
-        str(ROOT / "scripts" / "route_experiments_v3.py"),
+        str(SOURCE / "scripts" / "route_experiments_v3.py"),
         str(trial["spec"]),
         str(RUNS / "runs" / trial["name"]),
         "--repeat",

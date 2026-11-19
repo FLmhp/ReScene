@@ -74,6 +74,10 @@ def vggt_command(
         command.extend(("--depth-confidence", str(config.vggt_depth_confidence)))
     if config.vggt_track_observation_limit is not None:
         command.extend(("--track-observation-limit", str(config.vggt_track_observation_limit)))
+    if config.vggt_grid_sampling and not config.use_bundle_adjustment:
+        command.append("--grid-sampling")
+    if config.vggt_query_coverage:
+        command.append("--query-coverage")
     if diagnostics:
         command.append("--diagnostics")
     return command
@@ -90,6 +94,8 @@ def colmap_command(
     mapper: str = "incremental",
     matching_db: Path | None = None,
     seed: int | None = None,
+    shared_camera: bool = False,
+    mvs_iterations: int | None = None,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -114,6 +120,10 @@ def colmap_command(
         command.extend(("--matching-db", str(matching_db)))
     if seed is not None:
         command.extend(("--seed", str(seed)))
+    if shared_camera:
+        command.append("--shared-camera")
+    if mvs_iterations is not None:
+        command.extend(("--mvs-iterations", str(mvs_iterations)))
     return command
 
 

@@ -315,6 +315,11 @@ def _run_reuse_comparison(
                     str(config.colmap_mvs_max_image_size),
                     "--poisson-depth",
                     str(config.colmap_poisson_depth),
+                    *(
+                        ["--mvs-iterations", str(config.colmap_mvs_iterations)]
+                        if config.colmap_mvs_iterations is not None
+                        else []
+                    ),
                 ],
                 logs / "dense.log",
                 cwd=root,
@@ -347,6 +352,7 @@ def run_pipeline(
     random_seed: int | None = None,
     matching_db: Path | None = None,
     selected_sources: set[str] | None = None,
+    retain_frozen_sources: bool = False,
 ) -> Path:
     root = project_root()
     run_dir = (output_dir if output_dir else root / "runs" / run_id).resolve()
@@ -356,7 +362,7 @@ def run_pipeline(
         config = config_override or profile_config(profile)
         if config.name.value != profile:
             raise ValueError(f"Profile override is for {config.name.value}, not {profile}")
-        if any(
+        if retain_frozen_sources or any(
             value is not None for value in (frame_limit, validation_sources, random_seed, matching_db, selected_sources)
         ):
             raise ValueError("Reuse comparisons use the bundle's fixed image selection")
@@ -403,6 +409,7 @@ def run_pipeline(
                 max_side=config.preprocess_max_side,
                 record_hashes=record_hashes,
                 validation_sources=validation_sources,
+                retain_frozen_sources=retain_frozen_sources,
                 seed=42 if random_seed is None else random_seed,
             )
     seed = 42
@@ -440,12 +447,19 @@ def run_pipeline(
                     mapper=config.colmap_mapper,
                     matching_db=matching_db,
                     seed=random_seed,
+                    shared_camera=config.colmap_shared_camera,
+                    mvs_iterations=config.colmap_mvs_iterations,
                 )
             )
             try:
                 run_command(command, geometry_log, cwd=root)
             except Exception as error:
-                if config.colmap_mapper != "incremental" or matching_db is not None:
+                if (
+                    config.colmap_mapper != "incremental"
+                    or matching_db is not None
+                    or config.colmap_shared_camera
+                    or config.colmap_mvs_iterations is not None
+                ):
                     raise
                 if config.geometry_backend == "colmap":
                     fallback = {**config.to_dict(), "matcher": "sequential" if not sequential else "exhaustive"}

@@ -332,7 +332,7 @@ def test_dense_only_cli_does_not_require_matcher(tmp_path, monkeypatch):
 
     colmap_runner.main()
 
-    assert calls == [(tmp_path, 1200, 12)]
+    assert calls == [(tmp_path, 1200, 12, None)]
 
 
 def test_cli_still_requires_matcher_for_full_run(tmp_path, monkeypatch):

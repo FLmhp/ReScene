@@ -155,6 +155,16 @@ def configure_trainer(trainer: object, split_file: Path, init_points: str = "spa
             train_ids = [split["image_to_source_id"][self.parser.image_names[int(i)]] for i in self.trainset.indices]
             val_names = [self.parser.image_names[int(i)] for i in self.valset.indices]
             expected = split["validation_source_ids"]
+            manifest = json.loads((scene / "input_manifest.json").read_text(encoding="utf-8"))
+            scoring_sizes = (
+                {
+                    frame["source_id"]: (frame["height"], frame["width"])
+                    for frame in manifest["frames"]
+                    if frame["validation"]
+                }
+                if manifest.get("retain_frozen_sources")
+                else {}
+            )
             if (
                 train_ids != split["train_source_ids"]
                 or [split["image_to_source_id"][n] for n in val_names] != expected
@@ -192,13 +202,25 @@ def configure_trainer(trainer: object, split_file: Path, init_points: str = "spa
                     f"{self.render_dir}/{stage}_step{step}_{index:04d}.png", (canvas * 255).astype(np.uint8)
                 )
                 prediction, target = colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2)
+                name = val_names[index]
+                source = split["image_to_source_id"][name]
+                scoring_size = scoring_sizes.get(source, (height, width))
+                if scoring_size != (height, width):
+                    prediction, target = torch.nn.functional.interpolate(
+                        torch.cat((prediction, target)),
+                        size=scoring_size,
+                        mode="bilinear",
+                        align_corners=False,
+                        antialias=True,
+                    ).chunk(2)
                 values = {
                     name: float(getattr(self, name)(prediction, target).item()) for name in ("psnr", "ssim", "lpips")
                 }
                 if not all(math.isfinite(value) for value in values.values()):
                     raise ValueError("Non-finite photometric metric")
-                name = val_names[index]
-                views.append({"source_id": split["image_to_source_id"][name], "image_name": name, **values})
+                if scoring_sizes:
+                    values["scoring_height"], values["scoring_width"] = scoring_size
+                views.append({"source_id": source, "image_name": name, **values})
             actual = [view["source_id"] for view in views]
             if actual != expected or set(actual) & set(train_ids):
                 raise ValueError("Rendered views do not match validation split")

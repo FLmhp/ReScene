@@ -3,8 +3,25 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 from pathlib import Path
+from time import perf_counter
+
+
+def _check_shared_images(images: Path) -> None:
+    from PIL import Image
+
+    sizes = set()
+    for image in sorted(images.glob("*.jpg")):
+        with Image.open(image) as frame:
+            sizes.add(frame.size)
+    if len(sizes) != 1:
+        raise ValueError("Shared camera requires normalized images with identical dimensions")
+
+
+def _write_phases(scene_dir: Path, phases: dict[str, float]) -> None:
+    (scene_dir / "colmap-phases.json").write_text(json.dumps(phases, indent=2) + "\n", encoding="utf-8")
 
 
 def _largest_reconstruction(maps: dict[int, object]) -> object:
@@ -59,6 +76,8 @@ def run(
     mapper: str = "incremental",
     matching_db: Path | None = None,
     seed: int | None = None,
+    shared_camera: bool = False,
+    mvs_iterations: int | None = None,
 ) -> None:
     import pycolmap
 
@@ -68,6 +87,11 @@ def run(
     sparse = scene_dir / "sparse" / "0"
     reader_options = pycolmap.ImageReaderOptions()
     reader_options.camera_model = camera_model
+    if shared_camera:
+        if camera_model != "PINHOLE" or mapper != "incremental" or matching_db is not None:
+            raise ValueError("Shared camera requires PINHOLE, incremental mapping and a fresh feature database")
+        _check_shared_images(images)
+    phases: dict[str, float] = {}
     if seed is not None:
         pycolmap.set_random_seed(seed)
     if matching_db is not None:
@@ -75,17 +99,26 @@ def run(
             raise ValueError("Matching database must be closed and the trial database must be new")
         shutil.copyfile(matching_db, database)
     else:
-        pycolmap.extract_features(database, images, reader_options=reader_options, device=pycolmap.Device.cuda)
+        phase_start = perf_counter()
+        camera = {"camera_mode": pycolmap.CameraMode.SINGLE} if shared_camera else {}
+        pycolmap.extract_features(
+            database, images, reader_options=reader_options, device=pycolmap.Device.cuda, **camera
+        )
+        phases["features_seconds"] = perf_counter() - phase_start
+        phase_start = perf_counter()
         if matcher == "sequential":
             pycolmap.match_sequential(database, device=pycolmap.Device.cuda)
         else:
             pycolmap.match_exhaustive(database, device=pycolmap.Device.cuda)
+        phases["matching_seconds"] = perf_counter() - phase_start
+    phase_start = perf_counter()
     maps = (
         pycolmap.global_mapping(database, images, sparse_work)
         if mapper == "global"
         else pycolmap.incremental_mapping(database, images, sparse_work)
     )
-    experimental = mapper != "incremental" or matching_db is not None
+    phases["mapping_seconds"] = perf_counter() - phase_start
+    experimental = mapper != "incremental" or matching_db is not None or shared_camera or mvs_iterations is not None
     if not maps and matcher == "sequential" and not experimental:
         pycolmap.match_exhaustive(database, device=pycolmap.Device.cuda)
         shutil.rmtree(sparse_work, ignore_errors=True)
@@ -93,33 +126,62 @@ def run(
     if not maps and not experimental:
         maps = _relaxed_single_camera_mapping(pycolmap, database, images, sparse_work, reader_options)
     reconstruction = _largest_reconstruction(maps)
+    phase_start = perf_counter()
     pycolmap.bundle_adjustment(reconstruction)
+    phases["bundle_adjustment_seconds"] = perf_counter() - phase_start
     sparse.mkdir(parents=True, exist_ok=True)
     reconstruction.write(sparse)
     shutil.rmtree(sparse_work, ignore_errors=True)
-    if not dense:
-        return
-    _run_dense(pycolmap, images, sparse, scene_dir / "dense", reconstruction, mvs_max_image_size, poisson_depth)
+    if dense:
+        phases.update(
+            _run_dense(
+                pycolmap,
+                images,
+                sparse,
+                scene_dir / "dense",
+                reconstruction,
+                mvs_max_image_size,
+                poisson_depth,
+                mvs_iterations,
+            )
+        )
+    _write_phases(scene_dir, phases)
 
 
 def _run_dense(
-    pycolmap, images: Path, sparse: Path, dense_dir: Path, reconstruction, mvs_max_image_size: int, poisson_depth: int
-) -> None:
+    pycolmap,
+    images: Path,
+    sparse: Path,
+    dense_dir: Path,
+    reconstruction,
+    mvs_max_image_size: int,
+    poisson_depth: int,
+    mvs_iterations: int | None = None,
+) -> dict[str, float]:
     image_count = sum(1 for path in images.iterdir() if path.is_file()) if images.exists() else 0
     if image_count and reconstruction.num_reg_images() / image_count < 0.7:
         raise RuntimeError("COLMAP registration rate is below 70%; dense reconstruction skipped")
+    phase_start = perf_counter()
     pycolmap.undistort_images(dense_dir, sparse, images)
+    undistort_seconds = perf_counter() - phase_start
     patch_match_options = pycolmap.PatchMatchOptions()
     if mvs_max_image_size > 0:
         patch_match_options.max_image_size = mvs_max_image_size
+    if mvs_iterations is not None:
+        patch_match_options.num_iterations = mvs_iterations
+    phase_start = perf_counter()
     pycolmap.patch_match_stereo(dense_dir, options=patch_match_options)
+    patchmatch_seconds = perf_counter() - phase_start
     fused = dense_dir / "fused.ply"
     fusion_options = pycolmap.StereoFusionOptions()
     if mvs_max_image_size > 0:
         fusion_options.max_image_size = mvs_max_image_size
+    phase_start = perf_counter()
     pycolmap.stereo_fusion(fused, dense_dir, options=fusion_options, output_type="ply")
+    fusion_seconds = perf_counter() - phase_start
     if not _ply_vertices(fused):
         raise RuntimeError("COLMAP stereo fusion produced an empty point cloud")
+    phase_start = perf_counter()
     try:
         mesh = dense_dir / "meshed-poisson.ply"
         mesh_options = pycolmap.PoissonMeshingOptions()
@@ -131,9 +193,17 @@ def _run_dense(
             (dense_dir / "mesh-error.txt").write_text("Poisson mesh contains no vertices", encoding="utf-8")
     except Exception as error:  # Mesh is optional; preserve a valid dense cloud.
         (dense_dir / "mesh-error.txt").write_text(str(error), encoding="utf-8")
+    return {
+        "undistort_seconds": undistort_seconds,
+        "patchmatch_seconds": patchmatch_seconds,
+        "fusion_seconds": fusion_seconds,
+        "meshing_seconds": perf_counter() - phase_start,
+    }
 
 
-def run_dense_only(scene_dir: Path, mvs_max_image_size: int = 0, poisson_depth: int = 10) -> None:
+def run_dense_only(
+    scene_dir: Path, mvs_max_image_size: int = 0, poisson_depth: int = 10, mvs_iterations: int | None = None
+) -> None:
     """Build dense artifacts from an existing sparse model without modifying it."""
     import pycolmap
 
@@ -141,9 +211,17 @@ def run_dense_only(scene_dir: Path, mvs_max_image_size: int = 0, poisson_depth: 
     if (sparse / "0").is_dir():
         sparse = sparse / "0"
     reconstruction = pycolmap.Reconstruction(sparse)
-    _run_dense(
-        pycolmap, scene_dir / "images", sparse, scene_dir / "dense", reconstruction, mvs_max_image_size, poisson_depth
+    phases = _run_dense(
+        pycolmap,
+        scene_dir / "images",
+        sparse,
+        scene_dir / "dense",
+        reconstruction,
+        mvs_max_image_size,
+        poisson_depth,
+        mvs_iterations,
     )
+    _write_phases(scene_dir, phases)
 
 
 def main() -> None:
@@ -160,12 +238,14 @@ def main() -> None:
     parser.add_argument("--mapper", choices=("incremental", "global"), default="incremental")
     parser.add_argument("--matching-db", type=Path)
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--shared-camera", action="store_true")
+    parser.add_argument("--mvs-iterations", type=int, choices=range(1, 6))
     dense_group = parser.add_mutually_exclusive_group()
     dense_group.add_argument("--dense", action="store_true")
     dense_group.add_argument("--dense-only", action="store_true")
     args = parser.parse_args()
     if args.dense_only:
-        run_dense_only(args.scene_dir, args.mvs_max_image_size, args.poisson_depth)
+        run_dense_only(args.scene_dir, args.mvs_max_image_size, args.poisson_depth, args.mvs_iterations)
     else:
         if args.matcher is None:
             parser.error("--matcher is required unless --dense-only is specified")
@@ -179,6 +259,8 @@ def main() -> None:
             mapper=args.mapper,
             matching_db=args.matching_db,
             seed=args.seed,
+            shared_camera=args.shared_camera,
+            mvs_iterations=args.mvs_iterations,
         )
 
 

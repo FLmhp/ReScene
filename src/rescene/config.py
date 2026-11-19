@@ -42,6 +42,10 @@ class ProfileConfig:
     vggt_depth_confidence: float | None = None
     vggt_track_observation_limit: int | None = None
     gsplat_cache_images: bool = False
+    vggt_grid_sampling: bool = False
+    vggt_query_coverage: bool = False
+    colmap_shared_camera: bool = False
+    colmap_mvs_iterations: int | None = None
 
     def degraded(self) -> ProfileConfig:
         """Return the single bounded CUDA OOM fallback configuration."""
@@ -55,11 +59,12 @@ class ProfileConfig:
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
         config = asdict(self)
-        for name in ("vggt_depth_confidence", "vggt_track_observation_limit"):
+        for name in ("vggt_depth_confidence", "vggt_track_observation_limit", "colmap_mvs_iterations"):
             if config[name] is None:
                 del config[name]
-        if not self.gsplat_cache_images:
-            del config["gsplat_cache_images"]
+        for name in ("gsplat_cache_images", "vggt_grid_sampling", "vggt_query_coverage", "colmap_shared_camera"):
+            if not config[name]:
+                del config[name]
         return config
 
     def with_overrides(self, overrides: dict[str, Any]) -> ProfileConfig:
@@ -84,6 +89,10 @@ class ProfileConfig:
             "colmap_poisson_depth",
             "vggt_depth_confidence",
             "vggt_track_observation_limit",
+            "vggt_grid_sampling",
+            "vggt_query_coverage",
+            "colmap_shared_camera",
+            "colmap_mvs_iterations",
         }
         unknown = set(overrides) - allowed
         if unknown:
@@ -93,6 +102,7 @@ class ProfileConfig:
             "vggt_max_query_points",
             "vggt_max_reprojection_error",
             "vggt_fine_tracking",
+            "vggt_query_coverage",
         }
         if vggt_overrides and (self.geometry_backend != "vggt" or not self.use_bundle_adjustment):
             raise ValueError(
@@ -104,12 +114,25 @@ class ProfileConfig:
             "colmap_mapper",
             "colmap_mvs_max_image_size",
             "colmap_poisson_depth",
+            "colmap_shared_camera",
+            "colmap_mvs_iterations",
         }
         if colmap_overrides and self.geometry_backend != "colmap":
             raise ValueError(
                 f"COLMAP overrides are not applicable to {self.name}: {', '.join(sorted(colmap_overrides))}"
             )
         updated = replace(self, **overrides)
+        if updated.vggt_grid_sampling and (
+            self.geometry_backend != "vggt" or self.use_bundle_adjustment or updated.vggt_depth_confidence is not None
+        ):
+            raise ValueError("Grid sampling requires non-BA VGGT and the default depth threshold")
+        if updated.colmap_shared_camera and (
+            updated.colmap_camera_model != "PINHOLE" or updated.colmap_mapper != "incremental"
+        ):
+            raise ValueError("Shared camera requires incremental mapping with PINHOLE intrinsics")
+        iterations = updated.colmap_mvs_iterations
+        if iterations is not None and (type(iterations) is not int or not 1 <= iterations <= 5):
+            raise ValueError("colmap_mvs_iterations must be an integer between 1 and 5")
         confidence = updated.vggt_depth_confidence
         if confidence is not None and (
             self.geometry_backend != "vggt"
@@ -160,6 +183,9 @@ class ProfileConfig:
             "gsplat_depth_loss",
             "gsplat_cache_images",
             "vggt_fine_tracking",
+            "vggt_grid_sampling",
+            "vggt_query_coverage",
+            "colmap_shared_camera",
         ):
             if not isinstance(getattr(updated, name), bool):
                 raise ValueError(f"{name} must be true or false")

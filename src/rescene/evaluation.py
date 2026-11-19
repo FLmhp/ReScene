@@ -211,6 +211,9 @@ def evaluate_run(
     ground_truth_cloud: Path | None = None,
     threshold: float = 0.02,
     official_evaluator: Path | None = None,
+    *,
+    reference_image_prefix: str = "",
+    persist: bool = True,
 ) -> dict[str, object]:
     metrics_path = run_dir / "metrics.json"
     metrics = (
@@ -247,9 +250,9 @@ def evaluate_run(
         target = pycolmap.Reconstruction(ground_truth_sparse)
         target_images = {image.name: image for image in target.images.values()}
         pairs = [
-            (image, target_images[source_names[image.name]])
+            (image, target_images[reference_image_prefix + source_names[image.name]])
             for image in predicted.images.values()
-            if image.name in source_names and source_names[image.name] in target_images
+            if image.name in source_names and reference_image_prefix + source_names[image.name] in target_images
         ]
         if len(pairs) < 3:
             raise ValueError(f"Only {len(pairs)} camera poses match the reference model")
@@ -321,6 +324,7 @@ def evaluate_run(
                     "official_evaluator_sha256": sha256_file(official_evaluator),
                 }
             )
-    metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
-    write_report(run_dir, metrics)
+    if persist:
+        metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_report(run_dir, metrics)
     return metrics
