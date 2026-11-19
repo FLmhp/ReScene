@@ -1,7 +1,7 @@
 import { Screen } from "../../screen";
 import { AssetThumbnail } from "../../asset-thumbnail";
 import { explainError, isOfflineError, ResceneApiError } from "@rescene/api-client";
-import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, jobErrorHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
+import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, canRetryJob, jobErrorHint, queuedJobHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
 import type { Asset, Job, JobLog, MemberRole, Profile, ProjectWorkspace, ProjectMember, ShareSummary, WorkerStatus } from "@rescene/schemas";
 import { MediaPreflightError, summarizeMediaWarnings } from "@rescene/uploader";
 import { Button, Image, Input, Progress, Text, View } from "@tarojs/components";
@@ -133,7 +133,7 @@ export default function ProjectPage() {
 
   const loadWorker = useCallback(async () => {
     try { setWorker(await client.getWorkerStatus()); }
-    catch (reason) { setError(message(reason, "加载 Worker 状态失败")); }
+    catch { setWorker(null); }
   }, []);
 
   const reload = useCallback(() => {
@@ -349,7 +349,6 @@ export default function ProjectPage() {
     try {
       const created = await client.createJob(projectId, profile, selected.map((asset) => asset.id));
       setJob(created);
-      setSelected([]);
       await load();
     } catch (reason) { setError(message(reason, "创建任务失败")); }
     finally { createLock.current = false; setCreating(false); }
@@ -361,7 +360,7 @@ export default function ProjectPage() {
     try {
       const result = await Taro.showModal({
         title: action === "cancel" ? "取消任务" : "重试任务",
-        content: action === "cancel" ? "确定取消当前重建任务？" : "确定重试当前任务？已完成的产物不会被复用。",
+        content: action === "cancel" ? "确定取消当前重建任务？" : "确定使用原素材重新排队？",
       });
       if (!result.confirm) return;
       setJobBusy(true);
@@ -528,7 +527,7 @@ export default function ProjectPage() {
           <Button className="button" onClick={addMember}>添加成员</Button>
         </View> : null}
       </View> : null}
-      {detail ? <View className="card">
+      {detail ? <View className="card" id="materials">
         <View className="project-heading">
           <Text className="section-heading">素材</Text>
           {canWrite ? <Text className="selection-count">已选 {selected.length} 个</Text> : null}
@@ -592,10 +591,11 @@ export default function ProjectPage() {
             {row.message ? <Text className="muted">{row.message}</Text> : null}
             {Object.keys(row.metrics).length > 0 ? <Text className="muted">{JSON.stringify(row.metrics)}</Text> : null}
           </View>)}
-          {job.status === "QUEUED" ? <Text className="muted">任务已排队，Worker 上线或前序任务结束后会自动开始；这不是失败。</Text> : null}
-          {job.error_message ? <Text className="error">{jobErrorHint(job.error_code) || job.error_message}</Text> : null}
+          {job.status === "QUEUED" ? <Text className="muted">{queuedJobHint(worker?.online)}</Text> : null}
+          {job.error_code || job.error_message ? <Text className="error">{jobErrorHint(job.error_code) || job.error_message || job.error_code}</Text> : null}
           {canWrite && ACTIVE[job.status] ? <Button className="button ghost" disabled={jobBusy || job.cancel_requested} loading={jobBusy} onClick={() => void changeJob("cancel")}>{job.cancel_requested ? "取消中" : "取消任务"}</Button> : null}
-          {canWrite && job.error_code !== "INVALID_INPUT" && (job.status === "FAILED" || job.status === "CANCELLED") ? <Button className="button ghost" disabled={jobBusy} loading={jobBusy} onClick={() => void changeJob("retry")}>重试任务</Button> : null}
+          {canWrite && job.error_code === "INVALID_INPUT" ? <Button className="button ghost" onClick={() => void Taro.pageScrollTo({ selector: "#materials", duration: 200 }).catch((reason) => setError(message(reason, "无法定位素材")))}>更换素材</Button> : null}
+          {canWrite && canRetryJob(job) ? <Button className="button ghost" disabled={jobBusy} loading={jobBusy} onClick={() => void changeJob("retry")}>重试任务</Button> : null}
           {reconstructionId ? <>
             <Button className="button" onClick={() => void copyViewer(reconstructionId)}>复制查看链接</Button>
             <Text className="muted">在手机浏览器中粘贴链接，登录后即可查看。</Text>

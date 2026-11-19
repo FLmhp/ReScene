@@ -5,10 +5,11 @@ import jwt
 import oss2
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 
 from rescene_api.auth import hash_password, issue_token
 from rescene_api.config import settings
-from rescene_api.db import SessionLocal
+from rescene_api.db import SessionLocal, engine
 from rescene_api.main import app, reap_once
 from rescene_api.models import Asset, JobStage, ProjectMember, Reconstruction, ReconstructionJob, User
 
@@ -367,32 +368,71 @@ def test_active_jobs_prevent_project_deletion(accounts, project, status):
 
 
 def test_event_resume_preserves_terminal_reconstruction(accounts, project):
+    stage_ids = [f"page-stage-{index:03d}" for index in range(205)]
     with SessionLocal() as db:
         job = ReconstructionJob(project_id=project["id"], profile="balanced", status="SUCCEEDED")
         db.add(job)
         db.flush()
+        time = datetime(2026, 1, 1, tzinfo=UTC)
         db.add_all(
-            [
-                JobStage(job_id=job.id, stage="first", status="success"),
-                JobStage(job_id=job.id, stage="second", status="success"),
-            ]
+            JobStage(id=stage_id, job_id=job.id, stage="training", status="success", created_at=time)
+            for stage_id in reversed(stage_ids)
         )
         reconstruction = Reconstruction(project_id=project["id"], job_id=job.id, version=1)
         db.add(reconstruction)
         db.commit()
         job_id, reconstruction_id = job.id, reconstruction.id
+    page_queries = []
+
+    def count_pages(conn, cursor, statement, parameters, context, executemany):
+        if "FROM job_stages" in statement and "ORDER BY" in statement:
+            page_queries.append(statement)
+
+    event.listen(engine, "before_cursor_execute", count_pages)
+    try:
+        with TestClient(app) as client:
+            route = f"/v1/jobs/{job_id}/events"
+            owner = accounts["owner"]["headers"]
+            initial = client.get(route, headers=owner)
+            assert initial.status_code == 200
+            assert [line[4:] for line in initial.text.splitlines() if line.startswith("id: ")] == stage_ids
+            response = client.get(route, params={"lastEventId": stage_ids[99]}, headers=owner)
+            assert response.status_code == 200
+            assert [line[4:] for line in response.text.splitlines() if line.startswith("id: ")] == stage_ids[100:]
+            assert response.text.count("event: final") == 1
+            final = response.text.strip().split("\n\n")[-1]
+            assert final.startswith("event: final")
+            assert json.loads(final.split("\ndata: ", 1)[1])["reconstruction_id"] == reconstruction_id
+            assert client.get(route, params={"lastEventId": "missing"}, headers=owner).status_code == 422
+            assert client.get(route, headers=accounts["outsider"]["headers"]).status_code == 403
+    finally:
+        event.remove(engine, "before_cursor_execute", count_pages)
+    assert len(page_queries) == 5 and all("LIMIT" in statement for statement in page_queries)
+
+
+def test_invalid_input_retry_preserves_original_failure(accounts, project):
+    with SessionLocal.begin() as db:
+        db.add_all(
+            [
+                ReconstructionJob(
+                    id="bad-input",
+                    project_id=project["id"],
+                    profile="fast",
+                    status="FAILED",
+                    error_code="INVALID_INPUT",
+                    error_message="Unreadable image",
+                    attempt=1,
+                ),
+                ReconstructionJob(id="recoverable", project_id=project["id"], profile="fast", status="FAILED"),
+            ]
+        )
     with TestClient(app) as client:
-        initial = client.get(f"/v1/jobs/{job_id}/events", headers=accounts["owner"]["headers"])
-        assert initial.status_code == 200
-        ids = [line[4:] for line in initial.text.splitlines() if line.startswith("id: ")]
-        assert len(ids) == 2
-        response = client.get(
-            f"/v1/jobs/{job_id}/events", params={"lastEventId": ids[0]}, headers=accounts["owner"]["headers"]
-        )
-        assert response.status_code == 200
-        assert f"id: {ids[0]}\n" not in response.text and f"id: {ids[1]}\n" in response.text
-        final = next(block for block in response.text.split("\n\n") if block.startswith("event: final"))
-        assert (
-            json.loads(next(line[6:] for line in final.splitlines() if line.startswith("data: ")))["reconstruction_id"]
-            == reconstruction_id
-        )
+        owner = accounts["owner"]["headers"]
+        path = "/v1/jobs/bad-input"
+        before = client.get(path, headers=owner).json()
+        response = client.post(path + "/retry", headers=owner)
+        assert response.status_code == 409
+        assert response.headers["X-Error-Code"] == "job.invalid_input"
+        assert client.get(path, headers=owner).json() == before
+        assert client.post(path + "/retry", headers=accounts["viewer"]["headers"]).status_code == 403
+        assert client.post("/v1/jobs/recoverable/retry", headers=owner).json()["status"] == "QUEUED"

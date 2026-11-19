@@ -201,6 +201,29 @@ describe("subscription recovery and disposal", () => {
     stop();
   });
 
+  it("refreshes the job immediately when a reconnect cursor is rejected", async () => {
+    const stage = JSON.stringify({ stage: "training", status: "running", progress: 0.4, message: null, metrics: {} });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(`id: expired-stage\nevent: stage\ndata: ${stage}\n\n`, {
+        headers: { "Content-Type": "text/event-stream" },
+      }))
+      .mockResolvedValueOnce(new Response(null, { status: 422 }))
+      .mockResolvedValueOnce(jsonResponse(job));
+    vi.stubGlobal("fetch", fetchMock);
+    const events: JobEvent[] = [];
+    const onError = vi.fn();
+    const stop = new ResceneClient("https://api.example", "token").subscribeJob("j1", (event) => events.push(event), onError);
+    await vi.waitFor(() => expect(events).toHaveLength(2), { timeout: 3000 });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://api.example/v1/jobs/j1/events",
+      "https://api.example/v1/jobs/j1/events?lastEventId=expired-stage",
+      "https://api.example/v1/jobs/j1",
+    ]);
+    expect(events[1]).toMatchObject({ status: "SUCCEEDED", reconstruction_id: "r1" });
+    expect(onError).not.toHaveBeenCalled();
+    stop();
+  });
+
   it("polls immediately without streaming dependencies and delivers terminal identity", async () => {
     vi.stubGlobal("AbortController", undefined);
     const fetchMock = vi.fn(async () => jsonResponse(job));

@@ -19,9 +19,12 @@ const ROLE_LABEL = { owner: "所有者", admin: "管理员", member: "成员", v
 type Upload = { id: string; file: PickedFile; progress: number; status: "uploading" | "failed" | "done"; error?: string };
 type TimelineRow = { key: string; stage: string; status: string; progress: number; message?: string | null; metrics: Record<string, unknown> };
 
-export function ProjectScreen({ project, onJob, onBack }: {
+export type ProjectDraft = { assets: Asset[]; profile: Profile };
+
+export function ProjectScreen({ project, draft, onJob, onBack }: {
   project: { id: string; name: string };
-  onJob: (jobId: string) => void;
+  draft?: ProjectDraft;
+  onJob: (jobId: string, draft: ProjectDraft) => void;
   onBack: () => void;
 }) {
   const { theme } = useAppearance();
@@ -35,8 +38,8 @@ export function ProjectScreen({ project, onJob, onBack }: {
   const [workerOnline, setWorkerOnline] = useState<boolean | null>(null);
   const [detail, setDetail] = useState<ProjectWorkspace | null>(null);
   const [members, setMembers] = useState<ProjectMember[]>([]);
-  const [selected, setSelected] = useState<Asset[]>([]);
-  const [profile, setProfile] = useState<Profile>("balanced");
+  const [selected, setSelected] = useState<Asset[]>(draft?.assets ?? []);
+  const [profile, setProfile] = useState<Profile>(draft?.profile ?? "balanced");
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [name, setName] = useState(project.name);
   const [email, setEmail] = useState("");
@@ -169,7 +172,7 @@ export function ProjectScreen({ project, onJob, onBack }: {
     jobFlight.current = true;
     setCreating(true);
     setError("");
-    try { const job = await client.createJob(project.id, profile, selected.map((asset) => asset.id)); onJob(job.id); }
+    try { const job = await client.createJob(project.id, profile, selected.map((asset) => asset.id)); onJob(job.id, { assets: selected, profile }); }
     catch (reason) { setError(explainError(reason, "创建任务失败")); }
     finally { jobFlight.current = false; setCreating(false); }
   }
@@ -298,9 +301,9 @@ export function ProjectScreen({ project, onJob, onBack }: {
               </Pressable>
             );
           })}
-          {workerOnline != null ? <Text style={workerOnline ? styles.online : textStyles.muted}>
-            {workerOnline ? "计算节点在线" : "计算节点离线，提交后排队"}
-          </Text> : null}
+          <Text style={workerOnline ? styles.online : textStyles.muted}>
+            {workerOnline === true ? "计算节点在线" : workerOnline === false ? "计算节点离线，提交后排队" : "计算节点状态未知"}
+          </Text>
           {!selected.length ? <Text style={textStyles.muted}>请先从素材列表选择要重建的文件</Text> : null}
         </Card> : null}
         <Card>
@@ -314,7 +317,7 @@ export function ProjectScreen({ project, onJob, onBack }: {
             </View>)}
           </> : null}
           {!detail?.jobs.length ? <Text style={textStyles.muted}>暂无任务。</Text> : null}
-          {detail?.jobs.map((job) => <Pressable accessibilityRole="button" key={job.id} onPress={() => onJob(job.id)} style={styles.route}>
+          {detail?.jobs.map((job) => <Pressable accessibilityRole="button" key={job.id} onPress={() => onJob(job.id, { assets: selected, profile })} style={styles.route}>
             <View style={styles.rowHeader}>
               <Text style={textStyles.body}>{RECONSTRUCTION_PROFILES[job.profile].title}</Text>
               <Text style={job.status === "FAILED" ? textStyles.error : styles.link}>{JOB_STATUS_LABELS[job.status]}</Text>

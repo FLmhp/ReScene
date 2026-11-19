@@ -9,7 +9,7 @@ import { z } from "zod";
 
 export {
   ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, jobErrorHint,
-  reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel,
+  canRetryJob, queuedJobHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel,
 } from "./reconstruction-labels";
 
 export const ProfileSchema = z.enum(["fast", "balanced", "quality"]);

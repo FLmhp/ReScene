@@ -10,6 +10,8 @@ import {
   NotificationCountSchema,
   NotificationSchema,
   ProjectDetailSchema,
+  canRetryJob,
+  queuedJobHint,
   reconcileWorkspaceSelection,
   selectWorkspaceAssets,
   UploadGrantSchema,
@@ -30,6 +32,15 @@ const job = {
   updated_at: "2026-01-01T00:05:00Z",
   reconstruction_id: null,
 };
+
+it("distinguishes queue states and only offers retries for recoverable terminal jobs", () => {
+  expect(new Set([queuedJobHint(true), queuedJobHint(false), queuedJobHint(null)]).size).toBe(3);
+  expect(queuedJobHint(null)).toContain("暂无法确认");
+  expect(canRetryJob({ status: "FAILED", error_code: "INVALID_INPUT" })).toBe(false);
+  expect(canRetryJob({ status: "FAILED", error_code: "INFRASTRUCTURE_ERROR" })).toBe(true);
+  expect(canRetryJob({ status: "CANCELLED" })).toBe(true);
+  expect(canRetryJob({ status: "RUNNING" })).toBe(false);
+});
 
 describe("workspace selection", () => {
   const image = { id: "image", filename: "frame.jpg", status: "READY", size: 1024 } as const;

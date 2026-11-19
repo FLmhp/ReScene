@@ -1,7 +1,7 @@
 "use client";
 
 import { ResceneApiError, explainError, type JobEvent, type ResceneClient } from "@rescene/api-client";
-import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, jobErrorHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
+import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, canRetryJob, jobErrorHint, queuedJobHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
 import type {
   AppNotification,
   Artifact,
@@ -66,7 +66,6 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const workspaceRequest = useRef(0);
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [shares, setShares] = useState<ShareSummary[]>([]);
-  const [online, setOnline] = useState(false);
   const [search, setSearch] = useState("");
   const [profile, setProfile] = useState<Profile>("balanced");
   const [selectedAssets, setSelectedAssets] = useState<Asset[]>([]);
@@ -90,6 +89,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [invitations, setInvitations] = useState<ProjectInvitation[]>([]);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [workerStatus, setWorkerStatus] = useState<WorkerStatus | null>(null);
+  const online = workerStatus?.online ?? null;
   const [navigatorOnline, setNavigatorOnline] = useState(() => (typeof navigator === "undefined" ? true : navigator.onLine));
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
@@ -167,8 +167,14 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     if (!token) return;
     const request = ++workspaceRequest.current;
     try {
-      const [user, list, worker] = await Promise.all([client.getMe(), client.listProjects(), client.getWorkerStatus()]);
-      setMe(user); setProjects(list); setOnline(worker.online); setWorkerStatus(worker); setLoaded(true);
+      const [user, list, worker] = await Promise.all([
+        client.getMe(), client.listProjects(), client.getWorkerStatus().catch((error: unknown) => {
+          if (error instanceof ResceneApiError && error.status === 401) throw error;
+          return null;
+        }),
+      ]);
+      if (request !== workspaceRequest.current) return;
+      setMe(user); setProjects(list); setWorkerStatus(worker); setLoaded(true);
       await loadNotifications();
       void loadUnread();
       if (selected && selectedRef.current === selected && request === workspaceRequest.current) {
@@ -193,6 +199,8 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
         }
       }
     } catch (error) {
+      if (request !== workspaceRequest.current) return;
+      setWorkerStatus(null);
       setLoaded(true);
       if (error instanceof ResceneApiError && error.status === 401) expire();
       else setMessage(error instanceof Error ? error.message : "请求失败，请重试");
@@ -242,9 +250,10 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   useEffect(() => { setScene(null); setArtifacts([]); }, [reconstructionId]);
   const canManage = detail?.effective_role === "owner" || detail?.effective_role === "admin";
   const canWrite = canManage || detail?.effective_role === "member";
+  const activeJobId = latest && ACTIVE[latest.status] ? latest.id : undefined;
   useEffect(() => {
-    if (!token || !latest?.id) return;
-    const id = latest.id;
+    if (!token || !activeJobId) return;
+    const id = activeJobId;
     return client.subscribeJob(id, (event: JobEvent) => {
       if ("stage" in event) {
         const row: TimelineRow = { key: `live-${Date.now()}-${event.stage}`, stage: event.stage, status: event.status, progress: event.progress, message: event.message, metrics: event.metrics };
@@ -256,7 +265,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       if (error instanceof ResceneApiError && error.status === 401) expire();
       else setMessage(`进度流中断：${error.message}`);
     });
-  }, [client, expire, latest?.id, refresh, token]);
+  }, [activeJobId, client, expire, refresh, token]);
   useEffect(() => {
     const id = latest?.id;
     if (!id) { setTimeline([]); return; }
@@ -533,7 +542,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
           <span className="mark"><BrandMark size={22} /></span>
           <strong>ReScene</strong>
         </div>
-        <div className={`worker ${online ? "online" : ""}`}><i />{workerName} {online ? "在线" : "离线 / 任务将在 Worker 上线后执行"}</div>
+        <div className={`worker ${online ? "online" : ""}`}><i />{workerName} {online === true ? "在线" : online === false ? "离线" : "状态未知"}</div>
         <details className="notify">
           <summary>通知{unread > 0 ? `（${unread}）` : ""}</summary>
           <div className="notify-tools">
@@ -767,8 +776,8 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                         <div className="job-head"><strong className="job-state" data-status={latest.status}>{JOB_STATUS_LABELS[latest.status]}{latest.cancel_requested ? " · 已请求取消" : ""}</strong><small>{stageLabel(latest.current_stage)}</small></div>
                         <div className="bar" role="progressbar" aria-label="任务进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(latest.progress * 100)}><i style={{ width: `${Math.round(latest.progress * 100)}%` }} /></div>
                         <p>{Math.round(latest.progress * 100)}% · {RECONSTRUCTION_PROFILES[latest.profile].title}{latest.attempt > 0 ? ` · 第 ${latest.attempt} 次尝试` : ""}</p>
-                        {latest.status === "QUEUED" ? <p className="muted">{online ? "已排队，等待 Worker 领取任务。" : "已排队：Worker 当前离线，任务会保留到 Worker 上线。"}</p> : null}
-                        {latest.error_message && <p className="error" role="status">{jobErrorHint(latest.error_code) || latest.error_message}</p>}
+                        {latest.status === "QUEUED" ? <p className="muted">{queuedJobHint(online)}</p> : null}
+                        {(latest.error_code || latest.error_message) && <p className="error" role="status">{jobErrorHint(latest.error_code) || latest.error_message || latest.error_code}</p>}
                         {timeline.length > 0 && (
                           <details>
                             <summary>阶段记录</summary>
@@ -792,7 +801,8 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                           {logs.length > 0 && <button onClick={() => runAction(loadEarlierLogs)}>加载更早</button>}
                         </details>
                         {canWrite && ACTIVE[latest.status] && <button className="task-action" disabled={latest.cancel_requested} onClick={() => runAction(async () => { setLiveJob(await client.cancelJob(latest.id)); await refresh(); })}>取消任务</button>}
-                        {canWrite && latest.error_code !== "INVALID_INPUT" && (latest.status === "FAILED" || latest.status === "CANCELLED") && <button className="task-action" onClick={() => runAction(async () => { setLiveJob(await client.retryJob(latest.id)); await refresh(); })}>重试任务</button>}
+                        {canWrite && latest.error_code === "INVALID_INPUT" && <button className="task-action" onClick={() => setPane("materials")}>更换素材</button>}
+                        {canWrite && canRetryJob(latest) && <button className="task-action" onClick={() => runAction(async () => { setLiveJob(await client.retryJob(latest.id)); await refresh(); })}>重试任务</button>}
                         </div>
                         {reconstructionId ? (
                           <div className="result-actions result-panel">

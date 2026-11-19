@@ -1,4 +1,4 @@
-import type { Asset, JobStatus, Profile } from "./index";
+import type { Asset, Job, JobStatus, Profile } from "./index";
 
 export const RECONSTRUCTION_PROFILES = {
   fast: { title: "快速预览", frames: 80, description: "先检查取景与视角覆盖" },
@@ -37,10 +37,20 @@ export function stageLabel(stage: string | null | undefined): string {
 }
 
 export function jobErrorHint(code: string | null | undefined): string {
-  if (code === "INVALID_INPUT") return "检查素材格式、文件完整性和视角覆盖，然后重新选材。";
+  if (code === "INVALID_INPUT") return "检查素材格式、文件完整性和视角覆盖。更换无效素材后创建新任务。";
   if (code === "WORKER_LEASE_EXPIRED") return "计算节点失联，原执行已结束。";
   if (code === "INFRASTRUCTURE_ERROR") return "计算或存储暂时不可用，请稍后重试。";
   return "";
+}
+
+export function queuedJobHint(online: boolean | null | undefined): string {
+  if (online === true) return "已排队，等待计算节点领取任务。";
+  if (online === false) return "计算节点离线，任务将在节点上线后执行。";
+  return "已排队，暂无法确认计算节点状态。";
+}
+
+export function canRetryJob(job: Pick<Job, "status" | "error_code">): boolean {
+  return job.error_code !== "INVALID_INPUT" && (job.status === "FAILED" || job.status === "CANCELLED");
 }
 
 export function selectionBytes(items: Asset[]): number {

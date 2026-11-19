@@ -111,6 +111,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   "asset.in_use": "该素材已被任务使用，无法删除。",
   "asset.not_found": "素材不存在，可能已被删除。",
   "job.invalid_inputs": "素材不满足重建要求，请检查后重试。",
+  "job.invalid_input": "请更换无效素材，再创建新任务。",
   "user.not_found": "账号不存在。",
   "admin.self_locked": "不能停用或降级当前登录的管理员。",
   "share.not_found": "分享链接不存在或已撤销。",
@@ -610,6 +611,11 @@ export class ResceneClient {
           },
           signal: controller.signal,
         });
+        if (lastEventId && response.status === 422) {
+          // Fetch a fresh snapshot without replaying already displayed stages.
+          void poll();
+          return;
+        }
         if (!response.ok || !response.body || typeof response.body.getReader !== "function") {
           throw new ResceneApiError(response.status, "Event stream unavailable");
         }

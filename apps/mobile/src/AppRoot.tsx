@@ -23,7 +23,7 @@ import {
 import { AdminScreen } from "./screens/Admin";
 import { JobScreen } from "./screens/Job";
 import { LoginScreen } from "./screens/Login";
-import { ProjectScreen } from "./screens/Project";
+import { ProjectScreen, type ProjectDraft } from "./screens/Project";
 import { ProjectsScreen } from "./screens/Projects";
 import { ViewerScreen } from "./screens/ViewerScreen";
 import { useAppearance } from "./appearance";
@@ -31,7 +31,7 @@ import { Busy, Button, ErrorText, Screen } from "./ui";
 
 type Route =
   | { name: "projects" }
-  | { name: "project"; id: string; label: string }
+  | { name: "project"; id: string; label: string; draft?: ProjectDraft }
   | { name: "job"; id: string }
   | { name: "viewer"; reconstructionId: string }
   | { name: "admin" };
@@ -236,6 +236,11 @@ export function AppRoot() {
       <JobScreen
         jobId={route.id}
         onBack={back}
+        onReplaceAssets={(project) => setRoutes((current) => {
+          const parent = current.at(-2);
+          if (parent?.name === "project" && parent.id === project.id) return current.slice(0, -1);
+          return [...current.slice(0, -1), { name: "project", id: project.id, label: project.name }];
+        })}
         onOpenScene={(reconstructionId) => push({ name: "viewer", reconstructionId })}
       />
     );
@@ -244,8 +249,11 @@ export function AppRoot() {
       <ProjectScreen
         key={route.id}
         onBack={back}
-        onJob={(id) => push({ name: "job", id })}
+        onJob={(id, draft) => setRoutes((current) => current.at(-1) === route
+          ? [...current.slice(0, -1), { ...route, draft }, { name: "job", id }]
+          : current)}
         project={{ id: route.id, name: route.label }}
+        draft={route.draft}
       />
     );
   } else {

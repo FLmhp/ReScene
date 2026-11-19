@@ -1321,6 +1321,8 @@ def retry_job(job_id: str, db: Db, user: UserDep) -> dict[str, object]:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
     if job.status not in {"FAILED", "CANCELLED"}:
         raise HTTPException(status.HTTP_409_CONFLICT, "Only failed or cancelled jobs can be retried")
+    if job.error_code == "INVALID_INPUT":
+        fail(status.HTTP_409_CONFLICT, "Replace the invalid assets and create a new job", "job.invalid_input")
     job.status = "QUEUED"
     job.max_attempts = job.attempt + 3
     job.error_code = None
@@ -1347,6 +1349,7 @@ async def job_events(job_id: str, db: Db, user: UserDep, last_event_id: str = Qu
 
     async def stream():
         nonlocal cursor
+        batch_size = 100
         while True:
             events = []
             terminal = False
@@ -1360,7 +1363,7 @@ async def job_events(job_id: str, db: Db, user: UserDep, last_event_id: str = Qu
                             (JobStage.created_at == cursor[0]) & (JobStage.id > cursor[1]),
                         )
                     )
-                rows = session.scalars(query.order_by(JobStage.created_at, JobStage.id)).all()
+                rows = session.scalars(query.order_by(JobStage.created_at, JobStage.id).limit(batch_size)).all()
                 for row in rows:
                     cursor = (row.created_at, row.id)
                     data = {
@@ -1371,7 +1374,7 @@ async def job_events(job_id: str, db: Db, user: UserDep, last_event_id: str = Qu
                         "metrics": row.metrics,
                     }
                     events.append(f"id: {row.id}\nevent: stage\ndata: {json.dumps(data, ensure_ascii=False)}\n\n")
-                if current and current.status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+                if len(rows) < batch_size and current and current.status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
                     reconstruction_id = session.scalar(select(Reconstruction.id).where(Reconstruction.job_id == job_id))
                     events.append(
                         f"event: final\ndata: {json.dumps(job_view(current, reconstruction_id), default=str)}\n\n"
@@ -1381,6 +1384,8 @@ async def job_events(job_id: str, db: Db, user: UserDep, last_event_id: str = Qu
                 yield event
             if terminal:
                 return
+            if len(rows) == batch_size:
+                continue
             yield ": heartbeat\n\n"
             await asyncio.sleep(2)
 
