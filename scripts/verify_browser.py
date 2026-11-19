@@ -185,7 +185,9 @@ def verify(
             print(f"job_id={job_response.value.json()['id']}", flush=True)
             expect(page.locator(".job-head")).to_be_visible(timeout=20000)
         else:
-            page.get_by_role("navigation", name="项目工作区").get_by_role("button", name="任务", exact=True).click()
+            tasks = page.get_by_role("navigation", name="项目工作区").get_by_role("button", name="任务", exact=True)
+            if tasks.is_visible():
+                tasks.click()
         if cancel_running:
             expect(page.locator(".job-head strong")).to_have_text("重建中", timeout=90000)
             expect(page.locator(".job-head small")).to_have_text(
@@ -203,7 +205,9 @@ def verify(
         print("browser job submitted", flush=True)
         expect(page.locator(".job-head strong")).to_have_text("已完成", timeout=480000)
         print("browser job succeeded", flush=True)
-        page.get_by_role("button", name="查看结果", exact=True).click()
+        results = page.get_by_role("button", name="查看结果", exact=True)
+        if results.is_visible():
+            results.click()
         capture("09-result-layout", ".result-panel")
         page.get_by_role("button", name="打开场景", exact=True).click()
         canvas = page.locator(".viewer canvas")

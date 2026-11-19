@@ -1,0 +1,17 @@
+{
+  "quality": "pass",
+  "postgres_restore": {
+    "status": "pass",
+    "dump_sha256": "ef38468c0b5a088d143adeed05ebbf501d7cc86cbf0b7b9e5a37a47aa757df16",
+    "project_id": "4754ec07-5775-4b00-bb68-3edcbed7dc59",
+    "alembic": "0006"
+  },
+  "operational_snapshot": {
+    "queued": 0,
+    "oldest_queue_wait_seconds": null,
+    "active": 0,
+    "latest_worker_heartbeat": null,
+    "failures_last_24h": {}
+  },
+  "client_builds": "pass"
+}
