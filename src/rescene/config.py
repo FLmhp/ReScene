@@ -46,6 +46,7 @@ class ProfileConfig:
     vggt_query_coverage: bool = False
     colmap_shared_camera: bool = False
     colmap_mvs_iterations: int | None = None
+    colmap_sparse_threads: int | None = None
 
     def degraded(self) -> ProfileConfig:
         """Return the single bounded CUDA OOM fallback configuration."""
@@ -59,7 +60,12 @@ class ProfileConfig:
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
         config = asdict(self)
-        for name in ("vggt_depth_confidence", "vggt_track_observation_limit", "colmap_mvs_iterations"):
+        for name in (
+            "vggt_depth_confidence",
+            "vggt_track_observation_limit",
+            "colmap_mvs_iterations",
+            "colmap_sparse_threads",
+        ):
             if config[name] is None:
                 del config[name]
         for name in ("gsplat_cache_images", "vggt_grid_sampling", "vggt_query_coverage", "colmap_shared_camera"):
@@ -93,6 +99,7 @@ class ProfileConfig:
             "vggt_query_coverage",
             "colmap_shared_camera",
             "colmap_mvs_iterations",
+            "colmap_sparse_threads",
         }
         unknown = set(overrides) - allowed
         if unknown:
@@ -116,6 +123,7 @@ class ProfileConfig:
             "colmap_poisson_depth",
             "colmap_shared_camera",
             "colmap_mvs_iterations",
+            "colmap_sparse_threads",
         }
         if colmap_overrides and self.geometry_backend != "colmap":
             raise ValueError(
@@ -133,6 +141,11 @@ class ProfileConfig:
         iterations = updated.colmap_mvs_iterations
         if iterations is not None and (type(iterations) is not int or not 1 <= iterations <= 5):
             raise ValueError("colmap_mvs_iterations must be an integer between 1 and 5")
+        threads = updated.colmap_sparse_threads
+        if threads is not None and (
+            type(threads) is not int or not 1 <= threads <= 12 or updated.colmap_mapper != "incremental"
+        ):
+            raise ValueError("colmap_sparse_threads requires incremental mapping and an integer between 1 and 12")
         confidence = updated.vggt_depth_confidence
         if confidence is not None and (
             self.geometry_backend != "vggt"

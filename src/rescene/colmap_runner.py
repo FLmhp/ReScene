@@ -44,7 +44,14 @@ def _ply_vertices(path: Path) -> int | None:
 
 
 def _relaxed_single_camera_mapping(
-    pycolmap, database: Path, images: Path, sparse_work: Path, reader_options, seed: int | None
+    pycolmap,
+    database: Path,
+    images: Path,
+    sparse_work: Path,
+    reader_options,
+    extraction: dict,
+    matching: dict,
+    mapping_settings: dict,
 ):
     database.unlink(missing_ok=True)
     shutil.rmtree(sparse_work, ignore_errors=True)
@@ -54,11 +61,10 @@ def _relaxed_single_camera_mapping(
         camera_mode=pycolmap.CameraMode.SINGLE,
         reader_options=reader_options,
         device=pycolmap.Device.cuda,
+        **extraction,
     )
-    pycolmap.match_exhaustive(database, device=pycolmap.Device.cuda, **_matching_seed(pycolmap, seed))
-    options = pycolmap.IncrementalPipelineOptions()
-    if seed is not None:
-        options.random_seed = seed
+    pycolmap.match_exhaustive(database, device=pycolmap.Device.cuda, **matching)
+    options = pycolmap.IncrementalPipelineOptions(**mapping_settings)
     options.min_num_matches = 10
     options.mapper.init_min_num_inliers = 30
     options.mapper.init_min_tri_angle = 4.0
@@ -90,6 +96,7 @@ def run(
     seed: int | None = None,
     shared_camera: bool = False,
     mvs_iterations: int | None = None,
+    sparse_threads: int | None = None,
 ) -> None:
     import pycolmap
 
@@ -104,14 +111,23 @@ def run(
             raise ValueError("Shared camera requires PINHOLE, incremental mapping and a fresh feature database")
         _check_shared_images(images)
     phases: dict[str, float] = {}
-    mapping = {}
+    mapping_settings = {}
     if seed is not None:
         # The controller and its RANSAC options use signed, nonnegative seeds.
         seed %= 2**31
         pycolmap.set_random_seed(seed)
         if mapper == "incremental":
-            mapping = {"options": pycolmap.IncrementalPipelineOptions(random_seed=seed)}
+            mapping_settings["random_seed"] = seed
     verification = _matching_seed(pycolmap, seed) if matching_db is None else {}
+    extraction = {}
+    if sparse_threads is not None:
+        if mapper != "incremental":
+            raise ValueError("Sparse thread limit requires incremental mapping")
+        mapping_settings["num_threads"] = sparse_threads
+        extraction["extraction_options"] = pycolmap.FeatureExtractionOptions(num_threads=sparse_threads)
+        if matching_db is None:
+            verification["matching_options"] = pycolmap.FeatureMatchingOptions(num_threads=sparse_threads)
+    mapping = {"options": pycolmap.IncrementalPipelineOptions(**mapping_settings)} if mapping_settings else {}
     if matching_db is not None:
         if database.exists() or Path(str(matching_db) + "-wal").exists():
             raise ValueError("Matching database must be closed and the trial database must be new")
@@ -120,7 +136,7 @@ def run(
         phase_start = perf_counter()
         camera = {"camera_mode": pycolmap.CameraMode.SINGLE} if shared_camera else {}
         pycolmap.extract_features(
-            database, images, reader_options=reader_options, device=pycolmap.Device.cuda, **camera
+            database, images, reader_options=reader_options, device=pycolmap.Device.cuda, **camera, **extraction
         )
         phases["features_seconds"] = perf_counter() - phase_start
         phase_start = perf_counter()
@@ -142,10 +158,17 @@ def run(
         shutil.rmtree(sparse_work, ignore_errors=True)
         maps = pycolmap.incremental_mapping(database, images, sparse_work, **mapping)
     if not maps and not experimental:
-        maps = _relaxed_single_camera_mapping(pycolmap, database, images, sparse_work, reader_options, seed)
+        maps = _relaxed_single_camera_mapping(
+            pycolmap, database, images, sparse_work, reader_options, extraction, verification, mapping_settings
+        )
     reconstruction = _largest_reconstruction(maps)
     phase_start = perf_counter()
-    pycolmap.bundle_adjustment(reconstruction)
+    if sparse_threads is None:
+        pycolmap.bundle_adjustment(reconstruction)
+    else:
+        adjustment = pycolmap.BundleAdjustmentOptions()
+        adjustment.ceres.solver_options.num_threads = sparse_threads
+        pycolmap.bundle_adjustment(reconstruction, options=adjustment)
     phases["bundle_adjustment_seconds"] = perf_counter() - phase_start
     sparse.mkdir(parents=True, exist_ok=True)
     reconstruction.write(sparse)
@@ -258,6 +281,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int)
     parser.add_argument("--shared-camera", action="store_true")
     parser.add_argument("--mvs-iterations", type=int, choices=range(1, 6))
+    parser.add_argument("--sparse-threads", type=int, choices=range(1, 13))
     dense_group = parser.add_mutually_exclusive_group()
     dense_group.add_argument("--dense", action="store_true")
     dense_group.add_argument("--dense-only", action="store_true")
@@ -279,6 +303,7 @@ def main() -> None:
             seed=args.seed,
             shared_camera=args.shared_camera,
             mvs_iterations=args.mvs_iterations,
+            sparse_threads=args.sparse_threads,
         )
 
 

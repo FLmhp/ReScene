@@ -449,6 +449,7 @@ def run_pipeline(
                     seed=random_seed,
                     shared_camera=config.colmap_shared_camera,
                     mvs_iterations=config.colmap_mvs_iterations,
+                    sparse_threads=config.colmap_sparse_threads,
                 )
             )
             try:
@@ -476,6 +477,7 @@ def run_pipeline(
                                 mvs_max_image_size=config.colmap_mvs_max_image_size,
                                 poisson_depth=config.colmap_poisson_depth,
                                 seed=random_seed,
+                                sparse_threads=config.colmap_sparse_threads,
                             ),
                             geometry_log,
                             cwd=root,

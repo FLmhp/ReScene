@@ -96,6 +96,7 @@ def colmap_command(
     seed: int | None = None,
     shared_camera: bool = False,
     mvs_iterations: int | None = None,
+    sparse_threads: int | None = None,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -124,6 +125,8 @@ def colmap_command(
         command.append("--shared-camera")
     if mvs_iterations is not None:
         command.extend(("--mvs-iterations", str(mvs_iterations)))
+    if sparse_threads is not None:
+        command.extend(("--sparse-threads", str(sparse_threads)))
     return command
 
 

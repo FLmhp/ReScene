@@ -682,7 +682,8 @@ class Study:
             atomic_json(summary, screened)
         return screened
 
-    def confirm(self, baselines: dict, screened: dict) -> dict:
+    def confirm(self, baselines: dict, screened: dict, control_overrides: dict | None = None) -> dict:
+        control = control_overrides or {}
         result = {}
         for profile in reversed(PROFILES):
             result[profile] = {"promoted": False, "variants": {}}
@@ -699,9 +700,9 @@ class Study:
                     for scene in rows:
                         if seed % 2:
                             candidate = self.trial(scene, profile, label, variant["overrides"], seed)
-                            base = self.trial(scene, profile, "baseline", {}, seed)
+                            base = self.trial(scene, profile, "baseline", control, seed)
                         else:
-                            base = self.trial(scene, profile, "baseline", {}, seed)
+                            base = self.trial(scene, profile, "baseline", control, seed)
                             candidate = self.trial(scene, profile, label, variant["overrides"], seed)
                         rows[scene].append((base, candidate))
                 development = all(
@@ -718,7 +719,7 @@ class Study:
                         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
                             holdouts[scene] = {"valid": False, "reason": str(error)}
                             continue
-                        base = self.trial(scene, profile, "baseline", {})
+                        base = self.trial(scene, profile, "baseline", control)
                         candidate = self.trial(scene, profile, label, variant["overrides"])
                         failures = pair_quality(base, candidate, profile, strict=True)
                         holdouts[scene] = {
@@ -767,6 +768,8 @@ class Study:
     def seeded_quality(self, prior: Path) -> None:
         """Verify seeded sparse repeatability before testing MVS 3 end to end again."""
         repeatability = {}
+        control = {"colmap_sparse_threads": 1}
+        accelerated = {**control, **SPEED["quality"]}
         for scene in ("office", "courtyard"):
             reference_dir = self.archive / f"{scene}-reference"
             if not reference_dir.exists():
@@ -799,6 +802,8 @@ class Study:
                                 "exhaustive",
                                 "--seed",
                                 "42",
+                                "--sparse-threads",
+                                "1",
                             ],
                             check=True,
                             timeout=240,
@@ -817,16 +822,17 @@ class Study:
         atomic_json(self.archive / "seeded-repeatability.json", repeatability)
         if not all(row["identical"] for row in repeatability.values()):
             return
-        baseline = {scene: {"quality": self.trial(scene, "quality", "baseline", {})} for scene in repeatability}
-        candidates = {scene: self.trial(scene, "quality", "speed", SPEED["quality"]) for scene in repeatability}
+        baseline = {scene: {"quality": self.trial(scene, "quality", "baseline", control)} for scene in repeatability}
+        candidates = {scene: self.trial(scene, "quality", "speed", accelerated) for scene in repeatability}
         atomic_json(self.archive / "seeded-screen.json", {"baseline": baseline, "candidate": candidates})
         self.confirm(
             baseline,
             {
-                "quality": {"variants": {"speed": {"overrides": SPEED["quality"], "trials": candidates}}},
+                "quality": {"variants": {"speed": {"overrides": accelerated, "trials": candidates}}},
                 "balanced": {"variants": {}},
                 "fast": {"variants": {}},
             },
+            control,
         )
 
 

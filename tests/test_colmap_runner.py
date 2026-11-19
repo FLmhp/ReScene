@@ -91,9 +91,11 @@ def test_seed_reaches_match_verification_and_incremental_mapper(tmp_path, monkey
 
     def match(_database, **kwargs):
         calls["ransac"] = kwargs["verification_options"].ransac.random_seed
+        calls["matching_threads"] = kwargs["matching_options"].num_threads
 
     def map_images(*args, **kwargs):
         calls["mapper"] = kwargs["options"].random_seed
+        calls["mapping_threads"] = kwargs["options"].num_threads
         return {0: reconstruction}
 
     reconstruction.num_reg_images = lambda: 2
@@ -102,17 +104,32 @@ def test_seed_reaches_match_verification_and_incremental_mapper(tmp_path, monkey
         ImageReaderOptions=SimpleNamespace,
         TwoViewGeometryOptions=lambda: SimpleNamespace(ransac=SimpleNamespace(random_seed=-1)),
         IncrementalPipelineOptions=SimpleNamespace,
+        FeatureExtractionOptions=SimpleNamespace,
+        FeatureMatchingOptions=SimpleNamespace,
+        BundleAdjustmentOptions=lambda: SimpleNamespace(ceres=SimpleNamespace(solver_options=SimpleNamespace())),
         set_random_seed=lambda value: calls.update(global_seed=value),
-        extract_features=lambda *args, **kwargs: None,
+        extract_features=lambda *args, **kwargs: calls.update(
+            extraction_threads=kwargs["extraction_options"].num_threads
+        ),
         match_exhaustive=match,
         incremental_mapping=map_images,
-        bundle_adjustment=lambda *args, **kwargs: None,
+        bundle_adjustment=lambda *args, **kwargs: calls.update(
+            adjustment_threads=kwargs["options"].ceres.solver_options.num_threads
+        ),
     )
     monkeypatch.setitem(sys.modules, "pycolmap", fake)
 
-    run(tmp_path, "exhaustive", dense=False, seed=42)
+    run(tmp_path, "exhaustive", dense=False, seed=42, sparse_threads=1)
 
-    assert calls == {"global_seed": 42, "ransac": 42, "mapper": 42}
+    assert calls == {
+        "global_seed": 42,
+        "ransac": 42,
+        "mapper": 42,
+        "extraction_threads": 1,
+        "matching_threads": 1,
+        "mapping_threads": 1,
+        "adjustment_threads": 1,
+    }
 
 
 def test_failed_default_mapping_retries_with_relaxed_single_camera(tmp_path, monkeypatch):
