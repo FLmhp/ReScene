@@ -286,13 +286,18 @@ def _run_reuse_comparison(
         if copied != manifest["files"]:
             raise ValueError("Copied reuse artifact SHA-256 mismatch")
         relocate_selected_images(run_dir)
-    provenance = {
+    provenance: dict[str, object] = {
         "mode": "single_stage_reuse",
         "stage": stage,
         "source_run": str(source_run),
         "bundle": str(bundle_dir),
         "manifest_sha256": bundle_sha256,
     }
+    training_seed = 42
+    if stage == "training":
+        settings = json.loads((run_dir / "input_manifest.json").read_text(encoding="utf-8")).get("settings", {})
+        training_seed = int(settings.get("seed", 42))
+        provenance["training_seed"] = training_seed
     _write_json(run_dir / "reuse_provenance.json", provenance)
     _write_json(run_dir / "config.json", config.to_dict())
     _write_json(run_dir / "environment.json", _environment(root))
@@ -301,7 +306,11 @@ def _run_reuse_comparison(
     with _timed(timings, stage), stages.running(stage, stage=stage, reuse_manifest_sha256=bundle_sha256):
         if stage == "training":
             _ensure_downsampled_images(run_dir, config.gsplat_data_factor)
-            run_command(gsplat_command(root, run_dir, run_dir / "gsplat", config), logs / "training.log", cwd=root)
+            run_command(
+                gsplat_command(root, run_dir, run_dir / "gsplat", config, seed=training_seed),
+                logs / "training.log",
+                cwd=root,
+            )
         else:
             run_command(
                 [
@@ -488,18 +497,24 @@ def run_pipeline(
                         vggt_query_frames=min(16, config.max_frames),
                         vggt_max_query_points=max(2_048, config.vggt_max_query_points),
                     )
-                    degraded = {"stage": "geometry", "reason": "ba_failed", "config": fallback.to_dict()}
-                    _write_json(run_dir / "degradation.json", degraded)
                     shutil.rmtree(run_dir / "sparse", ignore_errors=True)
-                    try:
-                        run_command(
-                            vggt_command(root, run_dir, fallback, seed=seed, diagnostics=diagnostics),
-                            geometry_log,
-                            cwd=root,
-                        )
-                    except Exception as fallback_error:
-                        if not is_vggt_ba_failure(fallback_error, geometry_log):
-                            raise
+                    recovered = False
+                    if fallback != config:
+                        degraded = {"stage": "geometry", "reason": "ba_failed", "config": fallback.to_dict()}
+                        _write_json(run_dir / "degradation.json", degraded)
+                        retry_log = logs / "geometry-retry.log"
+                        retry_log.unlink(missing_ok=True)
+                        try:
+                            run_command(
+                                vggt_command(root, run_dir, fallback, seed=seed, diagnostics=diagnostics),
+                                retry_log,
+                                cwd=root,
+                            )
+                            recovered = True
+                        except Exception as fallback_error:
+                            if not is_vggt_ba_failure(fallback_error, retry_log):
+                                raise
+                    if not recovered:
                         degraded = {
                             "stage": "geometry",
                             "reason": "ba_failed+colmap_sparse",

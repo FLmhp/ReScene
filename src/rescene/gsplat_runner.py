@@ -8,6 +8,7 @@ import math
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 from rescene.metrics import allows_missing_validation
 
@@ -80,7 +81,9 @@ def _dense_parser(original_parser: object):
     return DenseParser
 
 
-def configure_trainer(trainer: object, split_file: Path, init_points: str = "sparse") -> None:
+def configure_trainer(
+    trainer: object, split_file: Path, init_points: str = "sparse", *, train_workers: int | None = None
+) -> None:
     """Install split and per-view evaluation hooks on the pinned trainer."""
     import imageio.v2 as imageio
     import numpy as np
@@ -146,6 +149,21 @@ def configure_trainer(trainer: object, split_file: Path, init_points: str = "spa
             )
 
     class SplitRunner(original_runner):
+        def train(self):
+            if train_workers is None:
+                return super().train()
+            parent_loader = torch.utils.data.DataLoader
+
+            class TrainLoader(parent_loader):
+                def __init__(loader, dataset, *args, **kwargs):
+                    if dataset is self.trainset:
+                        kwargs["num_workers"] = train_workers
+                    super().__init__(dataset, *args, **kwargs)
+
+            print(f"ReScene training DataLoader workers: {train_workers}", flush=True)
+            with patch.object(torch.utils.data, "DataLoader", TrainLoader):
+                return super().train()
+
         @torch.no_grad()
         def eval(self, step: int, stage: str = "val") -> None:
             if stage != "val" or self.world_size != 1 or self.world_rank != 0:
@@ -253,6 +271,7 @@ def main() -> None:
     parser.add_argument("--split-file", type=Path, required=True)
     parser.add_argument("--init-points", choices=("sparse", "dense"), default="sparse")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--train-workers", type=int, choices=range(1, 13))
     args, remaining = parser.parse_known_args()
     sys.argv = [sys.argv[0], *remaining]
     root = Path(os.environ.get("RESCENE_ROOT", Path.cwd())).resolve()
@@ -262,7 +281,7 @@ def main() -> None:
     seed_upstream = trainer.set_random_seed
     trainer.set_random_seed = lambda seed: seed_upstream(seed + args.seed - 42)
 
-    configure_trainer(trainer, args.split_file, args.init_points)
+    configure_trainer(trainer, args.split_file, args.init_points, train_workers=args.train_workers)
     configs = {
         "default": ("Gaussian splatting", trainer.Config(strategy=trainer.DefaultStrategy(verbose=True))),
     }

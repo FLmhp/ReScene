@@ -170,6 +170,8 @@ def gsplat_command(
         command.append("--depth_loss")
     if config.gsplat_cache_images:
         command.append("--cache_images")
+    if config.gsplat_train_workers is not None:
+        command.extend(("--train-workers", str(config.gsplat_train_workers)))
     return command
 
 

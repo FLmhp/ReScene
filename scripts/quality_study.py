@@ -15,10 +15,12 @@ from pathlib import Path
 
 if __package__:
     from . import supervise_route_experiments as supervisor
+    from .diagnose_gsplat import diagnose
     from .freeze_manyview import evenly_spaced
     from .route_experiments_v3 import atomic_json
 else:
     import supervise_route_experiments as supervisor
+    from diagnose_gsplat import diagnose
     from freeze_manyview import evenly_spaced
     from route_experiments_v3 import atomic_json
 
@@ -315,6 +317,9 @@ def prepare() -> argparse.Namespace:
     parser.add_argument(
         "--training-confirm-from", type=Path, help="Prior DSLR archive for the focused training follow-up"
     )
+    parser.add_argument("--independent-dslr", action="store_true", help="Run frozen pairs on kicker and terrace")
+    parser.add_argument("--diagnose-gsplat", action="store_true", help="Probe CUDA rasterizer repeatability")
+    parser.add_argument("--loader-plan", type=Path, help="Fixed-bundle training loader comparisons")
     args = parser.parse_args()
     if args.repeat_training_cache and not args.cache_training_from:
         parser.error("--repeat-training-cache requires --cache-training-from")
@@ -404,6 +409,7 @@ class Study:
         if selection.is_file() and all(
             (model / name).is_file() for name in ("cameras.bin", "images.bin", "points3D.bin")
         ):
+            result["sparse_hashes"] = {path.name: sha256_file(path) for path in model.glob("*.bin") if path.is_file()}
             sources = read_json(selection)["image_to_source_id"]
             result["sparse_points_by_source"] = {
                 sources[image.name]: image.num_points3D
@@ -429,7 +435,6 @@ class Study:
             sparse = dest / "sparse"
             shutil.copytree(model, sparse)
             result["sparse"] = str(sparse)
-            result["sparse_hashes"] = {path.name: sha256_file(path) for path in sparse.iterdir() if path.is_file()}
         if (run / "dense" / "fused.ply").is_file():
             target = dest / "fused.ply"
             shutil.copy2(run / "dense" / "fused.ply", target)
@@ -493,13 +498,25 @@ class Study:
         return result
 
     def stage_probe(
-        self, scene: str, profile: str, source: dict, overrides: dict, *, cache_training=False, repeat=False
+        self,
+        scene: str,
+        profile: str,
+        source: dict,
+        overrides: dict,
+        *,
+        cache_training=False,
+        repeat=False,
+        loader_workers: int | None = None,
     ) -> dict:
         """Measure both settings from the same verified sparse bundle."""
         if not source.get("reuse_bundle"):
             return {"valid": False, "reason": "fixed_sparse_unavailable"}
-        stage = "dense" if profile == "quality" and not cache_training else "training"
-        suffix = "cache" if cache_training else "probe"
+        stage = "dense" if profile == "quality" else "training"
+        suffix, change = "probe", SPEED[profile]
+        if loader_workers is not None:
+            stage, suffix, change = "training", f"loader{loader_workers}", {"gsplat_train_workers": loader_workers}
+        elif cache_training:
+            stage, suffix, change = "training", "cache", {"gsplat_cache_images": True}
         if repeat:
             suffix += "-repeat"
         evidence = self.archive / f"{scene}-{profile}-{stage}-{suffix}"
@@ -507,7 +524,6 @@ class Study:
         if (evidence / "result.json").is_file():
             return read_json(evidence / "result.json")
         results = {}
-        change = {"gsplat_cache_images": True} if cache_training else SPEED[profile]
         settings = (("control", overrides), ("candidate", {**overrides, **change}))
         for label, changes in reversed(settings) if repeat else settings:
             run = self.work / f"{scene}-{profile}-{stage}-{label}"
@@ -558,7 +574,7 @@ class Study:
                 metrics = read_json(run / "metrics.json")
                 for path in (run / "logs").glob("*.log"):
                     shutil.copy2(path, evidence / f"{label}-{path.name}")
-                if cache_training:
+                if cache_training or loader_workers is not None:
                     for name in ("config.json", "reuse_provenance.json", "photometric_split.json"):
                         shutil.copy2(run / name, evidence / f"{label}-{name}")
                 if stage == "dense":
@@ -611,6 +627,10 @@ class Study:
                     ("lpips", 1, 0.01),
                 )
             )
+            if loader_workers is not None:
+                control_ids = set(control["validation_registered_frames"])
+                candidate_ids = set(candidate["validation_registered_frames"])
+                quality = quality and len(control_ids) == 8 and control_ids == candidate_ids
         ratio = duration(candidate) / duration(control)
         result = {
             "valid": quality and ratio < 1,
@@ -641,6 +661,16 @@ class Study:
                     scene, profile, source, {"max_frames": frames}, cache_training=True, repeat=repeat
                 )
             atomic_json(summary, results)
+
+    def loader_trials(self, plan: Path) -> None:
+        """Recheck host profiling with complete training from verified inputs."""
+        results = {}
+        for row in read_json(plan)["trials"]:
+            scene, profile = row["scene"], row["profile"]
+            if scene not in SCENES or profile not in PROFILES:
+                raise ValueError("Loader probe requires a known DSLR scene and profile")
+            results[f"{scene}-{profile}"] = self.stage_probe(scene, profile, row, {}, loader_workers=8)
+            atomic_json(self.archive / "training-loader-summary.json", results)
 
     def confirm_training(self, prior: Path) -> None:
         """Recheck cache wins from raw images and the successful BALANCED retry budget."""
@@ -694,6 +724,36 @@ class Study:
             self.setup(scene)
             result[scene] = {name: self.trial(scene, name, "baseline", {}, keep_reuse=True) for name in PROFILES}
         return result
+
+    def independent_dslr(self) -> None:
+        """Run frozen, cold-start pairs on the two previously unused DSLR scenes."""
+        controls = {"fast": {}, "balanced": {}, "quality": {"colmap_sparse_threads": 1}}
+        changes = {
+            "fast": CANDIDATES["fast"],
+            "balanced": {"vggt_query_frames": 16, "vggt_max_query_points": 2048},
+            "quality": {"colmap_mvs_iterations": 4},
+        }
+        output = self.archive / "independent-summary.json"
+        results = {}
+        for scene, order in (("kicker", ("control", "candidate")), ("terrace", ("candidate", "control"))):
+            self.setup(scene)
+            trials = results[scene] = {}
+            for profile in PROFILES:
+                pair = trials[profile] = {}
+                for label in order:
+                    overrides = {**controls[profile], **(changes[profile] if label == "candidate" else {})}
+                    pair[label] = self.trial(scene, profile, f"independent-{label}", overrides)
+                    atomic_json(output, results)
+                control, candidate = pair["control"], pair["candidate"]
+                pair["quality_failures"] = pair_quality(control, candidate, profile, strict=True)
+                pair["recovery_only"] = bool(
+                    not control["valid"]
+                    and candidate["valid"]
+                    and len(candidate["supported"]) == 8
+                    and candidate["peak_mib"] <= candidate["gpu_total_mib"] - 3072
+                )
+                pair["speed_pass"] = not pair["quality_failures"] and speed_pass(control, candidate, profile)
+                atomic_json(output, results)
 
     def smoke(self) -> None:
         name = "golden-fast-smoke"
@@ -953,6 +1013,9 @@ def main() -> None:
     if os.environ.get("RESCENE_EXPERIMENT_ARCHIVE") != str(args.archive):
         raise ValueError("Use the same mounted archive in RESCENE_EXPERIMENT_ARCHIVE and --archive")
     supervisor.require_archive_mount()
+    if args.diagnose_gsplat:
+        atomic_json(args.archive / "gsplat-repeatability.json", diagnose())
+        return
     study = Study(args)
     if args.seeded_quality_from:
         study.seeded_quality(args.seeded_quality_from)
@@ -962,6 +1025,12 @@ def main() -> None:
         return
     if args.training_confirm_from:
         study.confirm_training(args.training_confirm_from)
+        return
+    if args.independent_dslr:
+        study.independent_dslr()
+        return
+    if args.loader_plan:
+        study.loader_trials(args.loader_plan)
         return
     study.smoke()
     baseline = study.baselines()

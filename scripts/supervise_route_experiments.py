@@ -247,13 +247,15 @@ def monitor(trial: dict[str, object], deadline: float | None = None) -> dict[str
                     del foreign_seen[pid]
                 peak = max(peak, used)
                 samples += 1
-                if samples % 10 == 1 and (stage := running_stage(run)):
+                stage = running_stage(run)
+                if stage:
                     phase = phase_samples.setdefault(stage, {"samples": 0, "peak_mib": 0, "utilization_sum": 0})
                     phase["peak_mib"] = max(phase["peak_mib"], used)
-                    utilization = gpu_utilization() if used and not foreign else 0
-                    if utilization is not None:
-                        phase["samples"] += 1
-                        phase["utilization_sum"] += utilization
+                    if samples % 10 == 1:
+                        utilization = gpu_utilization() if used and not foreign else 0
+                        if utilization is not None:
+                            phase["samples"] += 1
+                            phase["utilization_sum"] += utilization
                 if foreign:
                     reason = f"external GPU compute PIDs appeared: {foreign}"
                 if reason is None and deadline is not None and time.time() >= deadline:
@@ -291,12 +293,7 @@ def monitor(trial: dict[str, object], deadline: float | None = None) -> dict[str
                     reason = (
                         f"no stage/log progress for {STALL_BOUNDS[str(trial['profile'])]}s with no owned GPU memory"
                     )
-                if (
-                    reason is None
-                    and now - progress >= STALL_SECONDS
-                    and used == 0
-                    and running_stage(run) in GPU_STALL_STAGES
-                ):
+                if reason is None and now - progress >= STALL_SECONDS and used == 0 and stage in GPU_STALL_STAGES:
                     reason = f"{STALL_SECONDS}s without progress in a GPU stage and no owned GPU memory"
                 if reason:
                     emit(f"ABORT [{name}]: {reason}")

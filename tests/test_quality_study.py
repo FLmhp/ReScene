@@ -124,3 +124,26 @@ def test_cache_study_uses_verified_bundle_and_keeps_route_steps(tmp_path: Path, 
     for call in study.stage_probe.call_args_list:
         assert call.args[2:] == (source, {"max_frames": 26})
         assert call.kwargs == {"cache_training": True, "repeat": False}
+
+
+def test_independent_dslr_uses_frozen_candidates_and_alternates_order(tmp_path: Path) -> None:
+    study = Study.__new__(Study)
+    study.archive = tmp_path
+    study.setup = Mock()
+    study.trial = Mock(return_value={"valid": False})
+
+    study.independent_dslr()
+
+    calls = [call.args for call in study.trial.call_args_list]
+    assert len(calls) == 12
+    assert calls[:2] == [
+        ("kicker", "fast", "independent-control", {}),
+        ("kicker", "fast", "independent-candidate", {"vggt_grid_sampling": True}),
+    ]
+    assert calls[-2:] == [
+        ("terrace", "quality", "independent-candidate", {"colmap_sparse_threads": 1, "colmap_mvs_iterations": 4}),
+        ("terrace", "quality", "independent-control", {"colmap_sparse_threads": 1}),
+    ]
+    summary = quality_study.read_json(tmp_path / "independent-summary.json")
+    assert summary["kicker"]["balanced"]["quality_failures"] == ["baseline_unusable"]
+    assert not summary["kicker"]["balanced"]["speed_pass"]

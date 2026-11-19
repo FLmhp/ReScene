@@ -71,6 +71,28 @@ def test_monitor_signals_only_the_trial_on_deadline(tmp_path, monkeypatch):
     assert not result["valid"] and result["abort_reason"] == "batch deadline reached"
 
 
+def test_monitor_keeps_phase_memory_peaks_between_utilization_samples(tmp_path, monkeypatch):
+    spec = tmp_path / "trial.json"
+    spec.write_text("{}")
+    (tmp_path / "resources").mkdir()
+    stages = tmp_path / "runs" / "test" / "stages"
+    stages.mkdir(parents=True)
+    (stages / "training.json").write_text('{"status": "running"}')
+    proc = Mock(pid=12345, returncode=0)
+    proc.poll.side_effect = [None, None, 0, 0]
+    proc.wait.return_value = 0
+    monkeypatch.setattr(supervisor, "RUNS", tmp_path)
+    monkeypatch.setattr(supervisor, "ROOT", tmp_path)
+    monkeypatch.setattr(supervisor.subprocess, "Popen", Mock(return_value=proc))
+    monkeypatch.setattr(supervisor, "gpu_processes", Mock(side_effect=[{12345: 80}, {12345: 120}]))
+    monkeypatch.setattr(supervisor, "gpu_utilization", Mock(return_value=45))
+    monkeypatch.setattr(supervisor, "owned", lambda pid, owner: pid == owner)
+    monkeypatch.setattr(supervisor, "free_bytes", lambda: 10 * 1024**3)
+    monkeypatch.setattr(supervisor.time, "sleep", lambda seconds: None)
+    result = supervisor.monitor({"name": "test", "profile": "fast", "spec": spec, "repeat": 1})
+    assert result["phase_gpu"]["training"] == {"samples": 1, "peak_owned_mib": 120, "mean_utilization_percent": 45}
+
+
 def test_freeze_nested_subsets_keep_the_same_validation_views(tmp_path):
     scene = tmp_path / "scene"
     scene.mkdir()

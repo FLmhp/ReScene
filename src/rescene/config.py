@@ -47,6 +47,7 @@ class ProfileConfig:
     colmap_shared_camera: bool = False
     colmap_mvs_iterations: int | None = None
     colmap_sparse_threads: int | None = None
+    gsplat_train_workers: int | None = None
 
     def degraded(self) -> ProfileConfig:
         """Return the single bounded CUDA OOM fallback configuration."""
@@ -65,6 +66,7 @@ class ProfileConfig:
             "vggt_track_observation_limit",
             "colmap_mvs_iterations",
             "colmap_sparse_threads",
+            "gsplat_train_workers",
         ):
             if config[name] is None:
                 del config[name]
@@ -85,6 +87,7 @@ class ProfileConfig:
             "gsplat_depth_loss",
             "gsplat_init_points",
             "gsplat_cache_images",
+            "gsplat_train_workers",
             "vggt_query_frames",
             "vggt_max_query_points",
             "vggt_max_reprojection_error",
@@ -204,6 +207,9 @@ class ProfileConfig:
                 raise ValueError(f"{name} must be true or false")
         if updated.gsplat_cache_images and updated.max_frames * updated.preprocess_max_side**2 * 3 > 2 * 1024**3:
             raise ValueError("gsplat_cache_images exceeds the 2 GiB decoded RGB budget")
+        workers = updated.gsplat_train_workers
+        if workers is not None and (type(workers) is not int or not 1 <= workers <= 12):
+            raise ValueError("gsplat_train_workers must be an integer between 1 and 12")
         if updated.vggt_query_frames > updated.max_frames:
             raise ValueError("vggt_query_frames cannot exceed max_frames")
         if updated.colmap_camera_model not in {"SIMPLE_RADIAL", "OPENCV", "PINHOLE", "SIMPLE_PINHOLE"}:

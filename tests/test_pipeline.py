@@ -64,6 +64,38 @@ def test_sparse_colmap_fallback_disables_dense(tmp_path, monkeypatch):
     assert calls == [["True", "False", "SIMPLE_RADIAL", "1200", "12"]]
 
 
+@pytest.mark.parametrize(("queries", "points", "attempts"), [(8, 1024, 2), (16, 2048, 1)])
+def test_balanced_retries_only_when_the_budget_changes(tmp_path, monkeypatch, queries, points, attempts):
+    source = tmp_path / "input"
+    source.mkdir()
+    (source / "frame.jpg").touch()
+    output = tmp_path / "output"
+    monkeypatch.setattr(pipeline, "_environment", lambda root: {})
+    monkeypatch.setattr(
+        pipeline,
+        "preprocess_input",
+        lambda path, dest, **kwargs: (dest / "input_manifest.json").write_text('{"settings":{"seed":42}}'),
+    )
+    calls = []
+
+    def no_model(command, log, *, cwd):
+        calls.append(log.name)
+        raise RuntimeError("No reconstruction can be built with BA")
+
+    def colmap(*args, **kwargs):
+        raise RuntimeError("entered COLMAP fallback")
+
+    monkeypatch.setattr(pipeline, "run_command", no_model)
+    monkeypatch.setattr(pipeline, "_run_sparse_colmap", colmap)
+    config = pipeline.profile_config("balanced").with_overrides(
+        {"vggt_query_frames": queries, "vggt_max_query_points": points}
+    )
+    with pytest.raises(RuntimeError, match="entered COLMAP"):
+        pipeline.run_pipeline("balanced", source, "test", config_override=config, output_dir=output)
+    assert calls == ["geometry.log", "geometry-retry.log"][:attempts]
+    assert json.loads((output / "degradation.json").read_text())["reason"] == "ba_failed+colmap_sparse"
+
+
 def _source_run(tmp_path):
     source = tmp_path / "source"
     (source / "images").mkdir(parents=True)
@@ -110,6 +142,10 @@ def test_reuse_manifest_digest_and_extra_files_are_checked(tmp_path):
 @pytest.mark.parametrize("stage", ["training", "dense"])
 def test_reuse_runs_only_requested_stage_and_is_not_cold_total(tmp_path, monkeypatch, stage):
     source = _source_run(tmp_path)
+    manifest_path = source / "input_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["settings"] = {"seed": 43}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     bundle = tmp_path / "bundle"
     digest = pipeline.create_reuse_bundle(source, bundle)
     output = tmp_path / "output"
@@ -126,6 +162,9 @@ def test_reuse_runs_only_requested_stage_and_is_not_cold_total(tmp_path, monkeyp
     metrics = json.loads((output / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["total_seconds"] is None
     assert metrics["reuse"]["manifest_sha256"] == digest
+    if stage == "training":
+        assert calls[0][calls[0].index("--seed") + 1] == "43"
+        assert metrics["reuse"]["training_seed"] == 43
     assert set(metrics["timings"]) == {"reuse_prepare", stage}
     copied = json.loads((output / "input_manifest.json").read_text(encoding="utf-8"))
     assert copied["frames"][0]["file"] == str(output / "images" / "000000.jpg")

@@ -52,3 +52,7 @@ def test_gsplat_image_cache_is_opt_in(tmp_path: Path) -> None:
     assert "--cache_images" not in gsplat_command(tmp_path, tmp_path, tmp_path, baseline)
     config = baseline.with_overrides({"gsplat_cache_images": True})
     assert "--cache_images" in gsplat_command(tmp_path, tmp_path, tmp_path, config)
+    assert "--train-workers" not in gsplat_command(tmp_path, tmp_path, tmp_path, baseline)
+    config = baseline.with_overrides({"gsplat_train_workers": 8})
+    command = gsplat_command(tmp_path, tmp_path, tmp_path, config)
+    assert command[command.index("--train-workers") + 1] == "8"
