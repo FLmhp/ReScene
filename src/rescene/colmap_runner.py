@@ -111,7 +111,7 @@ def run(
         pycolmap.set_random_seed(seed)
         if mapper == "incremental":
             mapping = {"options": pycolmap.IncrementalPipelineOptions(random_seed=seed)}
-    verification = _matching_seed(pycolmap, seed)
+    verification = _matching_seed(pycolmap, seed) if matching_db is None else {}
     if matching_db is not None:
         if database.exists() or Path(str(matching_db) + "-wal").exists():
             raise ValueError("Matching database must be closed and the trial database must be new")
