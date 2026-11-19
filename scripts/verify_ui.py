@@ -43,6 +43,42 @@ def verify_media_selection(page: Page, output: Path, client: str) -> None:
     page.remove_listener("request", record)
 
 
+def verify_project_sidebar(browser: Browser, desktop_url: str, output: Path) -> None:
+    page = browser.new_page(viewport={"width": 1180, "height": 660}, color_scheme="dark")
+    projects = [
+        {"id": f"p{i}", "name": f"{i:02} ReScene 长项目名称与验收记录", "owner_id": "u1", "effective_role": "owner"}
+        for i in range(24)
+    ]
+    fixtures = {
+        "/v1/auth/me": {"id": "u1", "email": "demo@example.test", "is_admin": True},
+        "/v1/projects": projects,
+        "/v1/workers/status": {"online": False, "workers": []},
+        "/v1/notifications/count": {"unread": 0},
+    }
+    page.route(
+        "https://api.rescene.xyz/**",
+        lambda route: route.fulfill(json=fixtures.get(urlsplit(route.request.url).path, [])),
+    )
+    page.add_init_script("localStorage.setItem('rescene-token','fixture');")
+    page.goto(desktop_url, wait_until="domcontentloaded")
+    nav = page.get_by_role("navigation", name="项目", exact=True)
+    buttons = nav.get_by_role("button")
+    expect(buttons).to_have_count(len(projects))
+    assert buttons.evaluate_all("""items => items.every(button => {
+      const bounds = button.getBoundingClientRect();
+      const text = document.createRange();
+      text.selectNodeContents(button);
+      const content = text.getBoundingClientRect();
+      return bounds.height >= 40 && content.top >= bounds.top && content.bottom <= bounds.bottom;
+    })""")
+    buttons.last.scroll_into_view_if_needed()
+    assert nav.evaluate("element => element.scrollTop > 0")
+    nav.evaluate("element => { element.scrollTop = 0; }")
+    page.locator("aside").evaluate("element => { element.scrollTop = 0; }")
+    page.locator("aside").screenshot(path=str(output / "windows-project-sidebar.png"))
+    page.close()
+
+
 def verify_viewer(browser: Browser, web_url: str, output: Path, scene: Path) -> None:
     """Render a real SPZ after a mocked object URL expires."""
     page = browser.new_page(viewport={"width": 1100, "height": 790}, color_scheme="dark")
@@ -149,6 +185,8 @@ def verify(web_url: str, desktop_url: str, output: Path, image: Path, scene: Pat
         browser = playwright.chromium.launch(
             channel="msedge", args=["--enable-unsafe-swiftshader", "--use-angle=swiftshader"]
         )
+        verify_project_sidebar(browser, desktop_url, output)
+        results.append({"client": "windows-ui", "check": "long project names remain readable", "status": "PASS"})
         for client, base, widths in [("web", web_url, [1440, 1024, 768, 390]), ("windows-ui", desktop_url, [1280])]:
             for width in widths:
                 for appearance in ("light", "dark"):

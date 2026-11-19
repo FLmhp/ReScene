@@ -37,6 +37,7 @@ function message(reason: unknown, fallback: string): string {
 
 export default function IndexPage() {
   const [panel, setPanel] = useState<"notifications" | "account" | null>(null);
+  const [projectPage, setProjectPage] = useState(0);
   const [showPassword, setShowPassword] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [recovering, setRecovering] = useState(hasToken());
@@ -270,9 +271,10 @@ export default function IndexPage() {
     } catch (reason) {
       setError(message(reason, "标记已读失败。"));
     }
-    // The mini program has no job screen; a task notice opens its project so
-    // the running log and stage timeline stay reachable from here.
-    if (item.project_id) void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(item.project_id)}&name=` });
+    if (item.project_id) {
+      const job = item.job_id ? `&view=tasks&job=${encodeURIComponent(item.job_id)}` : "";
+      void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(item.project_id)}${job}` });
+    }
   }
 
   async function signOut() {
@@ -296,6 +298,7 @@ export default function IndexPage() {
       setNextPassword("");
       setNextConfirm("");
       setSearch("");
+      setProjectPage(0);
       setName("");
       setBusy(false);
       authLock.current = false;
@@ -304,6 +307,10 @@ export default function IndexPage() {
   }
 
   const filtered = projects.filter((project) => project.name.toLowerCase().includes(search.trim().toLowerCase()));
+  const pageSize = 8;
+  const projectPageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const page = Math.min(projectPage, projectPageCount - 1);
+  const visibleProjects = filtered.slice(page * pageSize, (page + 1) * pageSize);
   const unreadItems = notifications.filter((item) => item.read_at === null);
 
   if (recovering) {
@@ -371,16 +378,21 @@ export default function IndexPage() {
       </View> : null}
       <View className="card">
         <Text className="label">搜索项目</Text>
-        <Input className="input" value={search} onInput={(event) => setSearch(event.detail.value)} />
+        <Input className="input" value={search} onInput={(event) => { setSearch(event.detail.value); setProjectPage(0); }} />
         <Text className="label">新项目名称</Text>
         <Input className="input" maxlength={200} value={name} onInput={(event) => setName(event.detail.value)} />
         <Button className="button" loading={creatingProject} disabled={creatingProject || !name.trim()} onClick={() => void createProject()}>创建项目</Button>
       </View>
-      {filtered.map((project) => (
+      {visibleProjects.map((project) => (
         <View className="project-tile" key={project.id} onClick={() => void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(project.id)}&name=${encodeURIComponent(project.name)}` })}>
           <Text className="label">{project.name}</Text><Text className="muted">{ROLE_LABEL[project.effective_role]} · 打开 ›</Text>
         </View>
       ))}
+      {projectPageCount > 1 ? <View className="page-controls">
+        <Button className="button ghost compact" disabled={page === 0} onClick={() => setProjectPage(page - 1)}>上一页</Button>
+        <Text className="muted">{page + 1} / {projectPageCount}</Text>
+        <Button className="button ghost compact" disabled={page + 1 === projectPageCount} onClick={() => setProjectPage(page + 1)}>下一页</Button>
+      </View> : null}
       {filtered.length === 0 ? <Text className="muted">{search.trim() ? "没有匹配的项目。" : "还没有项目。"}</Text> : null}
       {user.is_admin ? (
         <Button className="button ghost" onClick={() => void Taro.navigateTo({ url: "/pages/admin/index" })}>管理控制台</Button>

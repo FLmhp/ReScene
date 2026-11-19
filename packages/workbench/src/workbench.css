@@ -222,6 +222,7 @@ aside {
   position: sticky;
   top: 0;
   height: 100vh;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -311,6 +312,19 @@ nav button.active {
   color: var(--fg);
   background: var(--surface-strong);
   box-shadow: inset 0 0 0 1px var(--border-soft);
+}
+aside > .project-nav {
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-rows: max-content;
+  align-content: start;
+  max-height: 40vh;
+  flex: 0 0 auto;
+}
+.project-nav button {
+  min-height: 40px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .signout {
   margin-top: auto;

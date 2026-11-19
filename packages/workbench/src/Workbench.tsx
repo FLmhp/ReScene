@@ -584,9 +584,9 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
           <button aria-label="创建项目" type="submit">＋</button>
         </form>
         <label>搜索项目<input value={search} onChange={(event) => setSearch(event.target.value)} /></label>
-        <nav aria-label="项目">
+        <nav className="project-nav" aria-label="项目">
           {projects.filter((project) => project.name.toLowerCase().includes(search.toLowerCase())).map((project) => (
-            <button className={selected === project.id ? "active" : ""} key={project.id} onClick={() => selectProject(project.id)}>{project.name} · {project.effective_role}</button>
+            <button className={selected === project.id ? "active" : ""} aria-current={selected === project.id ? "page" : undefined} key={project.id} onClick={() => selectProject(project.id)}>{project.name} · {project.effective_role}</button>
           ))}
         </nav>
         {me?.is_admin && (

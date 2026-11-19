@@ -4,7 +4,7 @@ import { explainError, isOfflineError, ResceneApiError } from "@rescene/api-clie
 import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, canRetryJob, jobErrorHint, queuedJobHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
 import type { Asset, Job, JobLog, MemberRole, Profile, ProjectWorkspace, ProjectMember, ShareSummary, WorkerStatus } from "@rescene/schemas";
 import { MediaPreflightError, summarizeMediaWarnings } from "@rescene/uploader";
-import { Button, Image, Input, Progress, Text, View } from "@tarojs/components";
+import { Button, Image, Input, Progress, ScrollView, Text, View } from "@tarojs/components";
 import Taro, { useDidHide, useDidShow, useRouter } from "@tarojs/taro";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -22,6 +22,8 @@ import {
 } from "../../upload";
 
 const PROFILES: Profile[] = ["fast", "balanced", "quality"];
+const PROJECT_SECTIONS = [["materials", "素材"], ["build", "重建路线"], ["tasks", "任务与结果"]] as const;
+type ProjectSection = (typeof PROJECT_SECTIONS)[number][0];
 const MEMBER_ROLE_LABEL = { owner: "所有者", member: "成员（可写）", viewer: "查看者（只读）" } as const;
 const EFFECTIVE_ROLE_LABEL = { owner: "所有者", admin: "管理员", member: "成员（可写）", viewer: "查看者（只读）" } as const;
 const ACTIVE: Record<string, true> = { QUEUED: true, LEASED: true, RUNNING: true };
@@ -46,7 +48,6 @@ type TimelineRow = {
   status: string;
   progress: number;
   message?: string | null;
-  metrics: Record<string, unknown>;
 };
 type UploadItem = { id: string; file: ChosenFile; progress: number; status: "waiting" | "uploading" | "failed" | "done"; error?: string };
 const message = (reason: unknown, fallback: string) => {
@@ -61,6 +62,8 @@ const message = (reason: unknown, fallback: string) => {
 
 export default function ProjectPage() {
   const router = useRouter();
+  const [section, setSection] = useState<ProjectSection>(router.params.view === "tasks" ? "tasks" : "materials");
+  const requestedJob = useRef(router.params.job);
   const [showManagement, setShowManagement] = useState(false);
   const [assetPages, setAssetPages] = useState([""]);
   const [jobPages, setJobPages] = useState([""]);
@@ -104,6 +107,12 @@ export default function ProjectPage() {
   const canWrite = canManage || role === "member";
   const jobs = detail?.jobs ?? [];
 
+  function showSection(next: ProjectSection) {
+    setShowManagement(false);
+    setSection(next);
+    void Taro.pageScrollTo({ scrollTop: 0, duration: 160 }).catch(() => undefined);
+  }
+
   const load = useCallback(async () => {
     if (!projectId) return;
     const request = ++requestId.current;
@@ -111,11 +120,17 @@ export default function ProjectPage() {
     try {
       const value = await client.getWorkspace(projectId, assetPages[assetPages.length - 1], jobPages[jobPages.length - 1]);
       if (request !== requestId.current) return;
+      const target = requestedJob.current;
+      const initialJob = target ? value.jobs.find((item) => item.id === target) ?? await client.getJob(target).catch(() => null) : null;
+      if (request !== requestId.current) return;
+      requestedJob.current = undefined;
       setDetail(value);
       void Taro.setNavigationBarTitle({ title: value.name }).catch(() => undefined);
       setName((current) => current || value.name);
       setSelected((current) => reconcileWorkspaceSelection(current, value.assets));
-      setJob((current) => current ? value.jobs.find((item) => item.id === current.id) ?? current : value.jobs[0] ?? null);
+      setJob((current) => current
+        ? value.jobs.find((item) => item.id === current.id) ?? current
+        : initialJob?.project_id === projectId ? initialJob : value.jobs[0] ?? null);
       setError("");
     } catch (reason) {
       if (request === requestId.current) setError(message(reason, "加载项目失败"));
@@ -174,7 +189,6 @@ export default function ProjectPage() {
           status: row.status,
           progress: row.progress,
           message: row.message,
-          metrics: row.metrics,
         })));
       })
       .catch((reason) => { if (!cancelled) setError(message(reason, "加载任务阶段失败")); });
@@ -190,7 +204,6 @@ export default function ProjectPage() {
           status: event.status,
           progress: event.progress,
           message: event.message ?? null,
-          metrics: event.metrics,
         }].slice(-100));
         return;
       }
@@ -349,6 +362,8 @@ export default function ProjectPage() {
     try {
       const created = await client.createJob(projectId, profile, selected.map((asset) => asset.id));
       setJob(created);
+      setShowLogs(false);
+      showSection("tasks");
       await load();
     } catch (reason) { setError(message(reason, "创建任务失败")); }
     finally { createLock.current = false; setCreating(false); }
@@ -465,7 +480,11 @@ export default function ProjectPage() {
 
   function pageControls(label: string, pages: string[], next: string | null, setPages: (pages: string[]) => void) {
     if (pages.length === 1 && !next) return null;
-    const move = (cursor?: string) => { setPageLoading(true); setPages(cursor ? [...pages, cursor] : pages.slice(0, -1)); };
+    const move = (cursor?: string) => {
+      setPageLoading(true);
+      setPages(cursor ? [...pages, cursor] : pages.slice(0, -1));
+      void Taro.pageScrollTo({ scrollTop: 0, duration: 160 }).catch(() => undefined);
+    };
     return <View className="page-controls">
       <Button className="button ghost compact" disabled={pageLoading || pages.length === 1} onClick={() => move()}>{label}上一页</Button>
       <Text className="muted">第 {pages.length} 页</Text>
@@ -498,6 +517,11 @@ export default function ProjectPage() {
           {showManagement ? "收起管理" : canManage ? "项目管理" : "查看成员"}
         </Button>
       </View> : null}
+      {detail ? <View className="segmented project-sections">
+        {PROJECT_SECTIONS.filter(([value]) => value !== "build" || canWrite).map(([value, label]) => (
+          <Button key={value} className={`button tab${section === value && !showManagement ? " active" : ""}`} aria-pressed={section === value && !showManagement} onClick={() => showSection(value)}>{label}</Button>
+        ))}
+      </View> : null}
       {!projectId ? <Text className="error">缺少项目参数，请返回项目列表重新打开。</Text> : null}
       {projectId && !detail && !error ? <Text className="muted">加载中…</Text> : null}
       {error ? <View className="card">
@@ -527,7 +551,7 @@ export default function ProjectPage() {
           <Button className="button" onClick={addMember}>添加成员</Button>
         </View> : null}
       </View> : null}
-      {detail ? <View className="card" id="materials">
+      {detail && section === "materials" && !showManagement ? <View className="card">
         <View className="project-heading">
           <Text className="section-heading">素材</Text>
           {canWrite ? <Text className="selection-count">已选 {selected.length} 个</Text> : null}
@@ -557,7 +581,7 @@ export default function ProjectPage() {
         </View>
         {pageControls("素材", assetPages, detail.nextAssetCursor, setAssetPages)}
       </View> : null}
-      {canWrite ? <View className="card">
+      {canWrite && section === "build" && !showManagement ? <View className="card">
         <Text className="section-heading">重建路线</Text>
         {PROFILES.map((value) => {
           const option = RECONSTRUCTION_PROFILES[value];
@@ -573,37 +597,40 @@ export default function ProjectPage() {
           <Button className="button ghost compact" onClick={loadWorker}>刷新</Button>
         </View>
         {!selected.length ? <Text className="muted">请先从素材列表选择要重建的文件</Text> : null}
+        {!selected.length ? <Button className="button ghost" onClick={() => showSection("materials")}>返回选择素材</Button> : null}
       </View> : null}
-      {detail ? <View className="card">
+      {detail && section === "tasks" && !showManagement ? <View className="card">
         <Text className="section-heading">重建任务</Text>
-        {jobs.map((item) => <Button className={`button route-option${job?.id === item.id ? " selected" : ""}`} aria-pressed={job?.id === item.id} key={item.id} onClick={() => setJob(item)}>
+        {jobs.map((item) => <Button className={`button route-option${job?.id === item.id ? " selected" : ""}`} aria-pressed={job?.id === item.id} key={item.id} onClick={() => {
+          setJob(item);
+          setShowLogs(false);
+          Taro.nextTick(() => { void Taro.pageScrollTo({ selector: "#task-detail", duration: 160 }).catch(() => undefined); });
+        }}>
           <Text className="label">{RECONSTRUCTION_PROFILES[item.profile].title} · {JOB_STATUS_LABELS[item.status]}</Text>
           <Text className="muted">{new Date(item.created_at).toLocaleString()} · {item.id.slice(0, 8)}</Text>
         </Button>)}
         {pageControls("任务", jobPages, detail.nextJobCursor, setJobPages)}
-        {job ? <View className="task-detail">
+        {job ? <View className="task-detail" id="task-detail">
           <Text className={job.status === "SUCCEEDED" ? "success-state" : job.status === "FAILED" ? "error" : "label"}>{JOB_STATUS_LABELS[job.status]} · 第 {job.attempt} 次</Text>
           <Text className="muted">{stageLabel(job.current_stage)} · {Math.round(job.progress * 100)}%</Text>
           <Progress percent={Math.round(job.progress * 100)} strokeWidth={5} borderRadius={6} activeColor="#7c9bff" backgroundColor="#07080c" />
           <Text className="muted">更新于 {new Date(job.updated_at).toLocaleString()}</Text>
           {timeline.map((row) => <View key={row.key}>
             <Text className="muted">{stageLabel(row.stage)} · {row.status} · {Math.round(row.progress * 100)}%</Text>
-            {row.message ? <Text className="muted">{row.message}</Text> : null}
-            {Object.keys(row.metrics).length > 0 ? <Text className="muted">{JSON.stringify(row.metrics)}</Text> : null}
+            {row.message && row.stage !== "queued" ? <Text className="muted">{row.message}</Text> : null}
           </View>)}
           {job.status === "QUEUED" ? <Text className="muted">{queuedJobHint(worker?.online)}</Text> : null}
           {job.error_code || job.error_message ? <Text className="error">{jobErrorHint(job.error_code) || job.error_message || job.error_code}</Text> : null}
           {canWrite && ACTIVE[job.status] ? <Button className="button ghost" disabled={jobBusy || job.cancel_requested} loading={jobBusy} onClick={() => void changeJob("cancel")}>{job.cancel_requested ? "取消中" : "取消任务"}</Button> : null}
-          {canWrite && job.error_code === "INVALID_INPUT" ? <Button className="button ghost" onClick={() => void Taro.pageScrollTo({ selector: "#materials", duration: 200 }).catch((reason) => setError(message(reason, "无法定位素材")))}>更换素材</Button> : null}
+          {canWrite && job.error_code === "INVALID_INPUT" ? <Button className="button ghost" onClick={() => showSection("materials")}>更换素材</Button> : null}
           {canWrite && canRetryJob(job) ? <Button className="button ghost" disabled={jobBusy} loading={jobBusy} onClick={() => void changeJob("retry")}>重试任务</Button> : null}
           {reconstructionId ? <>
-            <Button className="button" onClick={() => void copyViewer(reconstructionId)}>复制查看链接</Button>
+            <Button className="button" onClick={() => void copyViewer(reconstructionId)}>复制浏览器查看链接</Button>
             <Text className="muted">在手机浏览器中粘贴链接，登录后即可查看。</Text>
-            <Button className="button ghost" onClick={() => void Taro.navigateTo({ url: `/pages/viewer/index?id=${encodeURIComponent(reconstructionId)}` })}>场景查看选项</Button>
           </> : null}
         </View> : <Text className="muted">暂无任务</Text>}
       </View> : null}
-      {job ? <View className="card">
+      {job && section === "tasks" && !showManagement ? <View className="card">
         <Button className="button ghost" aria-expanded={showLogs} onClick={() => setShowLogs((value) => !value)}>
           {showLogs ? "收起运行日志" : `查看运行日志（${logs.length}）`}
         </Button>
@@ -615,10 +642,12 @@ export default function ProjectPage() {
           </View>
           <Button className="button ghost" disabled={!logs.length} onClick={() => void loadEarlierLogs()}>加载更早</Button>
           {logs.length === 0 ? <Text className="muted">暂无运行日志。</Text> : null}
-          {logs.map((row) => <Text className="log" key={row.id}>{row.created_at} · {row.level} · {row.message}</Text>)}
+          <ScrollView scrollY className="log-panel">
+            {logs.map((row) => <Text className="log" key={row.id}>{row.created_at} · {row.level} · {row.message}</Text>)}
+          </ScrollView>
         </> : null}
       </View> : null}
-      {canWrite && reconstructionId ? <View className="card">
+      {canWrite && reconstructionId && section === "tasks" && !showManagement ? <View className="card">
         <Text className="label">分享</Text>
         <Text className="label">分享有效期</Text>
         {SHARE_PRESETS.map((preset) => <Text className={`row profile ${sharePreset === preset.value ? "active" : ""}`} key={preset.value} onClick={() => setSharePreset(preset.value)}>{sharePreset === preset.value ? "● " : "○ "}{preset.label}</Text>)}
@@ -627,7 +656,7 @@ export default function ProjectPage() {
           <Text className="muted">链接仅在创建时显示，请及时复制；复制后可粘贴到微信会话发送。</Text>
           <Button className="button ghost" onClick={copyShare}>复制新链接</Button>
           {shareToken && apiBaseUrl ? <Image className="qr" src={client.shareQrUrl(shareToken)} mode="aspectFit" /> : null}
-          {shareToken ? <Button className="button ghost" onClick={() => void Taro.navigateTo({ url: `/pages/viewer/index?share=${encodeURIComponent(shareToken)}` })}>在小程序内预览分享</Button> : null}
+          {shareToken ? <Button className="button ghost" onClick={() => void Taro.navigateTo({ url: `/pages/viewer/index?share=${encodeURIComponent(shareToken)}` })}>打开转发页面</Button> : null}
           <Text className="muted">可在“三维场景”页右上角菜单转发小程序链接；普通网页链接需接收方在浏览器打开。</Text>
         </View> : null}
         {shares.map((share) => <View className="row" key={share.id}>
@@ -635,12 +664,14 @@ export default function ProjectPage() {
           {!share.revoked_at ? <Button className="button ghost" onClick={() => void revokeShare(share.id)}>撤销</Button> : null}
         </View>)}
       </View> : null}
-      {canWrite ? <>
+      {canWrite && section !== "tasks" && !showManagement ? <>
         <View className="selection-spacer" />
         <View className="selection-bar">
           <View><Text className="label">已选 {selected.length} 个 · {(selectionBytes(selected) / 1024 ** 2).toFixed(1)} MiB</Text>
             <Text className="muted">{RECONSTRUCTION_PROFILES[profile].title}{worker?.online === false ? " · 离线排队" : ""}</Text></View>
-          <Button className="button" disabled={creating || !selected.length || uploading} loading={creating} onClick={createJob}>{creating ? "正在创建…" : "开始重建"}</Button>
+          <Button className="button" disabled={creating || !selected.length || uploading} loading={creating} onClick={section === "materials" ? () => showSection("build") : createJob}>
+            {section === "materials" ? "选择路线" : creating ? "正在创建…" : "开始重建"}
+          </Button>
         </View>
       </> : null}
     </Screen>
