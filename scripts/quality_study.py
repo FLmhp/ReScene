@@ -79,6 +79,11 @@ def study_input(dataset: Path, scene: str, work: Path) -> Path:
             check=True,
             timeout=900,
         )
+    images = source / "dslr_images_undistorted"
+    if not images.is_dir():
+        (source / "images" / images.name).rename(images)
+    if not (source / "dslr_calibration_undistorted").is_dir() or not (source / "dslr_scan_eval").is_dir():
+        raise ValueError(f"Incomplete official ETH3D archives for {scene}")
     (source / ".complete").touch()
     return source
 
