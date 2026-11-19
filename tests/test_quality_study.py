@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -8,7 +9,7 @@ from rescene.backends import colmap_command, vggt_command
 from rescene.colmap_runner import _check_shared_images
 from rescene.config import profile_config
 from rescene.preprocess import preprocess_input
-from rescene.vggt_runner import coverage_queries, grid_sample
+from rescene.vggt_runner import _coverage_rank, coverage_queries, grid_sample
 from scripts.quality_study import median_speed_pass, pair_quality
 
 
@@ -31,6 +32,14 @@ def test_balanced_queries_cover_distinct_clusters_with_fixed_first_frame() -> No
     distances[:7, :7] = distances[7:, 7:] = 0.1
     assert coverage_queries(distances, 2) == [0, 7]
     assert coverage_queries(distances, 4) == [0, 7, 1, 2]
+
+
+def test_dino_adapter_converts_autocast_tensor_before_numpy() -> None:
+    tensor = Mock()
+    cast = tensor.detach.return_value.float
+    cast.return_value.cpu.return_value.numpy.return_value = np.eye(4)
+    assert _coverage_rank(tensor, 2, 2) == [0, 1]
+    cast.assert_called_once_with()
 
 
 def test_frozen_dslr_inputs_keep_quality_warnings_and_split(tmp_path: Path) -> None:

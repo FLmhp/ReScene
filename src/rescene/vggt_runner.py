@@ -63,6 +63,11 @@ def coverage_queries(distances, count: int) -> list[int]:
     return selected
 
 
+def _coverage_rank(distances, count: int, _start: int) -> list[int]:
+    # DINO runs under autocast and NumPy cannot consume bfloat16 tensors.
+    return coverage_queries(distances.detach().float().cpu().numpy(), count)
+
+
 def _grid_hooks(demo, seed: int, statistics: dict):
     state = {}
     load = demo.load_and_preprocess_images_square
@@ -286,7 +291,7 @@ def main() -> None:
                     patch.object(
                         vggsfm_utils,
                         "farthest_point_sampling",
-                        lambda distances, count, _start: coverage_queries(distances.detach().cpu().numpy(), count),
+                        _coverage_rank,
                     )
                 )
             if args.diagnostics and args.use_ba:

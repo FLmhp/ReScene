@@ -308,6 +308,7 @@ def prepare() -> argparse.Namespace:
     parser.add_argument("--deadline", type=int, required=True)
     parser.add_argument("--baselines-only", action="store_true")
     parser.add_argument("--recovery-cold-only", action="store_true")
+    parser.add_argument("--rescreen", choices=PROFILES)
     return parser.parse_args()
 
 
@@ -637,11 +638,13 @@ class Study:
             raise RuntimeError("Initial 100-step smoke failed")
         shutil.rmtree(run)
 
-    def screen(self, baselines: dict) -> dict:
-        screened = {}
-        for profile in PROFILES:
+    def screen(self, baselines: dict, rescreen: str | None = None) -> dict:
+        summary = self.archive / "screening-summary.json"
+        screened = read_json(summary) if rescreen else {}
+        for profile in (rescreen,) if rescreen else PROFILES:
+            quality_label = "quality-rescreen" if rescreen else "quality"
             quality = {
-                scene: self.trial(scene, profile, "quality", CANDIDATES[profile], keep_reuse=True)
+                scene: self.trial(scene, profile, quality_label, CANDIDATES[profile], keep_reuse=True)
                 for scene in baselines
             }
             checks = {
@@ -675,7 +678,7 @@ class Study:
                 "recovery_probes": sorted(recovery),
                 "variants": variants,
             }
-            atomic_json(self.archive / "screening-summary.json", screened)
+            atomic_json(summary, screened)
         return screened
 
     def confirm(self, baselines: dict, screened: dict) -> dict:
@@ -800,7 +803,15 @@ def main() -> None:
     study.smoke()
     baseline = study.baselines()
     atomic_json(study.archive / "baseline-summary.json", baseline)
-    if args.recovery_cold_only:
+    if args.rescreen:
+        from rescene.pipeline import _environment
+
+        study.lock = study.archive / f"{args.rescreen}-rescreen-environment-lock.json"
+        atomic_json(study.lock, _environment(supervisor.SOURCE))
+        screened = study.screen(baseline, args.rescreen)
+        study.confirm(baseline, screened)
+        study.recovery_cold(screened)
+    elif args.recovery_cold_only:
         study.recovery_cold(read_json(study.archive / "screening-summary.json"))
     elif not args.baselines_only:
         screened = study.screen(baseline)
