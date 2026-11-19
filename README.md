@@ -32,7 +32,7 @@ ReScene 把团队工作台、GPU 重建引擎和 SPZ 查看器放在同一个仓
 
 截图来自本地验收，不代表生产环境的实时状态。其他客户端与 Viewer 截图见 [验收证据](artifacts/README.md)。
 
-0.4.0 四端改版与安装验证见 [验收报告](artifacts/test-runs/2026-11-18-ui-v040/report.md)。当前 5090 已关机，任务在 Worker 上线后执行。
+0.4.1 候选版的 Windows 结果页采用独立下载列表，SHA-256 和分享撤销记录按需展开。 [Windows 真机截图](artifacts/test-runs/2026-11-20-release-041/screenshots/windows-native-result-layout.png)
 
 </details>
 
@@ -40,14 +40,16 @@ ReScene 把团队工作台、GPU 重建引擎和 SPZ 查看器放在同一个仓
 
 直接使用 [在线工作台](https://app.rescene.xyz)，通过邮箱注册或登录，创建项目、上传素材，再选择路线开始重建。具体操作见 [用户手册](docs/用户手册.md)。Worker 离线时任务会排队，网页可用不等于 GPU 可执行任务。
 
-| 入口 | 当前交付状态 |
-|---|---|
-| Web / API | 0.4.0 双主题工作台与素材预览接口，数据库迁移版本沿用 0006 |
-| Windows / Linux / macOS | 安装包与 SHA-256 以 [0.4.0 Release](https://github.com/FLmhp/ReScene/releases/tag/v0.4.0) 为准 |
-| Android | 签名 APK，版本码 5；已在 SLT_API35 完成安装和主题验证 |
-| 微信小程序 | 真实 AppID 的 0.4.0 双主题构建，支持复制场景链接到浏览器 |
+最新正式下载版为 **0.4.0**。仓库版本为 **0.4.1**，处于发布候选阶段。 [0.4.0 Release](https://github.com/FLmhp/ReScene/releases/tag/v0.4.0)
 
-此前小程序与 Android 核心流程已由用户确认真机通过。0.4.0 的实际构建、上传、上线与待验收状态见 [本轮报告](artifacts/test-runs/2026-11-18-ui-v040/report.md)。
+| 入口 | 0.4.1 候选验收 |
+|---|---|
+| Web / API | 通过宽窄屏、上传断点续传、Viewer 签名链接恢复和数据库 `0006` 恢复演练 |
+| Windows | 已实测从 0.4.0 覆盖安装、结果页布局、SPZ 渲染、五种产物下载和分享撤销 |
+| Android | 签名 APK 版本码 6。真机已验证图片和视频上传，图片任务完成后可下载和分享 |
+| 微信小程序 | 已在真实 AppID 验证登录、图片上传、排队和浏览器分享。新版使用系统主题选择器和分区导航 |
+
+生产 API、Web 和 Worker 继续使用现有版本。切换前需补齐最新版微信体验版复测和 Android 视频任务重启恢复的真机记录。 [0.4.1 验收报告](artifacts/test-runs/2026-11-20-release-041/report.md)
 
 > [!IMPORTANT]
 > 仓库和 GitHub Release 为私有，仅授权协作者可访问。桌面安装包未签名，macOS 未公证；构建成功不等于各平台安装验收完成。限制与已发布文件以 [0.4.0 发布说明](docs/0.4.0发布说明.md) 为准。
@@ -172,7 +174,9 @@ python -m rescene report --run-id my-scene
 
 引擎环境与 Worker 操作见 [部署与运维](docs/单5090系统部署与运维.md)；质量结论见 [5090 v3 优化报告](docs/RESCENE_5090_DELIVERY_OPTIMIZATION.md)。历史标定存在冻结帧、渲染分割和坐标变换口径问题，不能直接作为新候选的晋级基线。
 
-5090 下次实验使用 `/root/autodl-fs` 归档数据，逐场景复制到实例本地数据盘运行。已在本机准备 ETH3D 的四个场景，完成归档校验和 16 组冻结输入的 CPU 预检。Worker 同步、真实训练和质量对照待开机执行。[5090 大数据集训练运行手册](docs/5090大数据集训练运行手册.md) · [关机期验收](artifacts/test-runs/2026-11-18-closed-gpu/report.md)
+5090 已完成图片与视频各三条路线的交付回归。六条任务的 checkpoint、PLY 和 SPZ 均可重载，隔离断联测试验证了 OSS 阶段恢复。ETH3D 四个 DSLR 场景的 FAST 分网格采点都达到 8/8 张验证图稀疏支持，该策略继续通过实验规格启用。BALANCED 候选跳过参数相同的 BA 重试，QUALITY 仍使用 5 次 PatchMatch。 [0.4.1 GPU 验收](artifacts/test-runs/2026-11-20-release-041/report.md#5090-路线) · [ETH3D 独立场景实验](artifacts/test-runs/2026-11-19-5090-independent-optimization/report.md)
+
+后续 5090 实验将归档保存在 `/root/autodl-fs`，每次在实例本地数据盘展开一个场景，按相同冻结输入比较端到端耗时、质量和完整进程树显存。 [5090 大数据集训练运行手册](docs/5090大数据集训练运行手册.md)
 
 ### 后续 A100 优化
 
@@ -188,6 +192,7 @@ python -m rescene report --run-id my-scene
 | 理解 API、数据模型和各端实现 | [项目说明](docs/项目说明.md) |
 | 修改代码、提交 PR、验证或发布 | [开发与发布指南](CONTRIBUTING.md) |
 | 下载并核对当前安装包 | [0.4.0 发布说明](docs/0.4.0发布说明.md) |
+| 了解候选版与上线门槛 | [0.4.1 验收报告](artifacts/test-runs/2026-11-20-release-041/report.md) |
 | 部署、升级、备份或回滚 | [单 5090 系统部署与运维](docs/单5090系统部署与运维.md) |
 | 查看截图、样例指标和发布哈希 | [验收与发布证据](artifacts/README.md) |
 | 复核算法实验 | [5090 v3](docs/RESCENE_5090_DELIVERY_OPTIMIZATION.md) · [质量标定](docs/5090_QUALITY_CALIBRATION.md) · [A100 历史报告](docs/A100_OPTIMIZATION_REPORT.md) |
