@@ -310,7 +310,15 @@ def prepare() -> argparse.Namespace:
     parser.add_argument("--recovery-cold-only", action="store_true")
     parser.add_argument("--rescreen", choices=PROFILES)
     parser.add_argument("--seeded-quality-from", type=Path, help="Prior archive containing the DSLR references")
-    return parser.parse_args()
+    parser.add_argument("--cache-training-from", type=Path, help="Compare decoded-image caching on prior DSLR bundles")
+    parser.add_argument("--repeat-training-cache", action="store_true", help="Reverse run order on failed cache pairs")
+    parser.add_argument(
+        "--training-confirm-from", type=Path, help="Prior DSLR archive for the focused training follow-up"
+    )
+    args = parser.parse_args()
+    if args.repeat_training_cache and not args.cache_training_from:
+        parser.error("--repeat-training-cache requires --cache-training-from")
+    return args
 
 
 class Study:
@@ -484,17 +492,24 @@ class Study:
             raise RuntimeError(resource["abort_reason"])
         return result
 
-    def stage_probe(self, scene: str, profile: str, source: dict, overrides: dict) -> dict:
+    def stage_probe(
+        self, scene: str, profile: str, source: dict, overrides: dict, *, cache_training=False, repeat=False
+    ) -> dict:
         """Measure both settings from the same verified sparse bundle."""
         if not source.get("reuse_bundle"):
             return {"valid": False, "reason": "fixed_sparse_unavailable"}
-        stage = "dense" if profile == "quality" else "training"
-        evidence = self.archive / f"{scene}-{profile}-{stage}-probe"
+        stage = "dense" if profile == "quality" and not cache_training else "training"
+        suffix = "cache" if cache_training else "probe"
+        if repeat:
+            suffix += "-repeat"
+        evidence = self.archive / f"{scene}-{profile}-{stage}-{suffix}"
         evidence.mkdir(exist_ok=True)
         if (evidence / "result.json").is_file():
             return read_json(evidence / "result.json")
         results = {}
-        for label, changes in (("control", overrides), ("candidate", {**overrides, **SPEED[profile]})):
+        change = {"gsplat_cache_images": True} if cache_training else SPEED[profile]
+        settings = (("control", overrides), ("candidate", {**overrides, **change}))
+        for label, changes in reversed(settings) if repeat else settings:
             run = self.work / f"{scene}-{profile}-{stage}-{label}"
             if self.deadline - time.time() < (2000 if stage == "dense" else 950):
                 return {"valid": False, "reason": "insufficient_time"}
@@ -543,6 +558,9 @@ class Study:
                 metrics = read_json(run / "metrics.json")
                 for path in (run / "logs").glob("*.log"):
                     shutil.copy2(path, evidence / f"{label}-{path.name}")
+                if cache_training:
+                    for name in ("config.json", "reuse_provenance.json", "photometric_split.json"):
+                        shutil.copy2(run / name, evidence / f"{label}-{name}")
                 if stage == "dense":
                     directory = self.directory[scene]
                     manifest = read_json(run / "photometric_selection.json")
@@ -605,6 +623,70 @@ class Study:
         atomic_json(evidence / "result.json", result)
         supervisor.emit(f"STAGE_PROBE {scene} {profile} {json.dumps(result)}")
         return result
+
+    def cache_training(self, prior: Path, *, repeat=False) -> None:
+        """Test caching with identical inputs, training steps, and sparse initialization."""
+        initial = read_json(self.archive / "training-cache-summary.json") if repeat else {}
+        summary = self.archive / ("training-cache-repeat.json" if repeat else "training-cache-summary.json")
+        results = {}
+        for scene in ("office", "courtyard"):
+            results[scene] = {}
+            for profile, label in (("fast", "quality"), ("quality", "baseline")):
+                if repeat and initial[scene][profile].get("quality") is not False:
+                    continue
+                source = read_json(prior / f"{scene}-{profile}-{label}-s42" / "study-result.json")
+                manifest = _verify_reuse_bundle(Path(source["reuse_bundle"]), source["reuse_sha256"])
+                frames = sum(name.startswith("images/") for name in manifest["files"])
+                results[scene][profile] = self.stage_probe(
+                    scene, profile, source, {"max_frames": frames}, cache_training=True, repeat=repeat
+                )
+            atomic_json(summary, results)
+
+    def confirm_training(self, prior: Path) -> None:
+        """Recheck cache wins from raw images and the successful BALANCED retry budget."""
+        cache = read_json(self.archive / "training-cache-summary.json")
+        results = {}
+        for scene in ("office", "courtyard"):
+            shutil.copytree(prior / f"{scene}-reference", self.archive / f"{scene}-reference", dirs_exist_ok=True)
+            self.setup(scene)
+            result = results[scene] = {}
+            if cache[scene]["fast"].get("quality") and cache[scene]["fast"]["ratio"] <= 0.85:
+                control, candidate = (
+                    self.trial(scene, "fast", f"cache-{label}", {**CANDIDATES["fast"], **change})
+                    for label, change in (("off", {}), ("on", {"gsplat_cache_images": True}))
+                )
+                result["fast"] = {"control": control, "candidate": candidate}
+                result["fast"]["quality_failures"] = pair_quality(control, candidate, "fast", strict=True)
+                atomic_json(self.archive / "training-confirm-summary.json", results)
+
+            quality_probe = cache[scene]["quality"]
+            prior_quality = read_json(prior / "seeded-serial" / f"{scene}-quality-baseline-s42" / "study-result.json")
+            if (
+                quality_probe.get("quality")
+                and quality_probe["ratio"] <= 0.80
+                and quality_probe["seconds"]["control"] - quality_probe["seconds"]["candidate"]
+                >= 0.10 * prior_quality["total_seconds"]
+            ):
+                control, candidate = (
+                    self.trial(scene, "quality", f"cache-{label}", {"colmap_sparse_threads": 1, **change})
+                    for label, change in (("off", {}), ("on", {"gsplat_cache_images": True}))
+                )
+                result["quality"] = {
+                    "control": control,
+                    "candidate": candidate,
+                    "quality_failures": pair_quality(control, candidate, "quality", strict=True),
+                }
+                atomic_json(self.archive / "training-confirm-summary.json", results)
+
+            budget = {"vggt_query_frames": 16, "vggt_max_query_points": 2048}
+            control = result["balanced"] = self.trial(scene, "balanced", "direct-ba", budget)
+            if control.get("valid") and len(control["supported"]) == 8:
+                candidate = self.trial(scene, "balanced", "direct-ba-cache", {**budget, "gsplat_cache_images": True})
+                result["balanced_cache"] = {
+                    "candidate": candidate,
+                    "quality_failures": pair_quality(control, candidate, "balanced", strict=True),
+                }
+            atomic_json(self.archive / "training-confirm-summary.json", results)
 
     def baselines(self) -> dict:
         result = {}
@@ -874,6 +956,12 @@ def main() -> None:
     study = Study(args)
     if args.seeded_quality_from:
         study.seeded_quality(args.seeded_quality_from)
+        return
+    if args.cache_training_from:
+        study.cache_training(args.cache_training_from, repeat=args.repeat_training_cache)
+        return
+    if args.training_confirm_from:
+        study.confirm_training(args.training_confirm_from)
         return
     study.smoke()
     baseline = study.baselines()

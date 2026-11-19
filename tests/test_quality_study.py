@@ -10,7 +10,8 @@ from rescene.colmap_runner import _check_shared_images
 from rescene.config import profile_config
 from rescene.preprocess import preprocess_input
 from rescene.vggt_runner import _coverage_rank, coverage_queries, grid_sample
-from scripts.quality_study import median_speed_pass, pair_quality
+from scripts import quality_study
+from scripts.quality_study import Study, median_speed_pass, pair_quality
 
 
 def test_fast_grid_sampling_reserves_tiles_and_excludes_padding() -> None:
@@ -103,3 +104,23 @@ def test_quality_gate_uses_common_views_and_rejects_dense_regression() -> None:
     assert pair_quality(base, {**base, "point_fscore": 0.27}, "quality", strict=True) == ["dense_f1"]
     pairs = [({"total_seconds": 100}, {"total_seconds": value}) for value in (82, 84, 110)]
     assert median_speed_pass(pairs, "fast")
+
+
+def test_cache_study_uses_verified_bundle_and_keeps_route_steps(tmp_path: Path, monkeypatch) -> None:
+    study = Study.__new__(Study)
+    study.archive = tmp_path
+    source = {"reuse_bundle": str(tmp_path / "bundle"), "reuse_sha256": "hash"}
+    monkeypatch.setattr(quality_study, "read_json", lambda path: source)
+    images = {f"images/{index}.jpg": "" for index in range(26)}
+    verify = Mock(return_value={"files": {**images, "sparse/images.bin": ""}})
+    monkeypatch.setattr(quality_study, "_verify_reuse_bundle", verify)
+    study.stage_probe = Mock(return_value={"quality": True, "ratio": 0.8})
+
+    study.cache_training(tmp_path)
+
+    assert verify.call_count == 4
+    verify.assert_called_with(tmp_path / "bundle", "hash")
+    assert [call.args[1] for call in study.stage_probe.call_args_list] == ["fast", "quality", "fast", "quality"]
+    for call in study.stage_probe.call_args_list:
+        assert call.args[2:] == (source, {"max_frames": 26})
+        assert call.kwargs == {"cache_training": True, "repeat": False}
