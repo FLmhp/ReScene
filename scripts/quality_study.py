@@ -382,6 +382,18 @@ class Study:
             result["vggt_phases"] = read_json(run / "vggt-phases.json")
         if (run / "colmap-phases.json").is_file():
             result["colmap_phases"] = read_json(run / "colmap-phases.json")
+        model = run / "sparse"
+        model = model / "0" if (model / "0").is_dir() else model
+        selection = run / "photometric_selection.json"
+        if selection.is_file() and all(
+            (model / name).is_file() for name in ("cameras.bin", "images.bin", "points3D.bin")
+        ):
+            sources = read_json(selection)["image_to_source_id"]
+            result["sparse_points_by_source"] = {
+                sources[image.name]: image.num_points3D
+                for image in _read_model(model).images.values()
+                if image.name in sources
+            }
         if result["valid"]:
             directory = self.directory[scene]
             try:
@@ -399,8 +411,7 @@ class Study:
         dest.mkdir(exist_ok=True)
         if profile == "balanced" and result["valid"]:
             sparse = dest / "sparse"
-            model = run / "sparse"
-            shutil.copytree(model / "0" if (model / "0").is_dir() else model, sparse)
+            shutil.copytree(model, sparse)
             result["sparse"] = str(sparse)
             result["sparse_hashes"] = {path.name: sha256_file(path) for path in sparse.iterdir() if path.is_file()}
         if (run / "dense" / "fused.ply").is_file():

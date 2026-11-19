@@ -129,7 +129,7 @@ def estimate(dataset: Path, scene: str, reference_path: Path, work: Path, archiv
         raise RuntimeError("Calibrated rig did not register a model")
     model = max(maps.values(), key=lambda row: row.num_reg_images())
     pairs = [(image, *paths[image.name]) for image in model.images.values() if image.has_pose]
-    supported = {source_id for image, _, source_id in pairs if image.num_points3D() > 0} & held_out
+    supported = {source_id for image, _, source_id in pairs if image.num_points3D > 0} & held_out
     centers = [np.array([pair[index].projection_center() for pair in pairs]) for index in (0, 1)]
     rotations = [np.array([pair[index].cam_from_world().rotation.matrix() for pair in pairs]) for index in (0, 1)]
     ate, rotation_error, _ = pose_errors(*centers, *rotations)
@@ -140,6 +140,7 @@ def estimate(dataset: Path, scene: str, reference_path: Path, work: Path, archiv
         "groups": groups,
         "held_out": sorted(held_out),
         "supported": sorted(supported),
+        "sparse_points_by_source": {source_id: image.num_points3D for image, _, source_id in pairs},
         "relative_calibration": offsets,
         "pose_ate_m": ate,
         "pose_rotation_error_deg": rotation_error,
