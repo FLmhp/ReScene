@@ -112,12 +112,15 @@ def validation_registration(
     }
 
 
-def allows_missing_validation(run_dir: Path) -> bool:
-    """Allow one missing view only for an explicitly marked experiment."""
-    metadata = run_dir / "benchmark.json"
-    return (
-        metadata.is_file() and json.loads(metadata.read_text(encoding="utf-8")).get("allow_missing_validation") is True
-    )
+def validation_coverage_allowed(run_dir: Path, selected: int, missing: int) -> bool:
+    """Apply the recorded coverage policy without changing the holdout membership."""
+    if not missing:
+        return True
+    path = run_dir / "benchmark.json"
+    metadata = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    if metadata.get("source") == "worker":
+        return (selected - missing) * 2 >= selected
+    return selected == 8 and missing == 1 and metadata.get("allow_missing_validation") is True
 
 
 def _photometric_metrics(run_dir: Path) -> dict[str, object]:
@@ -152,7 +155,7 @@ def _photometric_metrics(run_dir: Path) -> dict[str, object]:
         not val <= selected_val
         or not train <= selected_train
         or missing != ids(split.get("missing_validation_source_ids", []), "missing validation")
-        or (missing and (len(selected_val) != 8 or len(missing) != 1 or not allows_missing_validation(run_dir)))
+        or not validation_coverage_allowed(run_dir, len(selected_val), len(missing))
     ):
         raise ValueError("Registered split does not match selected validation or training sources")
     if not train or not val or train & val:

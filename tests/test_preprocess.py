@@ -274,6 +274,27 @@ def test_registered_photometric_split_rejects_mismatches() -> None:
         registered_split(manifest, ["000000.jpg", "000001.jpg"], Path("."))
 
 
+def test_worker_split_accepts_documented_missing_views_without_leakage(tmp_path: Path) -> None:
+    from rescene.gsplat_runner import registered_split
+
+    manifest = {
+        "frames": [
+            {"selected": True, "validation": i > 0, "file": str(tmp_path / "images" / f"{i}.jpg"), "source_id": str(i)}
+            for i in range(5)
+        ]
+    }
+    registered = ["0.jpg", "1.jpg", "4.jpg"]
+    with pytest.raises(ValueError, match="missing"):
+        registered_split(manifest, registered, tmp_path)
+    (tmp_path / "benchmark.json").write_text('{"source": "worker"}', encoding="utf-8")
+    split = registered_split(manifest, registered, tmp_path)
+    assert split["train_source_ids"] == ["0"]
+    assert split["validation_source_ids"] == ["1", "4"]
+    assert split["missing_validation_source_ids"] == ["2", "3"]
+    with pytest.raises(ValueError, match="missing"):
+        registered_split(manifest, registered[:2], tmp_path)
+
+
 def test_frozen_validation_survives_duplicate_filtering(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()

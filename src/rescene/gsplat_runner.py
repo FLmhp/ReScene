@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-from rescene.metrics import allows_missing_validation
+from rescene.metrics import validation_coverage_allowed
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -18,7 +18,7 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
 
 
-def registered_split(manifest: dict, image_names: list[str], scene: Path, *, allow_missing: bool = False) -> dict:
+def registered_split(manifest: dict, image_names: list[str], scene: Path) -> dict:
     """Map registered COLMAP images to the selected source-level split."""
     frames = [frame for frame in manifest["frames"] if frame["selected"]]
     mapping = {Path(frame["file"]).relative_to(scene / "images").as_posix(): frame for frame in frames}
@@ -33,7 +33,7 @@ def registered_split(manifest: dict, image_names: list[str], scene: Path, *, all
     val = [by_image[name] for name in image_names if mapping[name]["validation"]]
     expected_val = {frame["source_id"] for frame in frames if frame["validation"]}
     missing = expected_val - set(val)
-    if missing and (not allow_missing or len(expected_val) != 8 or len(missing) != 1):
+    if not validation_coverage_allowed(scene, len(expected_val), len(missing)):
         raise ValueError("Selected validation sources are missing from registered images")
     if not train or not val or set(train) & set(val):
         raise ValueError("Photometric split requires disjoint, nonempty registered train and validation sets")
@@ -116,9 +116,7 @@ def configure_trainer(
             selected_ids = selection["train_source_ids"] + selection["validation_source_ids"]
             if len(set(selected_ids)) != len(selected_ids):
                 raise ValueError("Photometric selection has duplicate or leaking source IDs")
-            specification = registered_split(
-                manifest, list(parser.image_names), scene, allow_missing=allows_missing_validation(scene)
-            )
+            specification = registered_split(manifest, list(parser.image_names), scene)
             split_path = scene / "photometric_split.json"
             if split_path.exists():
                 previous = json.loads(split_path.read_text(encoding="utf-8"))

@@ -183,6 +183,22 @@ def test_photometric_metrics_reject_omitted_frozen_validation(tmp_path: Path) ->
         _photometric_metrics(tmp_path)
 
 
+def test_worker_metrics_score_only_the_remaining_holdout(tmp_path: Path) -> None:
+    _photometric_fixture(tmp_path)
+    selection_path = tmp_path / "photometric_selection.json"
+    split_path = tmp_path / "photometric_split.json"
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    split = json.loads(split_path.read_text(encoding="utf-8"))
+    selection["validation_source_ids"].append("unregistered.jpg")
+    split["missing_validation_source_ids"] = ["unregistered.jpg"]
+    selection_path.write_text(json.dumps(selection), encoding="utf-8")
+    split_path.write_text(json.dumps(split), encoding="utf-8")
+    (tmp_path / "benchmark.json").write_text('{"source": "worker"}', encoding="utf-8")
+    metrics = _photometric_metrics(tmp_path)
+    assert metrics["missing_validation_source_ids"] == ["unregistered.jpg"]
+    assert metrics["psnr"] == pytest.approx(20.1)
+
+
 def test_photometric_metrics_allow_one_documented_missing_view_for_screening(tmp_path: Path) -> None:
     _photometric_fixture(tmp_path)
     split_path = tmp_path / "photometric_split.json"
