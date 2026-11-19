@@ -307,6 +307,7 @@ def prepare() -> argparse.Namespace:
     parser.add_argument("--evaluator", type=Path, required=True)
     parser.add_argument("--deadline", type=int, required=True)
     parser.add_argument("--baselines-only", action="store_true")
+    parser.add_argument("--recovery-cold-only", action="store_true")
     return parser.parse_args()
 
 
@@ -739,6 +740,26 @@ class Study:
             atomic_json(self.archive / "confirmation-summary.json", result)
         return result
 
+    def recovery_cold(self, screened: dict) -> None:
+        """Cold-start the faster recovered geometry without treating it as a production pair."""
+        results = {}
+        for profile, screen in screened.items():
+            for scene in screen["recovery_probes"]:
+                if not screen["stage_probes"][scene]["valid"]:
+                    continue
+                control = screen["quality"][scene]
+                candidate = self.trial(scene, profile, "recovery-speed", {**CANDIDATES[profile], **SPEED[profile]})
+                quality = pair_quality(control, candidate, profile, strict=True)
+                results[f"{scene}-{profile}"] = {
+                    "control": control,
+                    "candidate": candidate,
+                    "quality_failures": quality,
+                    "meets_speed_target": not quality and speed_pass(control, candidate, profile),
+                    "production_baseline": "unavailable",
+                }
+                atomic_json(self.archive / "recovery-cold-summary.json", results)
+        atomic_json(self.archive / "recovery-cold-summary.json", results)
+
 
 def speed_ratios(base: dict, candidate: dict, profile: str) -> tuple[float, float]:
     runtime = candidate["total_seconds"] / base["total_seconds"]
@@ -779,9 +800,12 @@ def main() -> None:
     study.smoke()
     baseline = study.baselines()
     atomic_json(study.archive / "baseline-summary.json", baseline)
-    if not args.baselines_only:
+    if args.recovery_cold_only:
+        study.recovery_cold(read_json(study.archive / "screening-summary.json"))
+    elif not args.baselines_only:
         screened = study.screen(baseline)
         study.confirm(baseline, screened)
+        study.recovery_cold(screened)
 
 
 if __name__ == "__main__":
