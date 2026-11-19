@@ -81,7 +81,7 @@ def verify_project_sidebar(browser: Browser, desktop_url: str, output: Path) -> 
 
 def verify_viewer(browser: Browser, web_url: str, output: Path, scene: Path) -> None:
     """Render a real SPZ after a mocked object URL expires."""
-    page = browser.new_page(viewport={"width": 1100, "height": 790}, color_scheme="dark")
+    page = browser.new_page(viewport={"width": 1280, "height": 790}, color_scheme="dark")
     project = {"id": "p1", "name": "结果验证", "owner_id": "u1", "effective_role": "owner"}
     job = {
         "id": "j1",
@@ -96,6 +96,7 @@ def verify_viewer(browser: Browser, web_url: str, output: Path, scene: Path) -> 
         "reconstruction_id": "r1",
     }
     expired_requests = 0
+    digest = "c0ffee12" * 8
 
     def api(route):
         path = urlsplit(route.request.url).path
@@ -104,7 +105,10 @@ def verify_viewer(browser: Browser, web_url: str, output: Path, scene: Path) -> 
             route.fulfill(
                 json={
                     "reconstruction_id": "r1",
-                    "artifacts": [{"kind": "spz", "url": f"https://preview.test/{key}.spz"}],
+                    "artifacts": [
+                        {"kind": kind, "url": f"https://preview.test/{key}.{kind}", "size": size, "sha256": digest}
+                        for kind, size in (("spz", 2_000_000), ("ply", 200_000_000), ("metrics", 1100), ("report", 500))
+                    ],
                 }
             )
             return
@@ -144,6 +148,17 @@ def verify_viewer(browser: Browser, web_url: str, output: Path, scene: Path) -> 
     )
     page.goto(web_url, wait_until="domcontentloaded")
     page.get_by_role("navigation", name="项目工作区").get_by_role("button", name="结果").click()
+    downloads = page.get_by_role("region", name="产物下载")
+    expect(downloads.get_by_role("link", name="METRICS 下载")).to_be_visible()
+    expect(downloads.get_by_text("1.1 KiB", exact=True)).to_be_visible()
+    expect(downloads.get_by_text(digest).first).to_be_hidden()
+    assert downloads.locator(".artifact-list li").evaluate_all("""items => items.every((row, index) => {
+      const box = row.getBoundingClientRect();
+      const button = row.querySelector('a').getBoundingClientRect();
+      const previous = items[index - 1]?.getBoundingClientRect();
+      return button.top >= box.top && button.bottom <= box.bottom && (!previous || previous.bottom < box.top);
+    })""")
+    page.locator(".result-panel").screenshot(path=str(output / "desktop-result-layout.png"))
     open_scene = page.get_by_role("button", name="打开场景", exact=True)
     open_scene.click()
     dialog = page.get_by_role("dialog", name="场景查看器")
@@ -155,6 +170,10 @@ def verify_viewer(browser: Browser, web_url: str, output: Path, scene: Path) -> 
     page.screenshot(path=str(output / "web-viewer-recovered.png"))
     page.keyboard.press("Escape")
     expect(dialog).to_have_count(0)
+    page.set_viewport_size({"width": 390, "height": 790})
+    downloads.get_by_text("校验值（SHA-256）", exact=True).click()
+    expect(downloads.get_by_text(digest).first).to_be_visible()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     page.close()
 
 

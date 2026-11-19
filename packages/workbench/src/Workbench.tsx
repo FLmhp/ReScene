@@ -745,7 +745,6 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                     </div>
                     <PageControls label="素材" page={assetPages.length} next={detail.nextAssetCursor} busy={detailLoading} onChange={(cursor) => changePage("assets", cursor)} />
                   </section>
-                  <div className="workspace-side">
                   <section className="panel route-panel">
                     <div className="panel-title"><h2>重建路线</h2></div>
                     <div className="profiles" role="group" aria-label="重建路线">
@@ -765,7 +764,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                     </>}
                   </section>
                   <section className="panel status-panel">
-                    <div className="panel-title"><h2>重建任务</h2></div>
+                    <div className="panel-title"><h2>{pane === "results" ? "重建结果" : "重建任务"}</h2></div>
                     {detail.jobs.length > 0 && (
                       <label>任务记录<select value={latest?.id ?? ""} onChange={(event) => selectJob(event.target.value)}>{(latest && !detail.jobs.some((job) => job.id === latest.id) ? [latest, ...detail.jobs] : detail.jobs).map((job) => <option key={job.id} value={job.id}>{RECONSTRUCTION_PROFILES[job.profile].title} · {JOB_STATUS_LABELS[job.status]} · {job.id.slice(0, 8)}</option>)}</select></label>
                     )}
@@ -803,24 +802,44 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                         {canWrite && ACTIVE[latest.status] && <button className="task-action" disabled={latest.cancel_requested} onClick={() => runAction(async () => { setLiveJob(await client.cancelJob(latest.id)); await refresh(); })}>取消任务</button>}
                         {canWrite && latest.error_code === "INVALID_INPUT" && <button className="task-action" onClick={() => setPane("materials")}>更换素材</button>}
                         {canWrite && canRetryJob(latest) && <button className="task-action" onClick={() => runAction(async () => { setLiveJob(await client.retryJob(latest.id)); await refresh(); })}>重试任务</button>}
+                        {reconstructionId && <button className="task-action" onClick={() => setPane("results")}>查看结果</button>}
                         </div>
                         {reconstructionId ? (
                           <div className="result-actions result-panel">
-                            <button className="primary" onClick={() => runAction(() => openScene(reconstructionId))}>打开场景</button>
-                            {artifacts.some((item) => item.kind === "ply") ? <button onClick={() => runAction(() => openScene(reconstructionId, "ply"))}>打开 PLY 场景</button> : null}
-                            <button onClick={() => runAction(() => refreshArtifacts(reconstructionId))}>刷新产物链接</button>
-                            <button onClick={() => runAction(() => copy(`${webBaseUrl.replace(/\/$/, "")}/viewer?reconstruction=${encodeURIComponent(reconstructionId)}`))}>复制 Viewer 链接</button>
-                            {artifacts.map((item) => (
-                              <div key={item.kind}>
-                                <a href={item.url} target="_blank" rel="noreferrer" download>{item.kind.toUpperCase()} 下载</a>
-                                {item.size != null && <small> · {(item.size / 1024 / 1024).toFixed(1)} MB</small>}
-                                {item.sha256 && <small> · SHA256 {item.sha256}</small>}
-                                {item.kind === "ply" && <button onClick={() => runAction(() => openScene(reconstructionId, "ply"))}>查看 PLY</button>}
+                            <div className="scene-tools" role="group" aria-label="场景操作">
+                              <button className="primary" onClick={() => runAction(() => openScene(reconstructionId))}>打开场景</button>
+                              {artifacts.some((item) => item.kind === "ply") ? <button onClick={() => runAction(() => openScene(reconstructionId, "ply"))}>打开 PLY 场景</button> : null}
+                              <button onClick={() => runAction(() => copy(`${webBaseUrl.replace(/\/$/, "")}/viewer?reconstruction=${encodeURIComponent(reconstructionId)}`))}>复制 Viewer 链接</button>
+                            </div>
+                            <section className="result-downloads" aria-label="产物下载">
+                              <div className="download-heading">
+                                <h3>产物下载</h3>
+                                <button onClick={() => runAction(() => refreshArtifacts(reconstructionId))}>刷新产物链接</button>
                               </div>
-                            ))}
+                              <ul className="artifact-list">
+                                {artifacts.map((item) => (
+                                  <li key={item.kind}>
+                                    <div className="artifact-meta">
+                                      <strong>{item.kind.toUpperCase()}</strong>
+                                      {item.size != null && <small>{formatArtifactSize(item.size)}</small>}
+                                    </div>
+                                    <a href={item.url} aria-label={`${item.kind.toUpperCase()} 下载`} target="_blank" rel="noreferrer" download>下载</a>
+                                  </li>
+                                ))}
+                              </ul>
+                              {artifacts.some((item) => item.sha256) && <details>
+                                <summary>校验值（SHA-256）</summary>
+                                <dl className="artifact-digests">
+                                  {artifacts.filter((item) => item.sha256).map((item) => (
+                                    <div key={item.kind}><dt>{item.kind.toUpperCase()}</dt><dd><code>{item.sha256}</code></dd></div>
+                                  ))}
+                                </dl>
+                              </details>}
+                            </section>
                             {canWrite && (
-                              <details>
+                              <details className="result-sharing">
                                 <summary>管理分享</summary>
+                                <div className="share-tools">
                                 <label>到期<select value={sharePreset} onChange={(event) => setSharePreset(event.target.value as SharePreset)}>{SHARE_PRESETS.map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label>
                                 <button onClick={() => runAction(async () => {
                                   const preset = SHARE_PRESETS.find((item) => item.value === sharePreset);
@@ -831,22 +850,31 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                                   setCreatedShareToken(share.token);
                                   await loadShares(reconstructionId);
                                 })}>创建分享</button>
+                                </div>
                                 {createdLink && (
-                                  <p>
-                                    链接仅在创建时显示：<input aria-label="新分享链接" readOnly value={createdLink} />
-                                    <button onClick={() => runAction(() => copy(createdLink))}>复制分享链接</button>
-                                    {typeof navigator !== "undefined" && typeof navigator.share === "function" ? <button onClick={() => runAction(() => shareLink(createdLink))}>系统分享</button> : null}
-                                  </p>
+                                  <div className="created-share">
+                                    <label>新分享链接<input readOnly value={createdLink} /></label>
+                                    <div className="share-tools">
+                                      <button onClick={() => runAction(() => copy(createdLink))}>复制分享链接</button>
+                                      {typeof navigator !== "undefined" && typeof navigator.share === "function" ? <button onClick={() => runAction(() => shareLink(createdLink))}>系统分享</button> : null}
+                                    </div>
+                                  </div>
                                 )}
                                 {createdShareToken && <img className="qr" alt="分享二维码" width={160} height={160} src={client.shareQrUrl(createdShareToken)} />}
-                                {shares.map((share) => (
-                                  <div key={share.id}>
-                                    {share.id.slice(0, 8)} · {share.revoked_at ? "已撤销" : share.expires_at ? `到期 ${new Date(share.expires_at).toLocaleString()}` : "永不过期"}
-                                    {!share.revoked_at && (
+                                <ul className="artifact-list">
+                                  {shares.filter((share) => !share.revoked_at).map((share) => (
+                                  <li key={share.id}>
+                                    <div className="artifact-meta"><strong>{share.id.slice(0, 8)}</strong><small>{share.expires_at ? `到期 ${new Date(share.expires_at).toLocaleString()}` : "永不过期"}</small></div>
                                       <button onClick={() => { if (!window.confirm("撤销该分享链接？")) return; runAction(async () => { await client.revokeShare(share.id); setCreatedLink(""); setCreatedShareToken(""); await loadShares(reconstructionId); }); }}>撤销</button>
-                                    )}
-                                  </div>
-                                ))}
+                                  </li>
+                                  ))}
+                                </ul>
+                                {shares.some((share) => share.revoked_at) && <details className="revoked-shares">
+                                  <summary>已撤销的链接</summary>
+                                  <ul>{shares.map((share) => share.revoked_at ? (
+                                    <li key={share.id}>{share.id.slice(0, 8)} · {new Date(share.revoked_at).toLocaleString()}</li>
+                                  ) : null)}</ul>
+                                </details>}
                               </details>
                             )}
                           </div>
@@ -854,7 +882,6 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                       </>
                     ) : <p className="muted">尚未创建任务。</p>}
                   </section>
-                  </div>
                 </div>
                 {scene && artifact && (
                   <dialog ref={sceneDialog} className="scene" aria-label="场景查看器" onCancel={(event) => { event.preventDefault(); setScene(null); }}>
@@ -882,6 +909,12 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       </section>
     </main>
   );
+}
+
+function formatArtifactSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
 }
 
 function PageControls({ label, page, next, busy, onChange }: {
