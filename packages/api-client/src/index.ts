@@ -97,11 +97,27 @@ export class ResceneApiError extends Error {
 }
 
 const TERMINAL_STATUSES: Record<string, true> = { SUCCEEDED: true, FAILED: true, CANCELLED: true };
+const ProjectOverviewSchema = ProjectSummarySchema.or(ProjectDetailSchema);
 const MAX_RECONNECTS = 3;
 const POLL_INTERVAL_MS = 2000;
 const MAX_POLL_DELAY_MS = 15000;
 const MAX_RECONNECT_DELAY_MS = 8000;
 const RECONNECT_BASE_MS = 500;
+
+function legacyWorkspace(project: ProjectDetail): ProjectWorkspace {
+  // The deployed API ignores view=summary and returns all assets and jobs.
+  const assets = project.assets.slice().reverse();
+  return {
+    ...project, assets,
+    asset_count: assets.length,
+    job_count: project.jobs.length,
+    has_active_jobs: project.jobs.some((job) => !TERMINAL_STATUSES[job.status]),
+    cover: assets.find((asset) => asset.status === "READY" && /\.(jpe?g|png)$/i.test(asset.filename)) ?? null,
+    latest_job: project.jobs[0] ?? null,
+    nextAssetCursor: null,
+    nextJobCursor: null,
+  };
+}
 
 const ERROR_MESSAGES: Record<string, string> = {
   "auth.invalid_credentials": "邮箱或密码不正确。",
@@ -323,14 +339,20 @@ export class ResceneClient {
     return this.send(`/v1/projects/${encodeURIComponent(id)}`, ProjectDetailSchema);
   }
 
-  getProjectSummary(id: string): Promise<ProjectSummary> {
-    return this.send(`/v1/projects/${encodeURIComponent(id)}?view=summary`, ProjectSummarySchema);
+  private getProjectOverview(id: string): Promise<ProjectSummary | ProjectDetail> {
+    return this.send(`/v1/projects/${encodeURIComponent(id)}?view=summary`, ProjectOverviewSchema);
+  }
+
+  async getProjectSummary(id: string): Promise<ProjectSummary> {
+    const project = await this.getProjectOverview(id);
+    return "assets" in project ? legacyWorkspace(project) : project;
   }
 
   async getWorkspace(id: string, assetCursor = "", jobCursor = ""): Promise<ProjectWorkspace> {
+    const project = await this.getProjectOverview(id);
+    if ("assets" in project) return legacyWorkspace(project);
     const path = `/v1/projects/${encodeURIComponent(id)}`;
-    const [project, assets, jobs] = await Promise.all([
-      this.getProjectSummary(id),
+    const [assets, jobs] = await Promise.all([
       this.send(`${path}/assets?cursor=${encodeURIComponent(assetCursor)}`, AssetPageSchema),
       this.send(`${path}/jobs?cursor=${encodeURIComponent(jobCursor)}`, JobPageSchema),
     ]);

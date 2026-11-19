@@ -65,6 +65,34 @@ describe("request handling", () => {
 });
 
 describe("account, project and share contracts", () => {
+  it("reads the current production workspace through its full project response", async () => {
+    const cover = { id: "image", filename: "cover.PNG", size: 12, status: "READY" };
+    const assets = [cover, { id: "video", filename: "clip.mp4", size: 15, status: "READY" }];
+    const runningJob = { ...job, status: "RUNNING" };
+    const transport = vi.fn(async (_input: RequestInfo | URL) => jsonResponse({ ...project, assets, jobs: [runningJob] }));
+    const client = new ResceneClient("https://api.example", "t", transport);
+
+    await expect(client.getWorkspace("p1")).resolves.toMatchObject({
+      assets: assets.slice().reverse(), jobs: [runningJob], nextAssetCursor: null, nextJobCursor: null,
+    });
+    await expect(client.getProjectSummary("p1")).resolves.toMatchObject({
+      asset_count: 2, job_count: 1, has_active_jobs: true, cover, latest_job: runningJob,
+    });
+    expect(transport.mock.calls.map(([url]) => url)).toEqual(Array(2).fill("https://api.example/v1/projects/p1?view=summary"));
+  });
+
+  it("keeps native pagination when the server supports project summaries", async () => {
+    const summary = { ...project, asset_count: 0, job_count: 1, has_active_jobs: false, cover: null, latest_job: job };
+    const transport = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("?view=summary")) return jsonResponse(summary);
+      if (String(input).endsWith("/assets?cursor=old")) return jsonResponse({ items: [], next_cursor: null });
+      if (String(input).endsWith("/jobs?cursor=")) return jsonResponse({ items: [job], next_cursor: "next" });
+      return jsonResponse({ detail: "Not Found" }, 404);
+    });
+    await expect(new ResceneClient("https://api.example", "t", transport).getWorkspace("p1", "old"))
+      .resolves.toMatchObject({ ...summary, assets: [], jobs: [job], nextAssetCursor: null, nextJobCursor: "next" });
+  });
+
   it("registers an account and adopts the returned token", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse({ access_token: "token-2", token_type: "bearer" }, 201),
