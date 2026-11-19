@@ -85,6 +85,36 @@ def test_sequential_mapping_has_one_exhaustive_fallback(tmp_path, monkeypatch):
     assert len(exhaustive_calls) == 1
 
 
+def test_seed_reaches_match_verification_and_incremental_mapper(tmp_path, monkeypatch):
+    calls = {}
+    reconstruction = SimpleNamespace(write=lambda path: None)
+
+    def match(_database, **kwargs):
+        calls["ransac"] = kwargs["verification_options"].ransac.random_seed
+
+    def map_images(*args, **kwargs):
+        calls["mapper"] = kwargs["options"].random_seed
+        return {0: reconstruction}
+
+    reconstruction.num_reg_images = lambda: 2
+    fake = SimpleNamespace(
+        Device=SimpleNamespace(cuda="cuda"),
+        ImageReaderOptions=SimpleNamespace,
+        TwoViewGeometryOptions=lambda: SimpleNamespace(ransac=SimpleNamespace(random_seed=-1)),
+        IncrementalPipelineOptions=SimpleNamespace,
+        set_random_seed=lambda value: calls.update(global_seed=value),
+        extract_features=lambda *args, **kwargs: None,
+        match_exhaustive=match,
+        incremental_mapping=map_images,
+        bundle_adjustment=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setitem(sys.modules, "pycolmap", fake)
+
+    run(tmp_path, "exhaustive", dense=False, seed=42)
+
+    assert calls == {"global_seed": 42, "ransac": 42, "mapper": 42}
+
+
 def test_failed_default_mapping_retries_with_relaxed_single_camera(tmp_path, monkeypatch):
     extraction_calls = []
     mapping_calls = []

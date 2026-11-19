@@ -24,7 +24,7 @@ else:
 
 from rescene.evaluation import _official_point_scores, evaluate_run
 from rescene.geometry_metrics import _normalized_error, _observed_points, _read_model
-from rescene.pipeline import create_reuse_bundle
+from rescene.pipeline import _verify_reuse_bundle, create_reuse_bundle
 from rescene.preprocess import discover_images, preprocess_input, sha256_file
 
 SCENES = {"office": 26, "courtyard": 38, "kicker": 31, "terrace": 23}
@@ -309,6 +309,7 @@ def prepare() -> argparse.Namespace:
     parser.add_argument("--baselines-only", action="store_true")
     parser.add_argument("--recovery-cold-only", action="store_true")
     parser.add_argument("--rescreen", choices=PROFILES)
+    parser.add_argument("--seeded-quality-from", type=Path, help="Prior archive containing the DSLR references")
     return parser.parse_args()
 
 
@@ -763,6 +764,71 @@ class Study:
                 atomic_json(self.archive / "recovery-cold-summary.json", results)
         atomic_json(self.archive / "recovery-cold-summary.json", results)
 
+    def seeded_quality(self, prior: Path) -> None:
+        """Verify seeded sparse repeatability before testing MVS 3 end to end again."""
+        repeatability = {}
+        for scene in ("office", "courtyard"):
+            reference_dir = self.archive / f"{scene}-reference"
+            if not reference_dir.exists():
+                shutil.copytree(prior / reference_dir.name, reference_dir)
+            self.setup(scene)
+            baseline = read_json(prior / f"{scene}-quality-baseline-s42" / "study-result.json")
+            bundle = Path(baseline["reuse_bundle"])
+            _verify_reuse_bundle(bundle, baseline["reuse_sha256"])
+            evidence = self.archive / f"{scene}-seeded-sparse"
+            evidence.mkdir(exist_ok=True)
+            attempts = []
+            for repeat in (1, 2):
+                run = self.work / f"{scene}-seed-check-{repeat}"
+                if self.deadline - time.time() < 300 or supervisor.free_bytes() < 10 * 1024**3:
+                    raise RuntimeError("Insufficient time or space for seed verification")
+                if supervisor.gpu_processes():
+                    raise RuntimeError("A compute process appeared before seed verification")
+                run.mkdir(exist_ok=False)
+                try:
+                    shutil.copytree(bundle / "images", run / "images")
+                    with (evidence / f"{repeat}.log").open("wb") as log:
+                        subprocess.run(
+                            [
+                                sys.executable,
+                                "-m",
+                                "rescene.colmap_runner",
+                                "--scene-dir",
+                                str(run),
+                                "--matcher",
+                                "exhaustive",
+                                "--seed",
+                                "42",
+                            ],
+                            check=True,
+                            timeout=240,
+                            env=supervisor.environment(),
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                        )
+                    model = run / "sparse" / "0"
+                    hashes = {file.name: sha256_file(file) for file in sorted(model.glob("*.bin"))}
+                    attempts.append({"sha256": hashes, "registered": _read_model(model).num_reg_images()})
+                finally:
+                    if run.resolve() == run:
+                        shutil.rmtree(run)
+            repeatability[scene] = {"identical": attempts[0] == attempts[1], "runs": attempts}
+            supervisor.emit(f"SEEDED_SPARSE {scene} {json.dumps(repeatability[scene])}")
+        atomic_json(self.archive / "seeded-repeatability.json", repeatability)
+        if not all(row["identical"] for row in repeatability.values()):
+            return
+        baseline = {scene: {"quality": self.trial(scene, "quality", "baseline", {})} for scene in repeatability}
+        candidates = {scene: self.trial(scene, "quality", "speed", SPEED["quality"]) for scene in repeatability}
+        atomic_json(self.archive / "seeded-screen.json", {"baseline": baseline, "candidate": candidates})
+        self.confirm(
+            baseline,
+            {
+                "quality": {"variants": {"speed": {"overrides": SPEED["quality"], "trials": candidates}}},
+                "balanced": {"variants": {}},
+                "fast": {"variants": {}},
+            },
+        )
+
 
 def speed_ratios(base: dict, candidate: dict, profile: str) -> tuple[float, float]:
     runtime = candidate["total_seconds"] / base["total_seconds"]
@@ -800,6 +866,9 @@ def main() -> None:
         raise ValueError("Use the same mounted archive in RESCENE_EXPERIMENT_ARCHIVE and --archive")
     supervisor.require_archive_mount()
     study = Study(args)
+    if args.seeded_quality_from:
+        study.seeded_quality(args.seeded_quality_from)
+        return
     study.smoke()
     baseline = study.baselines()
     atomic_json(study.archive / "baseline-summary.json", baseline)

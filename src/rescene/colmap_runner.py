@@ -43,7 +43,9 @@ def _ply_vertices(path: Path) -> int | None:
     return None
 
 
-def _relaxed_single_camera_mapping(pycolmap, database: Path, images: Path, sparse_work: Path, reader_options):
+def _relaxed_single_camera_mapping(
+    pycolmap, database: Path, images: Path, sparse_work: Path, reader_options, seed: int | None
+):
     database.unlink(missing_ok=True)
     shutil.rmtree(sparse_work, ignore_errors=True)
     pycolmap.extract_features(
@@ -53,8 +55,10 @@ def _relaxed_single_camera_mapping(pycolmap, database: Path, images: Path, spars
         reader_options=reader_options,
         device=pycolmap.Device.cuda,
     )
-    pycolmap.match_exhaustive(database, device=pycolmap.Device.cuda)
+    pycolmap.match_exhaustive(database, device=pycolmap.Device.cuda, **_matching_seed(pycolmap, seed))
     options = pycolmap.IncrementalPipelineOptions()
+    if seed is not None:
+        options.random_seed = seed
     options.min_num_matches = 10
     options.mapper.init_min_num_inliers = 30
     options.mapper.init_min_tri_angle = 4.0
@@ -63,6 +67,14 @@ def _relaxed_single_camera_mapping(pycolmap, database: Path, images: Path, spars
     options.mapper.abs_pose_min_num_inliers = 15
     options.mapper.abs_pose_min_inlier_ratio = 0.1
     return pycolmap.incremental_mapping(database, images, sparse_work, options=options)
+
+
+def _matching_seed(pycolmap, seed: int | None) -> dict:
+    if seed is None:
+        return {}
+    verification = pycolmap.TwoViewGeometryOptions()
+    verification.ransac.random_seed = seed
+    return {"verification_options": verification}
 
 
 def run(
@@ -92,8 +104,14 @@ def run(
             raise ValueError("Shared camera requires PINHOLE, incremental mapping and a fresh feature database")
         _check_shared_images(images)
     phases: dict[str, float] = {}
+    mapping = {}
     if seed is not None:
+        # The controller and its RANSAC options use signed, nonnegative seeds.
+        seed %= 2**31
         pycolmap.set_random_seed(seed)
+        if mapper == "incremental":
+            mapping = {"options": pycolmap.IncrementalPipelineOptions(random_seed=seed)}
+    verification = _matching_seed(pycolmap, seed)
     if matching_db is not None:
         if database.exists() or Path(str(matching_db) + "-wal").exists():
             raise ValueError("Matching database must be closed and the trial database must be new")
@@ -107,24 +125,24 @@ def run(
         phases["features_seconds"] = perf_counter() - phase_start
         phase_start = perf_counter()
         if matcher == "sequential":
-            pycolmap.match_sequential(database, device=pycolmap.Device.cuda)
+            pycolmap.match_sequential(database, device=pycolmap.Device.cuda, **verification)
         else:
-            pycolmap.match_exhaustive(database, device=pycolmap.Device.cuda)
+            pycolmap.match_exhaustive(database, device=pycolmap.Device.cuda, **verification)
         phases["matching_seconds"] = perf_counter() - phase_start
     phase_start = perf_counter()
     maps = (
         pycolmap.global_mapping(database, images, sparse_work)
         if mapper == "global"
-        else pycolmap.incremental_mapping(database, images, sparse_work)
+        else pycolmap.incremental_mapping(database, images, sparse_work, **mapping)
     )
     phases["mapping_seconds"] = perf_counter() - phase_start
     experimental = mapper != "incremental" or matching_db is not None or shared_camera or mvs_iterations is not None
     if not maps and matcher == "sequential" and not experimental:
-        pycolmap.match_exhaustive(database, device=pycolmap.Device.cuda)
+        pycolmap.match_exhaustive(database, device=pycolmap.Device.cuda, **verification)
         shutil.rmtree(sparse_work, ignore_errors=True)
-        maps = pycolmap.incremental_mapping(database, images, sparse_work)
+        maps = pycolmap.incremental_mapping(database, images, sparse_work, **mapping)
     if not maps and not experimental:
-        maps = _relaxed_single_camera_mapping(pycolmap, database, images, sparse_work, reader_options)
+        maps = _relaxed_single_camera_mapping(pycolmap, database, images, sparse_work, reader_options, seed)
     reconstruction = _largest_reconstruction(maps)
     phase_start = perf_counter()
     pycolmap.bundle_adjustment(reconstruction)
