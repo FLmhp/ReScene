@@ -23,6 +23,7 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
   const [unread, setUnread] = useState(0);
   const [name, setName] = useState("");
   const [search, setSearch] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -119,6 +120,27 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
     }
   }
 
+  async function acceptInvitation() {
+    const code = inviteCode.trim();
+    if (!code || flight.current) return;
+    flight.current = true;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      await client.acceptInvitation(code);
+      setInviteCode("");
+      setSearch("");
+      setNotice("已领取邀请。");
+      await load();
+    } catch (reason) {
+      setError(explainError(reason, "领取邀请失败"));
+    } finally {
+      flight.current = false;
+      setBusy(false);
+    }
+  }
+
   async function markAllRead() {
     try {
       await client.markNotificationsRead();
@@ -171,6 +193,10 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
         <Field label="搜索项目" value={search} onChangeText={setSearch} placeholder="按名称筛选" />
         <Field label="新项目" value={name} onChangeText={setName} placeholder="项目名称" />
         <Button disabled={busy || !name.trim()} label="创建项目" onPress={create} />
+      </Card>
+      <Card>
+        <Field label="领取码" value={inviteCode} onChangeText={setInviteCode} autoComplete="off" />
+        <Button disabled={busy || !inviteCode.trim()} label="领取邀请" onPress={acceptInvitation} />
       </Card>
       {error ? <Card>
         <ErrorText>{error}</ErrorText>

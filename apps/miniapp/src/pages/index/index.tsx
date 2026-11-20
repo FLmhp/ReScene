@@ -44,6 +44,8 @@ export default function IndexPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [name, setName] = useState("");
   const [search, setSearch] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
+  const [acceptingInvitation, setAcceptingInvitation] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -74,6 +76,7 @@ export default function IndexPage() {
     return onSessionExpired(() => {
       Taro.setStorageSync(EXPIRY_NOTICE_KEY, "1");
       setUser(null);
+      setInviteCode("");
       setProjects([]);
       setNotifications([]);
       setRecovering(false);
@@ -84,6 +87,27 @@ export default function IndexPage() {
   const loadProjects = useCallback(async () => {
     setProjects(await client.listProjects());
   }, []);
+
+  async function acceptInvitation() {
+    const code = inviteCode.trim();
+    if (!code || acceptingInvitation) return;
+    setAcceptingInvitation(true);
+    setError("");
+    setNotice("");
+    try {
+      await client.acceptInvitation(code);
+      if (!hasToken()) return;
+      setInviteCode("");
+      setSearch("");
+      setProjectPage(0);
+      setNotice("已领取邀请。");
+      await loadProjects();
+    } catch (reason) {
+      if (hasToken()) setError(message(reason, "领取邀请失败"));
+    } finally {
+      setAcceptingInvitation(false);
+    }
+  }
 
   const recover = useCallback(async () => {
     if (!hasToken() || recoveryLock.current) return;
@@ -292,6 +316,7 @@ export default function IndexPage() {
     } finally {
       clearToken();
       setUser(null);
+      setInviteCode("");
       setProjects([]);
       setNotifications([]);
       setUnread(0);
@@ -383,6 +408,11 @@ export default function IndexPage() {
         <Text className="label">新项目名称</Text>
         <Input className="input" maxlength={200} value={name} onInput={(event) => setName(event.detail.value)} />
         <Button className="button" loading={creatingProject} disabled={creatingProject || !name.trim()} onClick={() => void createProject()}>创建项目</Button>
+      </View>
+      <View className="card">
+        <Text className="label">领取码</Text>
+        <Input className="input" maxlength={128} value={inviteCode} onInput={(event) => setInviteCode(event.detail.value)} />
+        <Button className="button" loading={acceptingInvitation} disabled={acceptingInvitation || !inviteCode.trim()} onClick={() => void acceptInvitation()}>领取邀请</Button>
       </View>
       {visibleProjects.map((project) => (
         <View className="project-tile" key={project.id} onClick={() => void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(project.id)}&name=${encodeURIComponent(project.name)}` })}>

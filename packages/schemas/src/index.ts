@@ -224,8 +224,16 @@ export const InvitationSchema = z.object({
 
 export const AddMemberResultSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("member"), user_id: z.string(), role: MemberRoleSchema }),
-  z.object({ status: z.literal("invited"), email: z.string(), role: MemberRoleSchema }),
+  z.object({
+    status: z.literal("invited"),
+    email: z.string(),
+    role: MemberRoleSchema,
+    claim_code: z.string().min(1).optional(),
+    expires_at: z.string().optional(),
+  }),
 ]);
+
+export const AcceptInvitationResultSchema = z.object({ project_id: z.string(), role: MemberRoleSchema });
 
 export const AdminUserSchema = z.object({
   id: z.string(),
@@ -313,6 +321,7 @@ export type JobStage = z.infer<typeof JobStageSchema>;
 export type AppNotification = z.infer<typeof NotificationSchema>;
 export type ProjectInvitation = z.infer<typeof InvitationSchema>;
 export type AddMemberResult = z.infer<typeof AddMemberResultSchema>;
+export type AcceptInvitationResult = z.infer<typeof AcceptInvitationResultSchema>;
 export type AdminUser = z.infer<typeof AdminUserSchema>;
 export type AuditEntry = z.infer<typeof AuditEntrySchema>;
 export type AdminUserPage = z.infer<typeof AdminUserPageSchema>;

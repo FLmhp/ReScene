@@ -85,6 +85,9 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [memberRole, setMemberRole] = useState<MemberRole>("member");
+  const [issuedInvitation, setIssuedInvitation] = useState<{ email: string; code: string } | null>(null);
+  const [issuingInvitation, setIssuingInvitation] = useState(false);
+  const invitationContext = useRef(0);
   const [shares, setShares] = useState<ShareSummary[]>([]);
   const [shareUrl, setShareUrl] = useState("");
   const [shareToken, setShareToken] = useState("");
@@ -110,6 +113,16 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
   const canManage = role === "owner" || role === "admin";
   const canWrite = canManage || role === "member";
   const jobs = detail?.jobs ?? [];
+
+  useEffect(() => {
+    setIssuedInvitation(null);
+    return () => { invitationContext.current += 1; };
+  }, [projectId, showManagement, visible]);
+  useEffect(() => {
+    if (!issuedInvitation) return;
+    const timer = setTimeout(() => setIssuedInvitation(null), 120_000);
+    return () => clearTimeout(timer);
+  }, [issuedInvitation]);
 
   function showSection(next: ProjectSection) {
     setShowManagement(false);
@@ -409,13 +422,24 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
 
   async function addMember() {
     const address = email.trim();
-    if (!address) { setError("请输入成员邮箱"); return; }
+    if (!address || issuingInvitation) return;
+    const context = invitationContext.current;
+    setIssuedInvitation(null);
+    setIssuingInvitation(true);
+    setError("");
+    setNotice("");
     try {
       const result = await client.addMember(projectId, address, memberRole);
+      if (context !== invitationContext.current) return;
       setEmail("");
-      if (result.status === "invited") setNotice(`已邀请 ${result.email}，对方注册后自动加入。`);
-      else await loadMembers();
-    } catch (reason) { setError(message(reason, "添加成员失败")); }
+      if (result.status === "member") setNotice("该账号已是项目成员，可在成员列表调整角色。");
+      else if (result.claim_code) setIssuedInvitation({ email: result.email, code: result.claim_code });
+      else setNotice("当前服务端版本无法提供领取码。请在升级后重新签发邀请。");
+    } catch (reason) {
+      if (context === invitationContext.current) setError(message(reason, "签发邀请失败"));
+    } finally {
+      setIssuingInvitation(false);
+    }
   }
 
   async function changeMember(member: ProjectMember, action: "role" | "remove") {
@@ -552,7 +576,11 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
           <Text className="label">邀请成员邮箱</Text>
           <Input className="input" value={email} placeholder="name@example.com" onInput={(event) => setEmail(event.detail.value)} />
           <Button className="button ghost" onClick={() => setMemberRole(memberRole === "member" ? "viewer" : "member")}>邀请角色：{MEMBER_ROLE_LABEL[memberRole]}</Button>
-          <Button className="button" onClick={addMember}>添加成员</Button>
+          <Button className="button" loading={issuingInvitation} disabled={issuingInvitation || !email.trim()} onClick={addMember}>签发邀请</Button>
+          {visible && issuedInvitation ? <View>
+            <Text>请将领取码交给 {issuedInvitation.email}。领取码 7 天内有效，仅可使用一次。</Text>
+            <Text selectable>{issuedInvitation.code}</Text>
+          </View> : null}
         </View> : null}
       </View> : null}
       {detail && section === "materials" && !showManagement ? <View className="card">

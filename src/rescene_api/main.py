@@ -52,6 +52,7 @@ from rescene_api.models import (
 )
 from rescene_api.ratelimit import limiter
 from rescene_api.schemas import (
+    AcceptInvitationRequest,
     AddMemberRequest,
     ChangePasswordRequest,
     CompleteAssetRequest,
@@ -85,7 +86,7 @@ def fail(status_code: int, detail: str, code: str, headers: dict[str, str] | Non
 
 
 def rate_limit(request: Request) -> None:
-    """Cap anonymous credential attempts per client and route."""
+    """Cap credential attempts per client and route."""
     config = settings()
     key = f"{request.client.host if request.client else 'unknown'}:{request.url.path}"
     retry = limiter.allow(key, config.auth_rate_limit, 60)
@@ -281,7 +282,7 @@ def ready(db: Db) -> dict[str, str]:
 
 @app.post("/v1/auth/register", status_code=201)
 def register(payload: RegisterRequest, db: Db, _: Annotated[None, Depends(rate_limit)] = None) -> dict[str, str]:
-    """Create a self-service account, claim pending invitations, and sign it in."""
+    """Create a self-service account and sign it in."""
     email = payload.email.strip().lower()
     if db.scalar(select(User).where(User.email == email)):
         fail(status.HTTP_409_CONFLICT, "Email already registered", "auth.email_taken")
@@ -290,26 +291,6 @@ def register(payload: RegisterRequest, db: Db, _: Annotated[None, Depends(rate_l
     try:
         db.flush()
         audit(db, user.id, "user.register", "user", user.id, email=email)
-        for invitation in db.scalars(select(ProjectInvitation).where(ProjectInvitation.email == email)).all():
-            member = db.scalar(
-                select(ProjectMember).where(
-                    ProjectMember.project_id == invitation.project_id, ProjectMember.user_id == user.id
-                )
-            )
-            if member:
-                member.role = invitation.role
-            else:
-                db.add(ProjectMember(project_id=invitation.project_id, user_id=user.id, role=invitation.role))
-            audit(
-                db,
-                user.id,
-                "project.member.invite.accept",
-                "project",
-                invitation.project_id,
-                project_id=invitation.project_id,
-                email=email,
-            )
-            db.delete(invitation)
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -654,53 +635,85 @@ def remove_member(project_id: str, user_id: str, db: Db, user: UserDep) -> None:
 
 
 @app.post("/v1/projects/{project_id}/members", status_code=201)
-def add_member(project_id: str, payload: AddMemberRequest, db: Db, user: UserDep) -> dict[str, object]:
-    """Add an existing account, or invite an email that has not registered yet."""
+def add_member(
+    project_id: str, payload: AddMemberRequest, response: Response, db: Db, user: UserDep
+) -> dict[str, object]:
+    """Issue a one-time invitation or report the existing membership."""
     project = project_for_user(db, project_id, user, lock=True)
     require_project_manager(project, user)
     email = payload.email.strip().lower()
-    member_user = db.scalar(select(User).where(User.email == email, User.active.is_(True)))
-    if not member_user:
-        invitation = db.scalar(
-            select(ProjectInvitation).where(
-                ProjectInvitation.project_id == project_id, ProjectInvitation.email == email
-            )
-        )
-        if invitation:
-            invitation.role = payload.role
-        else:
-            db.add(ProjectInvitation(project_id=project_id, email=email, role=payload.role, invited_by=user.id))
-        audit(db, user.id, "project.member.invite", "project", project_id, project_id=project_id, email=email)
-        db.commit()
-        return {"status": "invited", "email": email, "role": payload.role}
-    if member_user.id == project.owner_id:
+    account = db.scalar(select(User).where(User.email == email))
+    if account and account.id == project.owner_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot alter the project owner")
-    existing = db.scalar(
-        select(ProjectMember).where(
-            ProjectMember.project_id == project_id,
-            ProjectMember.user_id == member_user.id,
+    if account and account.active:
+        existing = db.scalar(
+            select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == account.id)
+        )
+        if existing:
+            return {"status": "member", "user_id": account.id, "role": existing.role}
+
+    invitation = db.scalar(
+        select(ProjectInvitation).where(ProjectInvitation.project_id == project_id, ProjectInvitation.email == email)
+    )
+    if not invitation:
+        invitation = ProjectInvitation(project_id=project_id, email=email)
+        db.add(invitation)
+    code = secrets.token_urlsafe(32)
+    expires_at = now() + timedelta(days=7)
+    invitation.role = payload.role
+    invitation.invited_by = user.id
+    invitation.claim_digest = hashlib.sha256(code.encode()).hexdigest()
+    invitation.expires_at = expires_at
+    audit(db, user.id, "project.member.invite", "project", project_id, project_id=project_id, email=email)
+    db.commit()
+    response.headers["Cache-Control"] = "no-store"
+    return {"status": "invited", "email": email, "role": payload.role, "claim_code": code, "expires_at": expires_at}
+
+
+@app.post("/v1/project-invitations/accept", dependencies=[Depends(rate_limit)])
+def accept_invitation(payload: AcceptInvitationRequest, db: Db, user: UserDep) -> dict[str, str]:
+    """Grant access once to the authenticated account matching an active invitation."""
+    digest = hashlib.sha256(payload.code.encode()).hexdigest()
+    project_id = db.scalar(select(ProjectInvitation.project_id).where(ProjectInvitation.claim_digest == digest))
+    project = db.get(Project, project_id, with_for_update=True) if project_id else None
+    if not project or project.deleted_at or project.owner_id == user.id:
+        fail(status.HTTP_404_NOT_FOUND, "Invitation is unavailable", "invitation.unavailable")
+    invitation = db.scalar(
+        select(ProjectInvitation).where(
+            ProjectInvitation.project_id == project.id,
+            ProjectInvitation.claim_digest == digest,
+            ProjectInvitation.email == user.email,
+            ProjectInvitation.expires_at > now(),
         )
     )
-    if existing:
-        existing.role = payload.role
-    else:
-        db.add(ProjectMember(project_id=project_id, user_id=member_user.id, role=payload.role))
+    if not invitation:
+        fail(status.HTTP_404_NOT_FOUND, "Invitation is unavailable", "invitation.unavailable")
+    existing = db.scalar(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project.id,
+            ProjectMember.user_id == user.id,
+        )
+    )
+    role = existing.role if existing else invitation.role
+    if not existing:
+        db.add(ProjectMember(project_id=project.id, user_id=user.id, role=role))
     audit(
         db,
         user.id,
-        "project.member.add",
+        "project.member.invite.accept",
         "project",
-        project_id,
-        project_id=project_id,
-        member_id=member_user.id,
+        project.id,
+        project_id=project.id,
+        email=user.email,
     )
+    db.delete(invitation)
     db.commit()
-    return {"status": "member", "user_id": member_user.id, "role": payload.role}
+    return {"project_id": project.id, "role": role}
 
 
 @app.get("/v1/projects/{project_id}/invitations")
 def list_invitations(project_id: str, db: Db, user: UserDep) -> list[dict[str, object]]:
-    """Pending email invitations; they are consumed when the address registers."""
+    """List pending invitations without their claim credentials."""
     project = project_for_user(db, project_id, user)
     require_project_manager(project, user)
     rows = db.scalars(

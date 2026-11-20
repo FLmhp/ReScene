@@ -439,6 +439,26 @@ describe("asset, stage, notification and admin contracts", () => {
       await new ResceneClient("https://api.example", "t").addMember("p1", "member@example.com", "member"),
     ).toEqual({ status: "member", user_id: "u2", role: "member" });
   });
+
+  it("keeps the issued code and accepts it in an authenticated request body", async () => {
+    const invitation = {
+      status: "invited", email: "guest@example.com", role: "viewer",
+      claim_code: "issued-invitation", expires_at: "2026-11-27T00:00:00Z",
+    };
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
+      .mockResolvedValueOnce(jsonResponse(invitation, 201))
+      .mockResolvedValueOnce(jsonResponse({ project_id: "p1", role: "viewer" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ResceneClient("https://api.example", "token");
+    expect(await client.addMember("p1", "guest@example.com", "viewer")).toEqual(invitation);
+    expect(await client.acceptInvitation(" issued-invitation ")).toEqual({ project_id: "p1", role: "viewer" });
+    const [url, init] = fetchMock.mock.calls[1];
+    expect(String(url)).toBe("https://api.example/v1/project-invitations/accept");
+    expect(init?.method).toBe("POST");
+    expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer token");
+    expect(JSON.parse(String(init?.body))).toEqual({ code: "issued-invitation" });
+  });
 });
 
 describe("admin console endpoints", () => {

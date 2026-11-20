@@ -1,24 +1,32 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from threading import Barrier
+from threading import Barrier, Event
 from uuid import uuid4
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import MetaData, Table, create_engine, event, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from rescene_api import main
 from rescene_api.auth import hash_password, issue_token
 from rescene_api.config import settings
-from rescene_api.db import Base
-from rescene_api.models import Asset, Project, ReconstructionJob, User
+from rescene_api.models import Asset, AuditLog, Project, ProjectInvitation, ProjectMember, ReconstructionJob, User
+
+
+def migrate(connection, revision):
+    migration = Config()
+    migration.set_main_option("script_location", "rescene_api:migrations")
+    migration.attributes["connection"] = connection
+    command.upgrade(migration, revision)
 
 
 @pytest.fixture
-def postgres_sessions(monkeypatch):
+def postgres_sessions(monkeypatch, request):
     url = os.environ.get("RESCENE_TEST_POSTGRES_URL")
     if not url:
         pytest.skip("Set RESCENE_TEST_POSTGRES_URL to run the PostgreSQL concurrency smoke")
@@ -37,7 +45,8 @@ def postgres_sessions(monkeypatch):
         connection.commit()
 
     try:
-        Base.metadata.create_all(engine)
+        with engine.begin() as connection:
+            migrate(connection, getattr(request, "param", "head"))
         sessions = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
         monkeypatch.setattr(main, "SessionLocal", sessions)
         monkeypatch.setattr(main, "init_db", lambda: None)
@@ -151,3 +160,113 @@ def test_postgres_project_delete_job_race(postgres_sessions, operation):
                     )
                 ).all()
                 assert not (stored_project.deleted_at is not None and active)
+
+
+@pytest.mark.parametrize("operation", ["double_claim", "revoke", "rotate"])
+def test_postgres_invitation_rechecks_credential_after_project_lock(postgres_sessions, operation):
+    with postgres_sessions.begin() as db:
+        owner = User(email="invite-owner@example.com", password_hash="unused")
+        guest = User(email="invite-guest@example.com", password_hash="unused")
+        db.add_all([owner, guest])
+        db.flush()
+        project = Project(owner_id=owner.id, name="Invited project")
+        db.add(project)
+        db.flush()
+    route = f"/v1/projects/{project.id}"
+    owner_headers = {"Authorization": f"Bearer {issue_token(owner.id)}"}
+    guest_headers = {"Authorization": f"Bearer {issue_token(guest.id)}"}
+    invite = {"email": guest.email, "role": "viewer"}
+    engine = postgres_sessions.kw["bind"]
+    lookup_complete, mutation_complete = Event(), Event()
+    both_claims_ready = Barrier(2)
+
+    def pause_after_lookup(connection, cursor, statement, parameters, context, executemany):
+        if statement.startswith("SELECT project_invitations.project_id"):
+            if operation == "double_claim":
+                both_claims_ready.wait(timeout=10)
+            else:
+                lookup_complete.set()
+                assert mutation_complete.wait(timeout=10)
+
+    with TestClient(main.app) as client:
+        issued = client.post(f"{route}/members", json=invite, headers=owner_headers)
+        assert issued.status_code == 201
+        claims = {"code": issued.json()["claim_code"]}
+        pending = client.get(f"{route}/invitations", headers=owner_headers).json()[0]
+
+        def accept():
+            return client.post("/v1/project-invitations/accept", headers=guest_headers, json=claims).status_code
+
+        event.listen(engine, "after_cursor_execute", pause_after_lookup)
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(accept)
+                if operation == "double_claim":
+                    second = pool.submit(accept)
+                    assert {first.result(timeout=15), second.result(timeout=15)} == {200, 404}
+                else:
+                    try:
+                        assert lookup_complete.wait(timeout=10)
+                        if operation == "revoke":
+                            assert (
+                                client.delete(f"{route}/invitations/{pending['id']}", headers=owner_headers).status_code
+                                == 204
+                            )
+                        else:
+                            assert (
+                                client.post(f"{route}/members", headers=owner_headers, json=invite).status_code == 201
+                            )
+                    finally:
+                        mutation_complete.set()
+                    assert first.result(timeout=15) == 404
+        finally:
+            event.remove(engine, "after_cursor_execute", pause_after_lookup)
+    with postgres_sessions() as db:
+        member = db.scalar(select(ProjectMember).where(ProjectMember.user_id == guest.id))
+        accepted_entries = db.scalars(select(AuditLog).where(AuditLog.action == "project.member.invite.accept")).all()
+        if operation == "double_claim":
+            assert member.role == "viewer" and len(accepted_entries) == 1
+        else:
+            assert member is None and not accepted_entries
+
+
+@pytest.mark.parametrize("postgres_sessions", ["0006"], indirect=True)
+def test_postgres_invitation_upgrade_preserves_inert_legacy_rows(postgres_sessions):
+    with postgres_sessions.begin() as db:
+        owner = User(email="legacy-owner@example.com", password_hash="unused")
+        db.add(owner)
+        db.flush()
+        project = Project(owner_id=owner.id, name="Legacy project")
+        db.add(project)
+        db.flush()
+        connection = db.connection()
+        invitations = Table("project_invitations", MetaData(), autoload_with=connection)
+        assert "claim_digest" not in invitations.c
+        db.execute(
+            invitations.insert(),
+            [
+                {
+                    "id": action,
+                    "project_id": project.id,
+                    "email": f"legacy-{action}@example.com",
+                    "role": "viewer",
+                    "invited_by": owner.id,
+                    "created_at": datetime.now(UTC),
+                }
+                for action in ("reissue", "revoke")
+            ],
+        )
+    with postgres_sessions.kw["bind"].begin() as connection:
+        migrate(connection, "head")
+    with postgres_sessions() as db:
+        pending = db.scalars(select(ProjectInvitation)).all()
+        assert len(pending) == 2 and all(row.claim_digest is None and row.expires_at is None for row in pending)
+    headers = {"Authorization": f"Bearer {issue_token(owner.id)}"}
+    route = f"/v1/projects/{project.id}"
+    with TestClient(main.app) as client:
+        assert client.delete(f"{route}/invitations/revoke", headers=headers).status_code == 204
+        reissued = client.post(f"{route}/members", headers=headers, json={"email": "legacy-reissue@example.com"})
+        assert reissued.status_code == 201 and reissued.json()["claim_code"]
+    with postgres_sessions() as db:
+        pending = db.scalars(select(ProjectInvitation)).all()
+        assert len(pending) == 1 and pending[0].id == "reissue" and pending[0].claim_digest

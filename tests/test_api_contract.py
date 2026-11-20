@@ -174,7 +174,14 @@ def project(accounts):
                 json={"email": accounts[name]["email"], "role": name},
             )
             assert response.status_code == 201
-            assert response.json() == {"status": "member", "user_id": accounts[name]["id"], "role": name}
+            assert response.json()["status"] == "invited"
+            accepted = client.post(
+                "/v1/project-invitations/accept",
+                headers=accounts[name]["headers"],
+                json={"code": response.json()["claim_code"]},
+            )
+            assert accepted.status_code == 200
+            assert accepted.json() == {"project_id": project["id"], "role": name}
         with SessionLocal() as db:
             db.add(ProjectMember(project_id=project["id"], user_id=accounts["unknown"]["id"], role="unexpected"))
             db.commit()
@@ -264,6 +271,12 @@ def test_project_roles_and_member_management(accounts, project):
             assert client.delete(f"{route}/members/{accounts['viewer']['id']}", headers=headers).status_code == 403
             assert client.delete(route, headers=headers).status_code == 403
         owner_headers = accounts["owner"]["headers"]
+        assert (
+            client.post(
+                f"{route}/members", headers=owner_headers, json={"email": accounts["owner"]["email"]}
+            ).status_code
+            == 403
+        )
         assert client.patch(route, headers=owner_headers, json={"name": "   "}).status_code == 422
         renamed = client.patch(route, headers=accounts["admin"]["headers"], json={"name": "  Renamed  "})
         assert renamed.status_code == 200
@@ -299,6 +312,28 @@ def test_project_roles_and_member_management(accounts, project):
             db.get(User, accounts["owner"]["id"]).is_admin = True
             db.commit()
         assert client.get(route, headers=owner_headers).json()["effective_role"] == "owner"
+
+
+def test_invitation_acceptance_keeps_a_membership_created_after_issuance(accounts, project):
+    project_id = project["id"]
+    invited = accounts["outsider"]
+    owner_headers = accounts["owner"]["headers"]
+    with TestClient(app) as client:
+        issued = client.post(
+            f"/v1/projects/{project_id}/members",
+            headers=owner_headers,
+            json={"email": invited["email"], "role": "member"},
+        )
+        assert issued.status_code == 201
+        with SessionLocal.begin() as db:
+            db.add(ProjectMember(project_id=project_id, user_id=invited["id"], role="viewer"))
+        response = client.post(
+            "/v1/project-invitations/accept", headers=invited["headers"], json={"code": issued.json()["claim_code"]}
+        )
+        assert response.status_code == 200
+        assert response.json() == {"project_id": project_id, "role": "viewer"}
+        assert client.get(f"/v1/projects/{project_id}", headers=invited["headers"]).json()["effective_role"] == "viewer"
+        assert client.get(f"/v1/projects/{project_id}/invitations", headers=owner_headers).json() == []
 
 
 def test_shares_writer_permissions_and_no_token_disclosure(accounts, project):
