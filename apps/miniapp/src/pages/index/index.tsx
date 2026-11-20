@@ -5,8 +5,12 @@ import { Button, Input, Text, View } from "@tarojs/components";
 import Taro, { useDidShow } from "@tarojs/taro";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { apiBaseUrl, clearToken, client, hasToken, onSessionExpired, persistToken } from "../../api";
-import { enqueue, replayQueued } from "../../queue";
+import {
+  apiBaseUrl, authenticate, changeSessionPassword, client, currentQueueOwner, hasToken, isQueueOwnerCurrent,
+  onSessionExpired, queueClient, renewSession, signOutSession, verifySession,
+} from "../../api";
+import { LEGACY_QUEUE_NOTICE, QUEUE_PAUSED, type QueueOwner } from "@rescene/uploader";
+import { enqueue, hasLegacyQueue, replayQueued } from "../../queue";
 
 // api.ts relaunches this page when a credential expires, so the notice must
 // survive that remount to stay actionable.
@@ -50,6 +54,7 @@ export default function IndexPage() {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [legacyQueue] = useState(hasLegacyQueue);
   const [busy, setBusy] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -72,18 +77,33 @@ export default function IndexPage() {
       }
     } catch { /* The login form is available even when local storage fails. */ }
     return onSessionExpired(() => {
-      Taro.setStorageSync(EXPIRY_NOTICE_KEY, "1");
       setUser(null);
       setProjects([]);
       setNotifications([]);
+      setUnread(0);
+      setName("");
+      setNotice("");
       setRecovering(false);
       setError(EXPIRED_NOTICE);
     });
   }, []);
 
-  const loadProjects = useCallback(async () => {
-    setProjects(await client.listProjects());
+  const loadProjects = useCallback(async (owner: QueueOwner) => {
+    try {
+      const list = await queueClient(owner).listProjects();
+      if (isQueueOwnerCurrent(owner)) setProjects(list);
+    } catch (reason) {
+      if (isQueueOwnerCurrent(owner)) throw reason;
+    }
   }, []);
+
+  const replay = useCallback((owner: QueueOwner) => {
+    void replayQueued(owner, () => undefined).then(({ created }) => {
+      if (created && isQueueOwnerCurrent(owner)) return loadProjects(owner);
+    }).catch((reason) => {
+      if (isQueueOwnerCurrent(owner)) setError(message(reason, "同步离线数据失败。"));
+    });
+  }, [loadProjects]);
 
   const recover = useCallback(async () => {
     if (!hasToken() || recoveryLock.current) return;
@@ -91,11 +111,14 @@ export default function IndexPage() {
     if (!booted.current) setRecovering(true);
     setError("");
     try {
-      const current = await client.getMe();
+      const current = await verifySession();
+      const owner = currentQueueOwner();
+      if (!current || !owner || current.id !== owner.id) return;
       setUser(current);
-      const renewed = await client.refresh();
-      persistToken(renewed.access_token);
-      await loadProjects();
+      if (!await renewSession() || !isQueueOwnerCurrent(owner)) return;
+      replay(owner);
+      await loadProjects(owner);
+      return isQueueOwnerCurrent(owner);
     } catch (reason) {
       setError(message(reason, "恢复登录失败，请检查服务器连接后重试。"));
     } finally {
@@ -103,27 +126,25 @@ export default function IndexPage() {
       recoveryLock.current = false;
       setRecovering(false);
     }
-  }, [loadProjects]);
+  }, [loadProjects, replay]);
 
   const loadNotifications = useCallback(async () => {
-    if (!hasToken()) return;
+    const owner = currentQueueOwner();
+    if (!owner) return;
+    const scopedClient = queueClient(owner);
     try {
-      const [items, count] = await Promise.all([client.listNotifications(true, 5), client.notificationCount()]);
+      const [items, count] = await Promise.all([scopedClient.listNotifications(true, 5), scopedClient.notificationCount()]);
+      if (!isQueueOwnerCurrent(owner)) return;
       setNotifications(items);
       setUnread(count);
     } catch (reason) {
-      setError(message(reason, "加载通知失败。"));
+      if (isQueueOwnerCurrent(owner)) setError(message(reason, "加载通知失败。"));
     }
   }, []);
 
   useDidShow(() => {
     void (async () => {
-      if (hasToken()) {
-        try { await replayQueued(client, () => undefined); }
-        catch (reason) { setError(message(reason, "同步离线数据失败。")); }
-      }
-      await recover();
-      await loadNotifications();
+      if (await recover()) await loadNotifications();
     })();
   });
 
@@ -134,12 +155,14 @@ export default function IndexPage() {
     setError("");
     setNotice("");
     try {
-      const result = await client.login(email.trim(), password);
-      persistToken(result.access_token);
+      const current = await authenticate("login", email.trim(), password);
+      const owner = currentQueueOwner();
+      if (!current || !owner || current.id !== owner.id) return;
       Taro.removeStorageSync(EXPIRY_NOTICE_KEY);
       setPassword("");
-      setUser(await client.getMe());
-      await loadProjects();
+      setUser(current);
+      replay(owner);
+      await loadProjects(owner);
       await loadNotifications();
     } catch (reason) {
       if (reason instanceof ResceneApiError && (reason.status === 401 || reason.status === 403)) {
@@ -173,13 +196,15 @@ export default function IndexPage() {
     setError("");
     setNotice("");
     try {
-      const result = await client.register(address, password);
-      persistToken(result.access_token);
+      const current = await authenticate("register", address, password);
+      const owner = currentQueueOwner();
+      if (!current || !owner || current.id !== owner.id) return;
       Taro.removeStorageSync(EXPIRY_NOTICE_KEY);
       setPassword("");
       setConfirm("");
-      setUser(await client.getMe());
-      await loadProjects();
+      setUser(current);
+      replay(owner);
+      await loadProjects(owner);
       await loadNotifications();
     } catch (reason) {
       if (reason instanceof ResceneApiError && reason.status === 409) {
@@ -200,24 +225,34 @@ export default function IndexPage() {
       setError("项目名称最多 200 个字符。");
       return;
     }
+    const owner = currentQueueOwner();
+    if (!owner) { setError(QUEUE_PAUSED); return; }
+    const scopedClient = queueClient(owner);
     projectLock.current = true;
     setCreatingProject(true);
     setError("");
     try {
-      const project = await client.createProject(trimmed);
+      const project = await scopedClient.createProject(trimmed);
+      if (!isQueueOwnerCurrent(owner)) return;
       setName("");
       setProjects((current) => [project, ...current]);
     } catch (reason) {
+      if (!isQueueOwnerCurrent(owner)) return;
       if (isOfflineError(reason)) {
-        await enqueue({
-          kind: "project",
-          id: `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          name: trimmed,
-          createdAt: Date.now(),
-        });
-        setName("");
-        setError("");
-        setNotice("已离线保存，联网后自动创建。");
+        try {
+          await enqueue(owner, {
+            kind: "project",
+            id: `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            name: trimmed,
+            createdAt: Date.now(),
+          });
+          if (!isQueueOwnerCurrent(owner)) return;
+          setName("");
+          setError("");
+          setNotice("已离线保存，联网后自动创建。");
+        } catch {
+          if (isQueueOwnerCurrent(owner)) setError("保存到本地队列失败。");
+        }
       } else {
         setError(message(reason, "创建项目失败。"));
       }
@@ -242,8 +277,7 @@ export default function IndexPage() {
     setError("");
     setNotice("");
     try {
-      const result = await client.changePassword(currentPassword, nextPassword);
-      persistToken(result.access_token);
+      if (!await changeSessionPassword(currentPassword, nextPassword)) return;
       setCurrentPassword("");
       setNextPassword("");
       setNextConfirm("");
@@ -284,26 +318,20 @@ export default function IndexPage() {
     setBusy(true);
     setError("");
     setNotice("");
-    let revoked = true;
-    try {
-      await client.logout();
-    } catch {
-      revoked = false;
-    } finally {
-      clearToken();
-      setUser(null);
-      setProjects([]);
-      setNotifications([]);
-      setUnread(0);
-      setCurrentPassword("");
-      setNextPassword("");
-      setNextConfirm("");
-      setSearch("");
-      setProjectPage(0);
-      setName("");
-      setBusy(false);
-      authLock.current = false;
-    }
+    const signingOut = signOutSession();
+    setUser(null);
+    setProjects([]);
+    setNotifications([]);
+    setUnread(0);
+    setCurrentPassword("");
+    setNextPassword("");
+    setNextConfirm("");
+    setSearch("");
+    setProjectPage(0);
+    setName("");
+    const revoked = await signingOut;
+    setBusy(false);
+    authLock.current = false;
     if (!revoked) setError("本机已退出，但服务器无法确认会话已撤销。请检查网络并联系管理员撤销会话。");
   }
 
@@ -318,7 +346,7 @@ export default function IndexPage() {
     return <Screen><Text className="muted">正在恢复登录…</Text></Screen>;
   }
 
-  if (!user) {
+  if (!user && !currentQueueOwner()) {
     return (
       <Screen>
         <Text className="muted">影像到三维空间</Text>
@@ -348,6 +376,7 @@ export default function IndexPage() {
           <Text className="muted">{mode === "login" ? "首次使用请切换到注册；密码至少 12 位。" : "注册后即可创建项目；密码至少 12 位。"}</Text>
           {hasToken() ? <Button className="button ghost" onClick={() => void recover()}>重试恢复登录</Button> : null}
         </View>
+        {hasToken() ? <Text className="muted">{QUEUE_PAUSED}</Text> : null}
         {error ? <Text className="error">{error} · {serverLabel()}</Text> : null}
         {notice ? <Text>{notice}</Text> : null}
       </Screen>
@@ -358,7 +387,8 @@ export default function IndexPage() {
     <Screen>
       
       <Text className="title">我的项目</Text>
-      <Text className="muted">{user.email}{user.is_admin ? " · 管理员" : ""}</Text>
+      {user ? <Text className="muted">{user.email}{user.is_admin ? " · 管理员" : ""}</Text>
+        : <Button className="button ghost" onClick={() => void recover()}>重试恢复登录</Button>}
 
       <View className="selection-tools">
         <Button className="button ghost compact" onClick={() => setPanel(panel === "notifications" ? null : "notifications")}>通知（{unread}）</Button>
@@ -395,9 +425,10 @@ export default function IndexPage() {
         <Button className="button ghost compact" disabled={page + 1 === projectPageCount} onClick={() => setProjectPage(page + 1)}>下一页</Button>
       </View> : null}
       {filtered.length === 0 ? <Text className="muted">{search.trim() ? "没有匹配的项目。" : "还没有项目。"}</Text> : null}
-      {user.is_admin ? (
+      {user?.is_admin ? (
         <Button className="button ghost" onClick={() => void Taro.navigateTo({ url: "/pages/admin/index" })}>管理控制台</Button>
       ) : null}
+      {legacyQueue ? <Text className="muted">{LEGACY_QUEUE_NOTICE}</Text> : null}
       {error ? <Text className="error">{error}</Text> : null}
       {notice ? <Text>{notice}</Text> : null}
       {panel === "account" ? <View className="card">

@@ -15,7 +15,9 @@ import {
   apiBaseUrl,
   clearSession,
   client,
+  currentQueueOwner,
   discardSession,
+  onSessionExpired,
   restoreSession,
   sessionExpiry,
   type RestoredSession,
@@ -68,11 +70,18 @@ export function AppRoot() {
     setSession("signed-out");
   }, []);
 
+  useEffect(() => onSessionExpired(() => resetToLogin("会话已失效，请重新登录。")), [resetToLogin]);
+
   const bootstrap = useCallback(async () => {
     setSession("loading");
     try {
       const result = await restoreSession();
-      if (result === "offline") setNotice("无法连接服务器。登录信息仍安全保存在设备上，请检查网络后重试。");
+      if (result === null) return;
+      if (result === "offline" && currentQueueOwner()) {
+        setSession("signed-in");
+        return;
+      }
+      if (result === "offline") setNotice("无法连接服务器，离线队列已暂停。请联网验证当前账户后重试。");
       setSession(result);
     } catch {
       setNotice("无法访问设备的安全存储。请检查系统设置后重试。");
@@ -110,7 +119,7 @@ export function AppRoot() {
       } catch {
         result = "offline";
       }
-      if (cancelled) return;
+      if (cancelled || result === null) return;
       if (result === "signed-out") {
         resetToLogin("会话已失效，请重新登录。");
         return;

@@ -5,18 +5,18 @@ import * as DocumentPicker from "expo-document-picker";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 
-import { client } from "../api";
+import { assertQueueOwner, client, currentQueueOwner, isQueueOwnerCurrent, queueClient } from "../api";
 import { AssetThumbnail } from "../AssetThumbnail";
 import { enqueue, loadQueue, replayQueued, saveQueue } from "../queue";
 import { useAppearance } from "../appearance";
 import type { Palette } from "@rescene/design-tokens";
-import { MediaPreflightError, mediaType, summarizeMediaWarnings } from "@rescene/uploader";
+import { MediaPreflightError, mediaType, QUEUE_PAUSED, summarizeMediaWarnings, type QueueOwner } from "@rescene/uploader";
 import { inspectPickedFiles, type PickedFile, uploadFile } from "../upload";
 import { Button, Card, ErrorText, Field, Screen, useTextStyles } from "../ui";
 
 const PROFILES: Profile[] = ["fast", "balanced", "quality"];
 const ROLE_LABEL = { owner: "所有者", admin: "管理员", member: "成员", viewer: "只读" };
-type Upload = { id: string; file: PickedFile; progress: number; status: "uploading" | "failed" | "done"; error?: string };
+type Upload = { owner: QueueOwner; id: string; file: PickedFile; progress: number; status: "uploading" | "failed" | "done"; error?: string };
 type TimelineRow = { key: string; stage: string; status: string; progress: number; message?: string | null; metrics: Record<string, unknown> };
 
 export type ProjectDraft = { assets: Asset[]; profile: Profile };
@@ -91,7 +91,11 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
   useEffect(() => {
     if (replayed.current) return;
     replayed.current = true;
-    void replayQueued(client, () => undefined).then(({ uploaded }) => { if (uploaded) void load(); }).catch(() => undefined);
+    const owner = currentQueueOwner();
+    if (!owner) return;
+    void replayQueued(owner, () => undefined).then(({ uploaded }) => {
+      if (isQueueOwnerCurrent(owner) && uploaded) void load();
+    }).catch(() => undefined);
   }, [load]);
 
   const latestJobId = detail?.latest_job?.id;
@@ -116,30 +120,36 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
     finally { mutationFlight.current = false; setBusy(false); }
   }
 
-  async function runUpload(id: string, file: PickedFile) {
-    if (uploadFlights.current.has(id)) return;
+  async function runUpload(owner: QueueOwner, id: string, file: PickedFile) {
+    if (!isQueueOwnerCurrent(owner) || uploadFlights.current.has(id)) return;
+    const scopedClient = queueClient(owner);
     uploadFlights.current.add(id);
     setUploads((current) => current.map((item) => item.id === id ? { ...item, status: "uploading", progress: 0, error: undefined } : item));
-    const queued = (await loadQueue()).find((item) => item.kind === "upload" && item.id === id);
     try {
-      await uploadFile(client, project.id, file, (progress) => setUploads((current) => current.map((item) => item.id === id ? { ...item, progress } : item)), {
+      const queued = (await loadQueue(owner)).find((item) => item.kind === "upload" && item.id === id);
+      await uploadFile(owner, scopedClient, project.id, file, (progress) => setUploads((current) => current.map((item) => item.id === id ? { ...item, progress } : item)), {
         assetId: queued?.kind === "upload" ? queued.assetId : undefined,
         onAsset: async (assetId) => {
-          const entries = await loadQueue();
-          await saveQueue(entries.map((item) => (item.kind === "upload" && item.id === id ? { ...item, assetId } : item)));
+          const entries = await loadQueue(owner);
+          await saveQueue(owner, entries.map((item) => (item.kind === "upload" && item.id === id ? { ...item, assetId } : item)));
         },
       });
-      const rest = (await loadQueue()).filter((item) => item.id !== id);
-      await saveQueue(rest);
+      const rest = (await loadQueue(owner)).filter((item) => item.id !== id);
+      if (!isQueueOwnerCurrent(owner)) return;
+      await saveQueue(owner, rest);
+      if (!isQueueOwnerCurrent(owner)) return;
       setUploads((current) => current.map((item) => item.id === id ? { ...item, status: "done", progress: 100 } : item));
       await load();
     } catch (reason) {
+      if (!isQueueOwnerCurrent(owner)) return;
       setUploads((current) => current.map((item) => item.id === id ? { ...item, status: "failed", error: isOfflineError(reason) ? "已保存，联网后自动重试。" : explainError(reason, "上传失败") } : item));
     } finally { uploadFlights.current.delete(id); }
   }
 
   async function pickAndUpload() {
     if (picking.current || !canWrite) return;
+    const owner = currentQueueOwner();
+    if (!owner) { setError(QUEUE_PAUSED); return; }
     picking.current = true;
     setCheckingMedia(true);
     try {
@@ -150,6 +160,7 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
         uri: asset.uri, name: asset.name, mimeType: mediaType(asset.name) ?? "application/octet-stream", size: asset.size ?? 0,
       }));
       const warnings = await inspectPickedFiles(files);
+      assertQueueOwner(owner);
       if (warnings.length) {
         const confirmed = await new Promise<boolean>((resolve) => Alert.alert("素材检查提示", summarizeMediaWarnings(warnings), [
           { text: "重新选择", style: "cancel", onPress: () => resolve(false) },
@@ -159,11 +170,12 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
       }
       for (const file of files) {
         const id = `${Date.now()}-${++uploadSequence.current}`;
-        await enqueue({ kind: "upload", id, projectId: project.id, uri: file.uri, name: file.name, mimeType: file.mimeType, size: file.size, createdAt: Date.now() });
-        setUploads((current) => [...current, { id, file, progress: 0, status: "uploading" }]);
-        void runUpload(id, file);
+        await enqueue(owner, { kind: "upload", id, projectId: project.id, uri: file.uri, name: file.name, mimeType: file.mimeType, size: file.size, createdAt: Date.now() });
+        if (!isQueueOwnerCurrent(owner)) return;
+        setUploads((current) => [...current, { owner, id, file, progress: 0, status: "uploading" }]);
+        void runUpload(owner, id, file);
       }
-    } catch (reason) { setError(reason instanceof MediaPreflightError ? reason.message : explainError(reason, "选择文件失败")); }
+    } catch (reason) { if (isQueueOwnerCurrent(owner)) setError(reason instanceof MediaPreflightError ? reason.message : explainError(reason, "选择文件失败")); }
     finally { picking.current = false; setCheckingMedia(false); }
   }
 
@@ -259,7 +271,7 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
           {uploads.map((item) => <View key={item.id}>
             <Text style={textStyles.muted}>{item.file.name} · {item.progress}% · {item.status === "failed" ? "失败" : item.status === "done" ? "完成" : "上传中"}</Text>
             {item.error ? <Text style={textStyles.error}>{item.error}</Text> : null}
-            {item.status === "failed" ? <Button label="重试上传" onPress={() => void runUpload(item.id, item.file)} tone="ghost" /> : null}
+            {item.status === "failed" ? <Button label="重试上传" onPress={() => void runUpload(item.owner, item.id, item.file)} tone="ghost" /> : null}
           </View>)}
           {!detail.assets.length && !uploads.length ? <Text style={textStyles.muted}>暂无素材</Text> : null}
           <View style={styles.assetGrid}>

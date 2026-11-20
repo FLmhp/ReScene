@@ -1,8 +1,10 @@
 import type { ResceneClient } from "@rescene/api-client";
-import { inspectMedia, SAMPLE_SIDE } from "@rescene/uploader";
+import { inspectMedia, SAMPLE_SIDE, type QueueOwner } from "@rescene/uploader";
 import { File, Paths } from "expo-file-system";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import { decode } from "jpeg-js";
+
+import { assertQueueOwner, isQueueOwnerCurrent } from "./api";
 
 export type PickedFile = {
   uri: string;
@@ -42,6 +44,7 @@ async function postToOss(
   url: string,
   fields: Record<string, string>,
   file: PickedFile,
+  owner: QueueOwner,
   onProgress?: (percent: number) => void,
 ): Promise<void> {
   // Android's multipart encoder adds a per-part Content-Length that OSS rejects.
@@ -77,6 +80,7 @@ async function postToOss(
     } finally {
       writer.close();
     }
+    assertQueueOwner(owner);
     const result = await body.upload(url, {
       headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
       onProgress: ({ bytesSent, totalBytes }) => {
@@ -94,14 +98,18 @@ async function postToOss(
  * safe: the previous grant is simply discarded and the local file is untouched.
  */
 export async function uploadFile(
+  owner: QueueOwner,
   client: ResceneClient,
   projectId: string,
   file: PickedFile,
   onProgress?: (percent: number) => void,
   options?: { assetId?: string; onAsset?: (assetId: string) => void | Promise<void> },
 ): Promise<string> {
-  onProgress?.(0);
+  assertQueueOwner(owner);
+  const report = (percent: number) => { if (isQueueOwnerCurrent(owner)) onProgress?.(percent); };
+  report(0);
   const digest = await sha256Of(file);
+  assertQueueOwner(owner);
   const grant = options?.assetId
     ? await client.refreshUploadSession(options.assetId, "post")
     : await client.createUploadSession(projectId, {
@@ -112,9 +120,11 @@ export async function uploadFile(
       mode: "post",
     });
   await options?.onAsset?.(grant.asset_id);
+  assertQueueOwner(owner);
   if (!grant.url || !grant.fields) throw new Error("服务端未返回 PostObject 表单");
-  await postToOss(grant.url, grant.fields, file, onProgress);
+  await postToOss(grant.url, grant.fields, file, owner, report);
+  assertQueueOwner(owner);
   await client.completeAsset(grant.asset_id, file.size, digest);
-  onProgress?.(100);
+  report(100);
   return grant.asset_id;
 }

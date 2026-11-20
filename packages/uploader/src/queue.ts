@@ -5,6 +5,83 @@
  * retry, and the conflict rule live here so both clients behave alike.
  */
 
+export const QUEUE_PAUSED = "离线队列已暂停，请联网验证当前账户后重试。";
+export const LEGACY_QUEUE_NOTICE = "设备上有旧版离线数据，账户归属无法确认。请在当前账户重新创建项目或添加所需素材。";
+
+export type QueueCredential = { token: string; owner: string | null };
+export type QueueOwner = { id: string; generation: number };
+type SessionSnapshot = { token: string | null; generation: number };
+
+export function accountQueueKey(prefix: string, owner: QueueOwner): string {
+  return `${prefix}-${encodeURIComponent(owner.id).replace(/~/g, "%7E").replace(/%/g, "~")}`;
+}
+
+export function readQueueCredential(raw: string | null): QueueCredential | null {
+  if (!raw) return null;
+  if (!raw.startsWith("{")) return { token: raw, owner: null };
+  try {
+    const { token, owner } = JSON.parse(raw) as Partial<QueueCredential>;
+    if (typeof token === "string" && token) {
+      return { token, owner: typeof owner === "string" && owner.trim() ? owner : null };
+    }
+  } catch { /* Invalid local credentials require a fresh login. */ }
+  return null;
+}
+
+export function createQueueSession(initial: QueueCredential | null = null) {
+  let credential = initial;
+  let generation = 0;
+  const snapshot = (): SessionSnapshot => ({ token: credential?.token ?? null, generation });
+  const matches = (value: SessionSnapshot) => value.generation === generation && value.token === (credential?.token ?? null);
+  return {
+    snapshot,
+    matches,
+    reset() {
+      generation += 1;
+      credential = null;
+    },
+    update(expected: SessionSnapshot, next: QueueCredential | null) {
+      if (!matches(expected)) return false;
+      if (credential?.owner && credential.owner !== next?.owner) generation += 1;
+      credential = next;
+      return true;
+    },
+    owner(): QueueOwner | null {
+      return credential?.owner ? { id: credential.owner, generation } : null;
+    },
+    owns(owner: QueueOwner) {
+      return owner.generation === generation && owner.id === credential?.owner;
+    },
+  };
+}
+
+/** Reads JWT expiry only for local scheduling and queue suspension. */
+export function sessionExpiry(token: string): number | null {
+  const payload = token.split(".")[1];
+  if (!payload) return null;
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let output = "";
+  let buffer = 0;
+  let bits = 0;
+  for (const character of payload.replace(/-/g, "+").replace(/_/g, "/")) {
+    if (character === "=") break;
+    const value = alphabet.indexOf(character);
+    if (value < 0) return null;
+    buffer = ((buffer << 6) | value) & 0xffffff;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      output += String.fromCharCode((buffer >> bits) & 0xff);
+    }
+  }
+  try {
+    const claims = JSON.parse(output) as { exp?: unknown } | null;
+    return typeof claims?.exp === "number" ? claims.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
 export type QueuedUpload = {
   kind: "upload";
   id: string;

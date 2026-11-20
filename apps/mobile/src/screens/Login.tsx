@@ -2,7 +2,7 @@ import { ResceneApiError } from "@rescene/api-client";
 import { useState } from "react";
 import { Text } from "react-native";
 
-import { client, persistSession } from "../api";
+import { authenticate } from "../api";
 import { Button, Card, ErrorText, Field, Screen, Segmented, useTextStyles } from "../ui";
 
 const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -28,9 +28,7 @@ export function LoginScreen({ onSignedIn, notice }: { onSignedIn: () => void; no
     setBusy(true);
     setError("");
     try {
-      const result = mode === "register" ? await client.register(trimmed, password) : await client.login(trimmed, password);
-      await persistSession(result.access_token);
-      onSignedIn();
+      if (await authenticate(mode, trimmed, password)) onSignedIn();
     } catch (reason) {
       if (reason instanceof ResceneApiError) {
         if (reason.status === 409) setError("该邮箱已注册，请直接登录。");

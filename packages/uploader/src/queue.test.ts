@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { parseQueue, replayQueue, serializeQueue, type QueuedEntry, type QueuedUpload } from "./queue";
+import {
+  accountQueueKey, createQueueSession, parseQueue, readQueueCredential, replayQueue, serializeQueue,
+  sessionExpiry, type QueuedEntry, type QueuedUpload,
+} from "./queue";
 
 function upload(overrides: Partial<QueuedUpload> = {}): QueuedUpload {
   return {
@@ -85,5 +88,77 @@ describe("replayQueue", () => {
     });
     expect(seen).toEqual(["u1", "u2"]);
     expect(result).toMatchObject({ remaining: [first], created: 1, uploaded: 1, dropped: 0 });
+  });
+});
+
+
+describe("queue account ownership", () => {
+  it("keeps legacy records unclaimed and uses a stable key per verified account", () => {
+    const legacyKey = "rescene-queue";
+    const legacy = serializeQueue([project]);
+    const storage = new Map([[legacyKey, legacy]]);
+    const session = createQueueSession(readQueueCredential("old-session"));
+    expect(session.owner()).toBeNull();
+    const a = { id: "account/a", generation: 1 };
+    const b = { id: "account~2Fa", generation: 2 };
+    const aKey = accountQueueKey(legacyKey, a);
+    storage.set(aKey, serializeQueue([upload()]));
+    expect(accountQueueKey(legacyKey, { ...a, generation: 12 })).toBe(aKey);
+    expect(parseQueue(storage.get(accountQueueKey(legacyKey, b)) ?? null)).toEqual([]);
+    expect(storage.get(legacyKey)).toBe(legacy);
+    expect(parseQueue(storage.get(aKey) ?? null)).toEqual([upload()]);
+  });
+
+  it("restores a persisted binding for its exact token and ignores malformed metadata", () => {
+    const stored = readQueueCredential(JSON.stringify({ token: "verified-a", owner: "a" }));
+    const session = createQueueSession(stored);
+    expect(session.snapshot().token).toBe("verified-a");
+    expect(session.owner()?.id).toBe("a");
+    expect(readQueueCredential('{"token":"older","owner":42}')?.owner).toBeNull();
+    expect(readQueueCredential('{"token":')).toBeNull();
+    expect(sessionExpiry("jwt.eyJleHAiOjF9.signature")).toBe(1000);
+  });
+
+  it("keeps the queue generation across a verified same-account refresh", () => {
+    const session = createQueueSession({ token: "a-first", owner: "a" });
+    const before = session.snapshot();
+    const owner = session.owner()!;
+    expect(session.update(before, { token: "a-renewed", owner: "a" })).toBe(true);
+    expect(session.owns(owner)).toBe(true);
+    expect(session.snapshot().token).toBe("a-renewed");
+    expect(session.update(before, { token: "a-first", owner: "a" })).toBe(false);
+  });
+
+  it("rejects an old identity response and keeps the original key available when A returns", () => {
+    const session = createQueueSession({ token: "a-first", owner: "a" });
+    const pending = session.snapshot();
+    const a = session.owner()!;
+    session.reset();
+    expect(session.update(session.snapshot(), { token: "b-first", owner: "b" })).toBe(true);
+    expect(session.update(pending, { token: "a-first", owner: "a" })).toBe(false);
+    expect(session.owns(a)).toBe(false);
+    expect(session.owner()?.id).toBe("b");
+    session.reset();
+    expect(session.update(session.snapshot(), { token: "a-first", owner: "a" })).toBe(true);
+    expect(session.matches(pending)).toBe(false);
+    expect(session.owns(a)).toBe(false);
+    expect(accountQueueKey("queue", session.owner()!)).toBe(accountQueueKey("queue", a));
+  });
+
+  it("keeps entries queued when replay's original generation loses the session", async () => {
+    const session = createQueueSession({ token: "a-first", owner: "a" });
+    const owner = session.owner()!;
+    const request = vi.fn(async () => {
+      if (!session.owns(owner)) throw new Error("stale");
+      session.reset();
+      session.update(session.snapshot(), { token: "b-first", owner: "b" });
+    });
+    const result = await replayQueue([project, upload()], {
+      createProject: request,
+      upload: async () => { if (!session.owns(owner)) throw new Error("stale"); },
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(result.remaining).toEqual([upload()]);
+    expect(session.owner()?.id).toBe("b");
   });
 });
