@@ -56,6 +56,10 @@ export RESCENE_PUBLIC_WEB_URL=http://localhost:3000
 
 ### 其他客户端
 
+品牌图形以 [共享 SVG 母版](packages/design-tokens/assets/rescene-mark.svg) 为准。改图时同步检查 Web 与桌面、Android 启动器、小程序、官网 favicon、分享卡片与文档。
+
+更新 [Word 参考文档](docs/reference/README.md) 时先另存。Windows 上 OfficeCLI 1.0.162 已验证可创建、插图、重开与渲染 DOCX，原件的表格校验结果可用于比对更新前后是否引入新问题。
+
 | 客户端 | 开发命令 | 说明 |
 |---|---|---|
 | 桌面前端 | `pnpm --filter @rescene/desktop dev` | 只启动 Vite，不启动原生窗口 |

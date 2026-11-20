@@ -2,6 +2,7 @@
 /* Palette values mirror tokens.ts. */
 :root {
   color-scheme: light;
+  --brand-ink: #101827;
   --bg: #F3F5F9;
   --bg-deep: #E9EDF4;
   --bg-soft: #F8FAFC;

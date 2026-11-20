@@ -68,9 +68,7 @@ button {
   height: 44px;
   display: grid;
   place-items: center;
-  color: var(--on-accent);
-  background: var(--gradient-accent);
-  font-weight: 900;
+  background: var(--brand-ink);
   border-radius: var(--radius-md);
 }
 .eyebrow {

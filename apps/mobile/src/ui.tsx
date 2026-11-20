@@ -4,6 +4,7 @@ import { THEME_OPTIONS } from "@rescene/design-tokens";
 import { useAppearance } from "./appearance";
 import {
   ActivityIndicator,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -28,7 +29,13 @@ export function Screen({
 }) {
   const { theme } = useAppearance();
   const styles = makeStyles(theme);
-  const header = <View style={styles.header}><Text accessibilityRole="header" style={[styles.title, { flex: 1 }]}>{title}</Text><AppearancePicker /></View>;
+  const header = (
+    <View style={styles.header}>
+      <Image accessible={false} source={require("../assets/icon.png")} style={styles.brand} />
+      <Text accessibilityRole="header" style={[styles.title, { flex: 1 }]}>{title}</Text>
+      <AppearancePicker />
+    </View>
+  );
   if (scroll) {
     return (
       <View style={styles.stage}>
@@ -205,6 +212,7 @@ export function ErrorText({ children }: { children: ReactNode }) {
 
 const makeStyles = (theme: Palette) => StyleSheet.create({
   header: { flexDirection: "row", alignItems: "center", gap: 12, flexWrap: "wrap" },
+  brand: { width: 32, height: 32, flexShrink: 0 },
   stage: { flex: 1, backgroundColor: theme.bg },
   scroll: { flex: 1, backgroundColor: "transparent" },
   scrollContent: { flexGrow: 1, padding: spacing.lg, gap: spacing.md },

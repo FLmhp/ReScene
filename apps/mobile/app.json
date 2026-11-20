@@ -24,7 +24,7 @@
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#111318"
+        "backgroundColor": "#101827"
       }
     },
     "plugins": [
@@ -34,7 +34,7 @@
           "image": "./assets/splash-icon.png",
           "imageWidth": 220,
           "resizeMode": "contain",
-          "backgroundColor": "#111318"
+          "backgroundColor": "#101827"
         }
       ],
       "./withAndroidReleaseSigning"

@@ -1,7 +1,8 @@
 import { darkColors, lightColors, THEME_OPTIONS, THEME_STORAGE_KEY, themePreference } from "@rescene/design-tokens";
-import { Picker, Text, View } from "@tarojs/components";
+import { Image, Picker, Text, View } from "@tarojs/components";
 import Taro, { useDidShow } from "@tarojs/taro";
 import { useEffect, useState, type PropsWithChildren } from "react";
+import brandIcon from "./assets/brand-icon.png";
 
 export function Screen({ children }: PropsWithChildren) {
   const [preference, setPreference] = useState(() => {
@@ -29,7 +30,10 @@ export function Screen({ children }: PropsWithChildren) {
   }, []);
   return <View className={`screen theme-${dark ? "dark" : "light"}`}>
     <View className="appearance-bar">
-      <Text className="brand-wordmark">ReScene</Text>
+      <View className="brand">
+        <Image className="brand-icon" src={brandIcon} mode="aspectFit" aria-hidden="true" />
+        <Text className="brand-wordmark">ReScene</Text>
+      </View>
       <Picker mode="selector" range={THEME_OPTIONS.map((item) => item.label)} value={themeIndex} onChange={(event) => {
         const selected = THEME_OPTIONS[Number(event.detail.value)];
         if (!selected) return;

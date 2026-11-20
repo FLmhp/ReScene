@@ -324,6 +324,8 @@ page { background: #f3f5f9; font-family: -apple-system, 'PingFang SC', sans-seri
 .screen { background: var(--bg); color: var(--fg); }
 
 .appearance-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-icon { width: 54px; height: 54px; flex-shrink: 0; }
 .theme-trigger { gap: 10px; white-space: nowrap; }
 .brand-wordmark { font-size: 30px; font-weight: 800; letter-spacing: -1px; color: var(--accent); }
 .project-tile { padding: 24px; min-height: 108px; box-sizing: border-box; border-radius: 20px; background: var(--panel); border: 1px solid var(--border-soft); display: flex; flex-direction: column; justify-content: center; gap: 6px; }

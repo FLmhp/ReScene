@@ -6,3 +6,8 @@ declare namespace NodeJS {
 }
 
 declare const defineAppConfig: <T>(config: T) => T;
+
+declare module "*.png" {
+  const asset: string;
+  export default asset;
+}

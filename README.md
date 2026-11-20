@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="packages/design-tokens/assets/rescene-mark.svg" width="80" alt="ReScene 标志">
+  <img src="packages/design-tokens/assets/rescene-icon.svg" width="80" alt="ReScene RS 字标">
 </p>
 
 <h1 align="center">ReScene</h1>
@@ -50,6 +50,8 @@ ReScene 把团队工作台、GPU 重建引擎和 SPZ 查看器放在同一个仓
 | 微信小程序 | 已在真实 AppID 验证登录、图片上传、排队和浏览器分享。新版使用系统主题选择器和分区导航 |
 
 生产 API、Web 和 Worker 继续使用现有版本。切换前需补齐最新版微信体验版复测和 Android 视频任务重启恢复的真机记录。 [0.4.1 验收报告](artifacts/test-runs/2026-11-20-release-041/report.md)
+
+0.4.1 候选采用青色 R 与蓝紫色 S 组成的新标志。技术设计和中期报告的现状附录见 [Word 文档索引](docs/reference/README.md)。 [项目官网](https://rescene.xyz/)
 
 > [!IMPORTANT]
 > 仓库和 GitHub Release 为私有，仅授权协作者可访问。桌面安装包未签名，macOS 未公证；构建成功不等于各平台安装验收完成。限制与已发布文件以 [0.4.0 发布说明](docs/0.4.0发布说明.md) 为准。
