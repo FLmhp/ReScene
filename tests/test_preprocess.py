@@ -5,7 +5,7 @@ import pytest
 from PIL import Image
 
 from rescene.pipeline import _ensure_downsampled_images
-from rescene.preprocess import classify_input, preprocess_input
+from rescene.preprocess import InvalidInputManifest, classify_input, preprocess_input, relocate_selected_images
 
 
 def _pattern(path: Path, offset: int = 0, size: tuple[int, int] = (32, 24)) -> None:
@@ -315,3 +315,43 @@ def test_frozen_validation_survives_duplicate_filtering(tmp_path: Path) -> None:
     assert captured[0]["selected"] is True and captured[0]["validation"] is True
     assert captured[0]["duplicate"] is True
     assert sum(frame["selected"] for frame in manifest["frames"]) == 6
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        b'{"frames":',
+        bytes([255]),
+        b"[]",
+        b"{}",
+        b'{"frames": {}}',
+        b'{"frames": [null]}',
+        b'{"frames": [{"selected": true}]}',
+        b'{"frames": [{"selected": true, "file": 42}]}',
+        b'{"frames": [{"selected": true, "file": ""}]}',
+    ],
+)
+def test_relocate_selected_images_rejects_invalid_manifest(tmp_path: Path, manifest: bytes) -> None:
+    manifest_path = tmp_path / "input_manifest.json"
+    manifest_path.write_bytes(manifest)
+
+    with pytest.raises(InvalidInputManifest):
+        relocate_selected_images(tmp_path)
+
+    assert manifest_path.read_bytes() == manifest
+
+
+def test_relocate_selected_images_preserves_legacy_fields(tmp_path: Path) -> None:
+    import json
+
+    image = tmp_path / "images" / "view.jpg"
+    image.parent.mkdir()
+    image.touch()
+    manifest_path = tmp_path / "input_manifest.json"
+    manifest = {"frames": [{"selected": True, "file": "/previous/images/view.jpg"}, {"selected": False}], "fixture": 1}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    relocate_selected_images(tmp_path)
+
+    manifest["frames"][0]["file"] = str(image)
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == manifest
