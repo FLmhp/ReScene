@@ -1,7 +1,7 @@
 export default defineAppConfig({
+  entryPagePath: "pages/index/index",
   pages: ["pages/index/index", "pages/project/index", "pages/viewer/index", "pages/admin/index"],
   darkmode: true,
-  lazyCodeLoading: "requiredComponents",
   window: {
     navigationBarTitleText: "ReScene",
     navigationBarBackgroundColor: "#0B0D12",

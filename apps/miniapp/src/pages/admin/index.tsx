@@ -1,4 +1,4 @@
-import { Screen } from "../../screen";
+import { Screen, WorkspaceEntry } from "../../screen";
 import { explainError, ResceneApiError } from "@rescene/api-client";
 import type {
   AdminUser,
@@ -35,6 +35,10 @@ function message(reason: unknown, fallback: string): string {
 }
 
 export default function AdminPage() {
+  return <WorkspaceEntry><AdminWorkspace /></WorkspaceEntry>;
+}
+
+function AdminWorkspace() {
   const [tab, setTab] = useState<Tab>("users");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");

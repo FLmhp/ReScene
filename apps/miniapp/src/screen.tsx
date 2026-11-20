@@ -1,32 +1,43 @@
 import { darkColors, lightColors, THEME_OPTIONS, THEME_STORAGE_KEY, themePreference } from "@rescene/design-tokens";
-import { Image, Picker, Text, View } from "@tarojs/components";
+import { Button, Image, Picker, Text, View } from "@tarojs/components";
 import Taro, { useDidShow } from "@tarojs/taro";
 import { useEffect, useState, type PropsWithChildren } from "react";
 import brandIcon from "./assets/brand-icon.png";
+import { hasToken } from "./api";
+import { openHome } from "./navigation";
+
+function systemTheme(): "light" | "dark" | undefined {
+  try { return Taro.getAppBaseInfo().theme; }
+  catch { return undefined; }
+}
 
 export function Screen({ children }: PropsWithChildren) {
   const [preference, setPreference] = useState(() => {
     try { return themePreference(Taro.getStorageSync(THEME_STORAGE_KEY)); } catch { return "system"; }
   });
-  const [system, setSystem] = useState(() => Taro.getAppBaseInfo().theme);
+  const [system, setSystem] = useState(systemTheme);
   const themeIndex = THEME_OPTIONS.findIndex((item) => item.value === preference);
   const dark = preference === "dark" || (preference === "system" && system === "dark");
   const palette = dark ? darkColors : lightColors;
   const apply = () => {
-    void Taro.setNavigationBarColor({ frontColor: dark ? "#ffffff" : "#000000", backgroundColor: palette.bg }).catch(() => undefined);
-    void Taro.setBackgroundColor({ backgroundColor: palette.bg, backgroundColorTop: palette.bg, backgroundColorBottom: palette.bg }).catch(() => undefined);
-    void Taro.setBackgroundTextStyle({ textStyle: dark ? "light" : "dark" }).catch(() => undefined);
+    void Promise.resolve().then(() => Taro.setNavigationBarColor({
+      frontColor: dark ? "#ffffff" : "#000000", backgroundColor: palette.bg,
+    })).catch(() => undefined);
+    void Promise.resolve().then(() => Taro.setBackgroundColor({
+      backgroundColor: palette.bg, backgroundColorTop: palette.bg, backgroundColorBottom: palette.bg,
+    })).catch(() => undefined);
+    void Promise.resolve().then(() => Taro.setBackgroundTextStyle({ textStyle: dark ? "light" : "dark" })).catch(() => undefined);
   };
   useDidShow(() => {
     try { setPreference(themePreference(Taro.getStorageSync(THEME_STORAGE_KEY))); } catch { /* Use current preference. */ }
-    setSystem(Taro.getAppBaseInfo().theme);
+    setSystem(systemTheme());
     apply();
   });
   useEffect(apply, [dark]);
   useEffect(() => {
     const change = (event: { theme: "light" | "dark" }) => setSystem(event.theme);
-    Taro.onThemeChange(change);
-    return () => Taro.offThemeChange(change);
+    Taro.onThemeChange?.(change);
+    return () => Taro.offThemeChange?.(change);
   }, []);
   return <View className={`screen theme-${dark ? "dark" : "light"}`}>
     <View className="appearance-bar">
@@ -47,4 +58,22 @@ export function Screen({ children }: PropsWithChildren) {
     </View>
     {children}
   </View>;
+}
+
+export function WorkspaceEntry({ children, hasTarget = true }: PropsWithChildren<{ hasTarget?: boolean }>) {
+  const [signedIn, setSignedIn] = useState(hasToken);
+  const allowed = signedIn && hasTarget;
+  const goHome = () => { void openHome().catch(() => undefined); };
+  useDidShow(() => {
+    const current = hasToken();
+    setSignedIn(current);
+    if (!current || !hasTarget) goHome();
+  });
+  if (allowed) return children;
+  return (
+    <Screen>
+      <Text className="title">{signedIn ? "项目入口已失效" : "请先登录"}</Text>
+      <Button className="button" onClick={goHome}>返回首页</Button>
+    </Screen>
+  );
 }

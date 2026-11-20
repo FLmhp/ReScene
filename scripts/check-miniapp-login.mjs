@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import { createContext, runInContext } from "node:vm";
 
 const dist = new URL("../apps/miniapp/dist/", import.meta.url);
+const app = JSON.parse(readFileSync(new URL("app.json", dist), "utf8"));
+assert.equal(app.entryPagePath, "pages/index/index");
+assert.equal(app.pages[0], app.entryPagePath);
+assert.equal(app.lazyCodeLoading, undefined);
 // The WeChat module wrapper has a local fetch binding independent of globalThis.
 const context = createContext({ wx: {}, fetch: undefined, setTimeout, clearTimeout });
 Object.defineProperty(context, "fetch", { get: () => undefined, set: () => {} });
@@ -23,11 +27,14 @@ await runInContext(`
     const runtime = entries.find(([, factory]) => String(factory).includes("navigator:function()") && String(factory).includes("requestAnimationFrame:function()"));
     const entry = entries.find(([, factory]) => String(factory).includes('"rescene-session-expired"') && String(factory).includes('"/v1/auth/login"'));
     const uploader = entries.find(([, factory]) => String(factory).includes("createOffscreenCanvas") && String(factory).includes("readFileSync"));
-    if (!taro || !runtime || !entry || !uploader) throw new Error("Cannot locate built Taro, login or upload modules");
+    const navigation = entries.find(([, factory]) => String(factory).includes(".reLaunch({url:") && String(factory).includes('"/pages/index/index"'));
+    if (!taro || !runtime || !entry || !uploader || !navigation) throw new Error("Cannot locate built Taro, login, navigation or upload modules");
+    let homeUrl;
     require.m[runtime[0]] = module => { module.exports = { navigator: { userAgent: "WeChat" } }; };
     require.m[taro[0]] = module => {
       module.exports = {
-        getStorageSync: () => "",
+        getStorageSync: () => { throw new Error("Storage unavailable at startup"); },
+        reLaunch: async ({url}) => { homeUrl = url; },
         getFileSystemManager: () => ({ readFileSync: path => new Uint8Array(path === "bad" ? [1, 2, 3] : [255, 216, 255]).buffer }),
         createOffscreenCanvas: ({ width, height }) => ({
           createImage: () => ({ set src(_) { this.onload(); } }),
@@ -50,6 +57,9 @@ await runInContext(`
     };
     const client = Object.values(require(entry[0])).find(value => typeof value?.login === "function");
     globalThis.loginResult = (async () => {
+      const openHome = Object.values(require(navigation[0])).find(value => typeof value === "function");
+      await openHome();
+      if (homeUrl !== "/pages/index/index") throw new Error("Stale entry did not return to the login route");
       const login = await client.login("test@example.org", "fixture-password");
       const user = await client.getMe();
       const [project] = await client.listProjects();
@@ -66,4 +76,4 @@ await runInContext(`
   loginResult;
 `, context, { displayErrors: false }).then(result => assert.deepEqual([...result], ["fixture-token", "user", "member", 1, "a1", 3, true]));
 assert.equal(runInContext("evalAttempts", context), 0);
-console.log("Built miniapp validates login, paged workspace, and media preflight using native API fixtures");
+console.log("Built miniapp validates startup recovery, login, paged workspace, and media preflight using native API fixtures");

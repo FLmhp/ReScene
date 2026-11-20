@@ -2,7 +2,8 @@ import { Screen } from "../../screen";
 import { Button, Text, View } from "@tarojs/components";
 import Taro, { useRouter, useShareAppMessage } from "@tarojs/taro";
 
-import { webBaseUrl } from "../../api";
+import { hasToken, webBaseUrl } from "../../api";
+import { HOME_PAGE, openHome } from "../../navigation";
 
 function decodeParam(value: string | undefined): string {
   if (!value) return "";
@@ -14,7 +15,7 @@ function decodeParam(value: string | undefined): string {
 }
 
 export default function ViewerPage() {
-  const { params } = useRouter();
+  const params = useRouter()?.params ?? {};
   const reconstruction = decodeParam(params.id);
   const share = decodeParam(params.share);
   const baseUrl = (webBaseUrl ?? "").replace(/\/+$/, "");
@@ -23,7 +24,7 @@ export default function ViewerPage() {
 
   useShareAppMessage(() => ({
     title: "ReScene 三维场景",
-    path: share ? `/pages/viewer/index?share=${encodeURIComponent(share)}` : "/pages/index/index",
+    path: share ? `/pages/viewer/index?share=${encodeURIComponent(share)}` : HOME_PAGE,
   }));
 
   const src = validBase && validRoute
@@ -37,6 +38,8 @@ export default function ViewerPage() {
       <Text className="title">三维场景</Text>
       {!validRoute ? (
         <Text className="error">场景链接无效。请从项目重新打开，或使用有效的分享链接。</Text>
+      ) : reconstruction && !hasToken() ? (
+        <Text className="error">登录后可从项目打开该场景。</Text>
       ) : !validBase ? (
         <Text className="error">查看器地址未配置为有效的 HTTPS 地址，请联系管理员。</Text>
       ) : (
@@ -52,6 +55,7 @@ export default function ViewerPage() {
           </Button>
         </View>
       )}
+      <Button className="button ghost" onClick={() => void openHome().catch(() => undefined)}>返回首页</Button>
     </Screen>
   );
 }

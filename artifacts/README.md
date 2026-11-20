@@ -34,3 +34,5 @@
 0.4.0 双主题的宽窄屏与原生客户端截图保存在 test-runs/2026-11-18-ui-v040/screenshots，数据来源与平台状态以本轮报告为准。
 
 0.4.1 候选的 [安装包 SHA-256](test-runs/2026-11-20-release-041/installers.sha256)、[六条 GPU 任务](test-runs/2026-11-20-release-041/gpu-matrix.json) 和 [重载记录](test-runs/2026-11-20-release-041/gpu-reload.json) 随验收报告归档。正式包仍见 [0.4.0 Release](https://github.com/FLmhp/ReScene/releases/tag/v0.4.0)。
+
+RS 字标、官网上线、客户端新标构建与微信启动修复见 [品牌更新记录](test-runs/2026-11-20-brand-refresh/report.md)。

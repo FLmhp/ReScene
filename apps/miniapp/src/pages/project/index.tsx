@@ -1,4 +1,4 @@
-import { Screen } from "../../screen";
+import { Screen, WorkspaceEntry } from "../../screen";
 import { AssetThumbnail } from "../../asset-thumbnail";
 import { explainError, isOfflineError, ResceneApiError } from "@rescene/api-client";
 import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, canRetryJob, jobErrorHint, queuedJobHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
@@ -61,16 +61,20 @@ const message = (reason: unknown, fallback: string) => {
 };
 
 export default function ProjectPage() {
-  const router = useRouter();
-  const [section, setSection] = useState<ProjectSection>(router.params.view === "tasks" ? "tasks" : "materials");
-  const requestedJob = useRef(router.params.job);
+  const params = useRouter()?.params ?? {};
+  return <WorkspaceEntry hasTarget={Boolean(params.id)}><ProjectWorkspace params={params} /></WorkspaceEntry>;
+}
+
+function ProjectWorkspace({ params }: { params: Record<string, string | undefined> }) {
+  const [section, setSection] = useState<ProjectSection>(params.view === "tasks" ? "tasks" : "materials");
+  const requestedJob = useRef(params.job);
   const [showManagement, setShowManagement] = useState(false);
   const [assetPages, setAssetPages] = useState([""]);
   const [jobPages, setJobPages] = useState([""]);
   const [pageLoading, setPageLoading] = useState(false);
   const requestId = useRef(0);
   const [showLogs, setShowLogs] = useState(false);
-  const projectId = router.params.id ?? "";
+  const projectId = params.id ?? "";
   const [detail, setDetail] = useState<ProjectWorkspace | null>(null);
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [worker, setWorker] = useState<WorkerStatus | null>(null);

@@ -65,11 +65,12 @@ export default function IndexPage() {
   const booted = useRef(false);
 
   useEffect(() => {
-    const pending = Taro.getStorageSync<string>(EXPIRY_NOTICE_KEY);
-    if (pending) {
-      Taro.removeStorageSync(EXPIRY_NOTICE_KEY);
-      setError(EXPIRED_NOTICE);
-    }
+    try {
+      if (Taro.getStorageSync<string>(EXPIRY_NOTICE_KEY)) {
+        Taro.removeStorageSync(EXPIRY_NOTICE_KEY);
+        setError(EXPIRED_NOTICE);
+      }
+    } catch { /* The login form is available even when local storage fails. */ }
     return onSessionExpired(() => {
       Taro.setStorageSync(EXPIRY_NOTICE_KEY, "1");
       setUser(null);

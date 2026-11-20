@@ -2,9 +2,9 @@ import { miniappFetch, setUnauthorizedHandler } from "./polyfill";
 
 import { ResceneClient } from "@rescene/api-client";
 import Taro from "@tarojs/taro";
+import { HOME_PAGE, openHome } from "./navigation";
 
 const TOKEN_KEY = "rescene-token";
-const LOGIN_PAGE = "/pages/index/index";
 // api.ts relaunches the login page; this marker survives that remount so the
 // notice stays actionable even when another page saw the 401 first.
 const EXPIRY_NOTICE_KEY = "rescene-session-expired";
@@ -14,7 +14,12 @@ const ANONYMOUS_AUTH_PATHS = ["/v1/auth/login", "/v1/auth/register"];
 export const apiBaseUrl = process.env.TARO_APP_API_URL;
 export const webBaseUrl = process.env.TARO_APP_WEB_URL;
 
-export const client = new ResceneClient(apiBaseUrl, Taro.getStorageSync<string>(TOKEN_KEY) || null, miniappFetch);
+function storedToken(): string | null {
+  try { return Taro.getStorageSync<string>(TOKEN_KEY) || null; }
+  catch { return null; }
+}
+
+export const client = new ResceneClient(apiBaseUrl, storedToken(), miniappFetch);
 
 const expiryListeners = new Set<() => void>();
 let expired = false;
@@ -48,8 +53,8 @@ function expireSession(): void {
   } catch {
     current = undefined;
   }
-  if (current && `/${current}` === LOGIN_PAGE) return;
-  void Taro.reLaunch({ url: LOGIN_PAGE }).catch(() => undefined);
+  if (current && `/${current}` === HOME_PAGE) return;
+  void openHome().catch(() => undefined);
 }
 
 setUnauthorizedHandler(({ url, authorization }) => {
@@ -73,5 +78,5 @@ export function clearToken(): void {
 }
 
 export function hasToken(): boolean {
-  return Boolean(Taro.getStorageSync<string>(TOKEN_KEY));
+  return Boolean(client.getToken());
 }
