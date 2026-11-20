@@ -20,4 +20,6 @@
 - Web、桌面、Android 导出和实际 AppID 的微信包均已构建，`pnpm quality` 通过。
 - Windows NSIS 候选已覆盖安装并显示新字标。Android APK 使用既有签名，已生成并校验。 [Windows 实际安装图标](screenshots/windows-native-mark.png) · [两份候选包 SHA-256](installers.sha256)
 - 微信启动修复显式配置首页，失效入口返回首页。开发者工具已显示登录表单，构建产物通过启动回退、登录、素材预检与分页夹具测试。
-- 最新微信体验版冷启动、主题和导航尚待真机验证。Android 平板在 USB 重连后报告 ADB 离线，视频任务重启恢复待复测。正式版仍为 0.4.0。
+- 用户确认 `1c5e658` 微信体验版冷启动正常，无需点主页按钮。主题和导航继续按新版体验版验收。
+- Android 平板 BKY-W10 已成功覆盖安装 RS 字标签名 APK。真机选择已上传的 `ReScene041.mp4`，提交 BALANCED 任务 `f8201574-991a-4f88-bc8a-9b1c86f370d8`。强制结束应用并重开后，从项目历史打开同一任务，仍为 `QUEUED`，尝试次数为 0。API 核对项目只新增这一条任务。 [重启前](screenshots/android-video-queued-before-restart.png) · [重启后](screenshots/android-video-queued-after-restart.png) · [校验结果](android-video-restart.json)
+- RTX 5090 暂未开机，该任务保留排队。视频训练、产物发布和正式切换待下一次上电。正式版仍为 0.4.0。
