@@ -18,7 +18,7 @@ if (navigation) {
       summary?.focus();
     }
   });
-  const desktop = window.matchMedia("(min-width: 761px)");
+  const desktop = window.matchMedia("(width > 800px)");
   desktop.addEventListener("change", (event) => {
     if (event.matches) navigation.open = false;
   });

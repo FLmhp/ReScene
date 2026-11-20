@@ -137,6 +137,7 @@ def check_site():
         ("/social-card.svg", "image/svg+xml"),
         ("/media/admin-console.webp", "image/webp"),
         ("/media/mobile-drawer.webp", "image/webp"),
+        ("/media/viewer-reconstruction.webp", "image/webp"),
         ("/robots.txt", "text/plain"),
         ("/sitemap.xml", "application/xml"),
     ):
