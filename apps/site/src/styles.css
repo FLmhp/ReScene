@@ -236,7 +236,7 @@ tbody td { color: var(--muted); font-size: .9375rem; }
   .actions .button { flex: 1 1 auto; padding-inline: 10px; }
   .feature-grid article { padding-top: 14px; }
   table { table-layout: fixed; }
-  table thead th:first-child { width: 21%; }
+  table thead th:first-child { width: 5.5rem; }
   table thead th:nth-child(2) { width: 26%; }
   th, td { padding: 10px 6px; overflow-wrap: anywhere; }
 }
