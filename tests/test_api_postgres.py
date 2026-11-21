@@ -9,14 +9,23 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import MetaData, Table, create_engine, event, select
+from sqlalchemy import MetaData, Table, create_engine, event, inspect, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from rescene_api import main
 from rescene_api.auth import hash_password, issue_token
 from rescene_api.config import settings
-from rescene_api.models import Asset, AuditLog, Project, ProjectInvitation, ProjectMember, ReconstructionJob, User
+from rescene_api.models import (
+    Asset,
+    AssetCleanup,
+    AuditLog,
+    Project,
+    ProjectInvitation,
+    ProjectMember,
+    ReconstructionJob,
+    User,
+)
 
 
 def migrate(connection, revision):
@@ -393,3 +402,80 @@ def test_postgres_stale_upload_cleanup_fences_completion(postgres_sessions, stal
     with postgres_sessions() as db:
         assert db.get(Asset, asset_id) is None
         assert db.scalars(select(AuditLog.action).where(AuditLog.target_id == asset_id)).all() == ["asset.expire"]
+
+
+@pytest.mark.parametrize("postgres_sessions", ["0007"], indirect=True)
+def test_postgres_asset_cleanup_migration_reaches_head(postgres_sessions):
+    with postgres_sessions.kw["bind"].begin() as connection:
+        assert "asset_cleanups" not in set(inspect(connection).get_table_names())
+        migrate(connection, "head")
+        assert "asset_cleanups" in set(inspect(connection).get_table_names())
+    with postgres_sessions() as db:
+        assert db.scalars(select(AssetCleanup)).all() == []
+
+
+def test_postgres_delete_queues_the_object_and_the_reaper_removes_it_once(postgres_sessions, monkeypatch):
+    object_key = "queued/frame.jpg"
+    deleted: list[str] = []
+    monkeypatch.setattr(main, "storage", lambda: SimpleNamespace(delete=deleted.append))
+    with postgres_sessions.begin() as db:
+        owner = User(email="queue@example.com", password_hash=hash_password("correct-horse"))
+        db.add(owner)
+        db.flush()
+        project = Project(name="Queued deletes", owner_id=owner.id)
+        db.add(project)
+        db.flush()
+        asset = Asset(
+            project_id=project.id,
+            object_key=object_key,
+            filename="frame.jpg",
+            size=10,
+            content_type="image/jpeg",
+            sha256="a" * 64,
+            status="READY",
+        )
+        db.add(asset)
+        db.flush()
+        headers = {"Authorization": f"Bearer {issue_token(owner.id)}"}
+        project_id, asset_id = project.id, asset.id
+
+    with TestClient(main.app) as client:
+        # Deleting first removes the row from every later job's candidate set.
+        assert client.delete(f"/v1/assets/{asset_id}", headers=headers).status_code == 204
+        assert deleted == []
+        refused = client.post(f"/v1/projects/{project_id}/jobs", headers=headers, json={"asset_ids": [asset_id]})
+        assert refused.status_code == 422
+        with postgres_sessions() as db:
+            queued = db.scalars(select(AssetCleanup)).all()
+            assert [(row.object_key, row.reason, row.attempts) for row in queued] == [(object_key, "asset.delete", 0)]
+
+        assert main.reap_asset_cleanups() == 1
+        assert deleted == [object_key]
+        assert main.reap_asset_cleanups() == 0
+        assert deleted == [object_key]
+        with postgres_sessions() as db:
+            assert db.scalars(select(AssetCleanup)).all() == []
+            assert db.get(Asset, asset_id) is None
+
+
+def test_postgres_job_input_blocks_a_later_delete(postgres_sessions, stale_upload, monkeypatch):
+    project_id, asset_id, object_key, headers = stale_upload
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        main,
+        "storage",
+        lambda: SimpleNamespace(head=lambda key: (10, "image/jpeg"), delete=lambda key: deleted.append(key)),
+    )
+    with postgres_sessions() as db:
+        db.get(Asset, asset_id).status = "READY"
+        db.commit()
+    with TestClient(main.app) as client:
+        created = client.post(f"/v1/projects/{project_id}/jobs", headers=headers, json={"asset_ids": [asset_id]})
+        assert created.status_code == 201
+        refused = client.delete(f"/v1/assets/{asset_id}", headers=headers)
+        assert refused.status_code == 409
+        assert refused.headers["x-error-code"] == "asset.in_use"
+    with postgres_sessions() as db:
+        assert db.get(Asset, asset_id) is not None
+        assert db.scalars(select(AssetCleanup)).all() == []
+    assert deleted == []

@@ -37,6 +37,7 @@ from rescene_api.models import (
     Announcement,
     Artifact,
     Asset,
+    AssetCleanup,
     AuditLog,
     JobLog,
     JobStage,
@@ -1005,7 +1006,7 @@ def refresh_upload_session(
 
 @app.delete("/v1/assets/{asset_id}", status_code=204)
 def delete_asset(asset_id: str, db: Db, user: UserDep) -> None:
-    """Remove one unused asset together with its object."""
+    """Remove one unused asset; the cleanup queue removes its object after commit."""
     asset = db.get(Asset, asset_id)
     if not asset:
         fail(status.HTTP_404_NOT_FOUND, "Asset not found", "asset.not_found")
@@ -1015,12 +1016,8 @@ def delete_asset(asset_id: str, db: Db, user: UserDep) -> None:
         fail(status.HTTP_404_NOT_FOUND, "Asset not found", "asset.not_found")
     if asset_referenced(db, asset):
         fail(status.HTTP_409_CONFLICT, "Asset is used by a job", "asset.in_use")
-    try:
-        with suppress(oss2.exceptions.NotFound):
-            storage().delete(asset.object_key)
-    except oss2.exceptions.AccessDenied as error:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Asset storage refused the deletion") from error
     audit(db, user.id, "asset.delete", "asset", asset.id, project_id=asset.project_id, filename=asset.filename)
+    db.add(AssetCleanup(object_key=asset.object_key, reason="asset.delete"))
     db.delete(asset)
     db.commit()
 
@@ -1467,9 +1464,47 @@ def recover_expired_leases(db: Session, current_time: datetime) -> None:
         job.updated_at = current_time
 
 
+CLEANUP_BATCH = 50
+CLEANUP_MAX_BACKOFF = 3600
+
+
+def reap_asset_cleanups(limit: int = CLEANUP_BATCH) -> int:
+    """Delete queued objects in their own transaction and return how many finished.
+
+    The asset row is already committed as removed, so a failure here only delays
+    the bytes; a missing object means an earlier attempt succeeded.
+    """
+    removed = 0
+    with SessionLocal() as db:
+        due = db.scalars(
+            select(AssetCleanup)
+            .where(AssetCleanup.next_attempt_at <= now())
+            .order_by(AssetCleanup.next_attempt_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        ).all()
+        for record in due:
+            try:
+                with suppress(oss2.exceptions.NotFound, oss2.exceptions.NoSuchKey):
+                    storage().delete(record.object_key)
+            except (HTTPException, ClientException, ServerException, oss2.exceptions.OssError) as error:
+                record.attempts += 1
+                record.next_attempt_at = now() + timedelta(seconds=min(CLEANUP_MAX_BACKOFF, 60 * 2**record.attempts))
+                record.last_error = f"{type(error).__name__}: {error}"[:500]
+                logger.warning("Could not delete %s yet (%s)", record.object_key, type(error).__name__)
+                continue
+            db.delete(record)
+            removed += 1
+        db.commit()
+    if removed:
+        logger.info("Removed %s queued objects", removed)
+    return removed
+
+
 def reap_once() -> None:
     with SessionLocal.begin() as db:
         recover_expired_leases(db, now())
+    reap_asset_cleanups()
 
 
 async def reap_expired_leases() -> None:

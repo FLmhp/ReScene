@@ -18,6 +18,7 @@ from rescene_api.db import SessionLocal
 from rescene_api.main import app
 from rescene_api.models import (
     Asset,
+    AssetCleanup,
     AuditLog,
     JobStage,
     Notification,
@@ -312,9 +313,13 @@ def test_asset_delete_and_stale_upload_expiry(monkeypatch) -> None:
         assert session.status_code == 201
         grant = session.json()
         assert client.delete(f"/v1/assets/{grant['asset_id']}", headers=headers).status_code == 204
-        assert store.deleted == [grant["object_key"]]
+        assert store.deleted == []
         assert client.get(f"/v1/projects/{project_id}", headers=headers).json()["assets"] == []
         assert client.delete(f"/v1/assets/{grant['asset_id']}", headers=headers).status_code == 404
+        assert main.reap_once() is None
+        assert store.deleted == [grant["object_key"]]
+        with SessionLocal() as db:
+            assert db.scalars(select(AssetCleanup)).all() == []
 
         with SessionLocal() as db:
             stale = Asset(
@@ -432,6 +437,89 @@ def test_stale_upload_expiry_retries_storage_failures(monkeypatch) -> None:
             assert db.get(Asset, assets["retry"].id) is None
             audit_ids = db.scalars(select(AuditLog.target_id).where(AuditLog.action == "asset.expire")).all()
             assert sorted(audit_ids) == sorted([assets["expired"].id, assets["retry"].id])
+
+
+def register_asset(client, email: str) -> tuple[dict[str, str], str, dict[str, object]]:
+    created = client.post("/v1/auth/register", json={"email": email, "password": "correct-horse"})
+    headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+    project_id = client.post("/v1/projects", headers=headers, json={"name": "Cleanup queue"}).json()["id"]
+    session = client.post(
+        f"/v1/projects/{project_id}/assets/upload-session",
+        headers=headers,
+        json={"filename": "frame.jpg", "size": 2048, "content_type": "image/jpeg", "sha256": "a" * 64},
+    )
+    assert session.status_code == 201
+    return headers, project_id, session.json()
+
+
+def test_asset_delete_keeps_the_row_and_bytes_when_the_commit_fails(monkeypatch) -> None:
+    store = RecordingStore()
+    monkeypatch.setattr(main, "storage", lambda: store)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        headers, project_id, grant = register_asset(client, "conflict@example.com")
+        with SessionLocal() as db:
+            db.add(AssetCleanup(object_key=str(grant["object_key"]), reason="asset.delete", next_attempt_at=now()))
+            db.commit()
+
+        failed = client.delete(f"/v1/assets/{grant['asset_id']}", headers=headers)
+        assert failed.status_code == 500
+        assert store.deleted == []
+        detail = client.get(f"/v1/projects/{project_id}", headers=headers).json()
+        assert [item["id"] for item in detail["assets"]] == [grant["asset_id"]]
+        with SessionLocal() as db:
+            assert db.get(Asset, str(grant["asset_id"])) is not None
+            assert db.get(Asset, str(grant["asset_id"])).status == "UPLOADING"
+            assert db.scalars(select(AuditLog).where(AuditLog.action == "asset.delete")).all() == []
+            db.delete(db.scalar(select(AssetCleanup)))
+            db.commit()
+
+        assert client.delete(f"/v1/assets/{grant['asset_id']}", headers=headers).status_code == 204
+        assert store.deleted == []
+        main.reap_once()
+        assert store.deleted == [grant["object_key"]]
+
+
+def test_cleanup_queue_retries_transient_failures_with_backoff(monkeypatch) -> None:
+    store = RecordingStore()
+    monkeypatch.setattr(main, "storage", lambda: store)
+    with TestClient(app) as client:
+        headers, project_id, grant = register_asset(client, "backoff@example.com")
+        assert client.delete(f"/v1/assets/{grant['asset_id']}", headers=headers).status_code == 204
+        with SessionLocal() as db:
+            record = db.scalar(select(AssetCleanup))
+            assert record is not None and record.object_key == grant["object_key"] and record.attempts == 0
+            store.errors[str(grant["object_key"])] = oss2.exceptions.OssError(503, {}, "ServiceUnavailable", {})
+
+        assert main.reap_asset_cleanups() == 0
+        with SessionLocal() as db:
+            record = db.scalar(select(AssetCleanup))
+            assert record is not None
+            assert record.attempts == 1
+            assert record.last_error is not None and "OssError" in record.last_error
+            assert record.next_attempt_at.replace(tzinfo=UTC) > now() + timedelta(seconds=60)
+            record.next_attempt_at = now() - timedelta(seconds=1)
+            db.commit()
+
+        store.errors.clear()
+        assert main.reap_asset_cleanups() == 1
+        assert store.deleted == [grant["object_key"]]
+        with SessionLocal() as db:
+            assert db.scalars(select(AssetCleanup)).all() == []
+
+
+def test_cleanup_queue_treats_a_missing_object_as_done(monkeypatch) -> None:
+    store = RecordingStore()
+    monkeypatch.setattr(main, "storage", lambda: store)
+    with TestClient(app) as client:
+        headers, _, grant = register_asset(client, "missing-object@example.com")
+        assert client.delete(f"/v1/assets/{grant['asset_id']}", headers=headers).status_code == 204
+        with SessionLocal() as db:
+            store.errors[str(grant["object_key"])] = oss2.exceptions.NoSuchKey(404, {}, "", {"Code": "NoSuchKey"})
+
+        assert main.reap_asset_cleanups() == 1
+        assert store.deleted == []
+        with SessionLocal() as db:
+            assert db.scalars(select(AssetCleanup)).all() == []
 
 
 def test_password_change_revokes_other_sessions() -> None:

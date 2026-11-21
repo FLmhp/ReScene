@@ -59,6 +59,19 @@ class Asset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class AssetCleanup(Base):
+    """Deferred object deletion: the row commits first, the bytes follow."""
+
+    __tablename__ = "asset_cleanups"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    object_key: Mapped[str] = mapped_column(Text, unique=True, index=True)
+    reason: Mapped[str] = mapped_column(String(40), default="asset.delete")
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class ReconstructionJob(Base):
     __tablename__ = "reconstruction_jobs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
