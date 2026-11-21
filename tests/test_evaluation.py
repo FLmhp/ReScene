@@ -30,6 +30,88 @@ def test_similarity_alignment_recovers_transform() -> None:
     assert np.allclose(translation, [3, -2, 7])
 
 
+def test_similarity_alignment_accepts_a_planar_layout() -> None:
+    source = np.asarray([[0.0, 0, 5], [1, 0, 5], [0, 1, 5], [1, 1, 5]])
+    rotation = np.asarray([[0.0, 0, 1], [0, 1, 0], [-1, 0, 0]])
+    target = 0.5 * (source @ rotation.T) + np.asarray([1.0, 2, 3])
+
+    scale, actual_rotation, translation = similarity_alignment(source, target)
+
+    assert np.isclose(scale, 0.5)
+    assert np.allclose(actual_rotation, rotation)
+    assert np.allclose(translation, [1, 2, 3])
+
+
+@pytest.mark.parametrize(
+    ("source", "target", "message"),
+    [
+        (
+            np.asarray([[0.0, 0, 0], [0, 0, 0], [0, 0, 0]]),
+            np.asarray([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]]),
+            "Predicted camera positions are degenerate",
+        ),
+        (
+            np.asarray([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]]),
+            np.asarray([[2.0, 2, 2], [2, 2, 2], [2, 2, 2]]),
+            "Reference camera positions are degenerate",
+        ),
+        (
+            np.asarray([[0.0, 0, 0], [1, 0, 0], [2, 0, 0]]),
+            np.asarray([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]]),
+            "Predicted camera positions do not span two independent directions",
+        ),
+        (
+            np.asarray([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]]),
+            np.asarray([[0.0, 0, 0], [0, 1, 0], [0, 2, 0]]),
+            "Reference camera positions do not span two independent directions",
+        ),
+        (
+            np.asarray([[0.0, 0, 0], [1, 0, 0], [0, np.nan, 0]]),
+            np.asarray([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]]),
+            "Predicted camera positions must be finite",
+        ),
+    ],
+)
+def test_similarity_alignment_rejects_degenerate_layouts(source: np.ndarray, target: np.ndarray, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        similarity_alignment(source, target)
+
+
+def test_degenerate_reference_layout_keeps_existing_metrics(tmp_path: Path) -> None:
+    run_dir = _run_dir_with_cloud(tmp_path)
+    (run_dir / "metrics.json").write_text('{"pose_ate": 0.5}', encoding="utf-8")
+    mapping = {f"{index}.jpg": f"{index}.jpg" for index in range(3)}
+    (run_dir / "photometric_split.json").write_text(json.dumps({"image_to_source_id": mapping}), encoding="utf-8")
+
+    predicted_centers = [[0.0, 0, 0], [1, 0, 0], [0, 1, 0]]
+
+    def image(name: str, center: list[float]) -> SimpleNamespace:
+        return SimpleNamespace(
+            name=name,
+            projection_center=lambda: np.asarray(center, dtype=np.float64),
+            cam_from_world=lambda: SimpleNamespace(rotation=SimpleNamespace(matrix=lambda: np.eye(3))),
+        )
+
+    def reconstruction(path: Path) -> SimpleNamespace:
+        centers = predicted_centers if path == run_dir / "sparse" else [[5.0, 5, 5]] * 3
+        return SimpleNamespace(images={index: image(name, centers[index]) for index, name in enumerate(mapping)})
+
+    import rescene.evaluation as evaluation
+
+    original = sys.modules.get("pycolmap")
+    sys.modules["pycolmap"] = SimpleNamespace(Reconstruction=reconstruction)
+    try:
+        with pytest.raises(ValueError, match="Reference camera positions are degenerate"):
+            evaluation.evaluate_run(run_dir, tmp_path / "reference", run_dir / "dense" / "fused.ply", 0.02)
+    finally:
+        if original is None:
+            del sys.modules["pycolmap"]
+        else:
+            sys.modules["pycolmap"] = original
+
+    assert json.loads((run_dir / "metrics.json").read_text(encoding="utf-8")) == {"pose_ate": 0.5}
+
+
 def test_pose_errors_are_zero_after_similarity_alignment() -> None:
     source = np.asarray([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]])
     alignment = np.asarray([[0.0, -1, 0], [1, 0, 0], [0, 0, 1]])
