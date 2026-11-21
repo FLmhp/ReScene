@@ -26,7 +26,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import delete, func, or_, select, text, tuple_, update
+from sqlalchemy import and_, delete, func, or_, select, text, tuple_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1354,12 +1354,29 @@ def job_logs(
     }
 
 
+def notification_scope(user: User):
+    """Notifications are the recipient's own, and project ones need live access.
+
+    The project condition is a subquery, so list, badge and read updates agree
+    before pagination and after a membership is revoked or a project is deleted.
+    """
+    membership = select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)
+    projects = select(Project.id).where(
+        Project.deleted_at.is_(None),
+        or_(Project.id.in_(membership), Project.owner_id == user.id),
+    )
+    visible = Notification.project_id.is_(None)
+    if user.is_admin:
+        visible = or_(visible, Notification.project_id.in_(select(Project.id).where(Project.deleted_at.is_(None))))
+    return and_(Notification.user_id == user.id, or_(visible, Notification.project_id.in_(projects)))
+
+
 @app.get("/v1/notifications")
 def list_notifications(
     db: Db, user: UserDep, unread: int = 0, kind: str = "", offset: int = 0, limit: int = 50
 ) -> list[dict[str, object]]:
     """Newest notifications for the signed-in account, optionally unread or type filtered."""
-    query = select(Notification).where(Notification.user_id == user.id)
+    query = select(Notification).where(notification_scope(user))
     if unread:
         query = query.where(Notification.read_at.is_(None))
     if kind.strip():
@@ -1390,7 +1407,7 @@ def notification_count(db: Db, user: UserDep) -> dict[str, int]:
         db.scalar(
             select(func.count())
             .select_from(Notification)
-            .where(Notification.user_id == user.id, Notification.read_at.is_(None))
+            .where(notification_scope(user), Notification.read_at.is_(None))
         )
         or 0
     )
@@ -1400,7 +1417,7 @@ def notification_count(db: Db, user: UserDep) -> dict[str, int]:
 @app.post("/v1/notifications/read")
 def mark_notifications_read(payload: MarkNotificationsRequest, db: Db, user: UserDep) -> dict[str, int]:
     """Mark the listed notifications read, or every unread one when the list is empty."""
-    query = update(Notification).where(Notification.user_id == user.id, Notification.read_at.is_(None))
+    query = update(Notification).where(notification_scope(user), Notification.read_at.is_(None))
     if payload.ids:
         query = query.where(Notification.id.in_(payload.ids))
     result = db.execute(query.values(read_at=now()))
