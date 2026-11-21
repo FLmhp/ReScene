@@ -20,7 +20,7 @@ import type {
   User,
   WorkerStatus,
 } from "@rescene/schemas";
-import { inspectMedia, SAMPLE_SIDE, summarizeMediaWarnings, type UploadAdapter } from "@rescene/uploader";
+import { inspectMedia, newIdempotencyKey, SAMPLE_SIDE, summarizeMediaWarnings, type UploadAdapter } from "@rescene/uploader";
 import { type ComponentType, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { AdminConsole } from "./AdminConsole";
@@ -75,6 +75,8 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [uploading, setUploading] = useState(false);
   const [creating, setCreating] = useState(false);
   const createLock = useRef(false);
+  const projectAttempt = useRef<{ name: string; key: string } | null>(null);
+  const jobAttempt = useRef<{ signature: string; key: string } | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [scene, setScene] = useState<{ reconstructionId: string; kind: string } | null>(null);
   const sceneDialog = useRef<HTMLDialogElement>(null);
@@ -490,7 +492,17 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       setMessage("密码已更新，其他设备已退出登录。");
     });
   }
-  async function createProject(form: HTMLFormElement) { const name = String(new FormData(form).get("name") ?? "").trim(); if (!name) throw new Error("请输入项目名称"); const project = await client.createProject(name); form.reset(); selectProject(project.id); await refresh(); }
+  async function createProject(form: HTMLFormElement) {
+    const name = String(new FormData(form).get("name") ?? "").trim();
+    if (!name) throw new Error("请输入项目名称");
+    const attempt = projectAttempt.current?.name === name ? projectAttempt.current : { name, key: newIdempotencyKey() };
+    projectAttempt.current = attempt;
+    const project = await client.createProject(name, attempt.key);
+    projectAttempt.current = null;
+    form.reset();
+    selectProject(project.id);
+    await refresh();
+  }
   async function transfer(file: File, index: number, projectId: string) {
     setUploads((items) => items.map((item, n) => n === index ? { ...item, status: "上传中", retryable: false } : item));
     try {
@@ -543,8 +555,16 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   async function createJob() {
     if (createLock.current || !selected || !canWrite) return;
     if (!selectedAssets.length) throw new Error("请先选择至少一个素材");
+    const ids = selectedAssets.map((asset) => asset.id);
+    const signature = JSON.stringify([selected, profile, [...ids].sort()]);
+    const attempt = jobAttempt.current?.signature === signature ? jobAttempt.current : { signature, key: newIdempotencyKey() };
+    jobAttempt.current = attempt;
     createLock.current = true; setCreating(true);
-    try { const job = await client.createJob(selected, profile, selectedAssets.map((asset) => asset.id)); selectJob(job.id); setLiveJob(job); setPane("tasks"); setMessage("任务已进入队列"); await refresh(); } finally { createLock.current = false; setCreating(false); }
+    try {
+      const job = await client.createJob(selected, profile, ids, attempt.key);
+      jobAttempt.current = null;
+      selectJob(job.id); setLiveJob(job); setPane("tasks"); setMessage("任务已进入队列"); await refresh();
+    } finally { createLock.current = false; setCreating(false); }
   }
   async function openScene(id: string, kind?: string) { const manifest = await client.getManifest(id); if (activeReconstruction.current !== id) return; const artifactRow = kind ? manifest.artifacts.find((item) => item.kind === kind) : manifest.artifacts.find((item) => item.kind === "spz") ?? manifest.artifacts.find((item) => item.kind === "ply"); if (!artifactRow) throw new Error(kind ? `该重建没有 ${kind.toUpperCase()} 产物` : "该重建没有可查看的 SPZ 或 PLY 产物"); setArtifacts(manifest.artifacts); setViewerStatus(""); setScene({ reconstructionId: id, kind: artifactRow.kind }); }
   async function copy(text: string) { try { await navigator.clipboard.writeText(text); } catch { const area = document.createElement("textarea"); area.value = text; document.body.append(area); area.select(); document.execCommand("copy"); area.remove(); } setMessage("链接已复制"); }

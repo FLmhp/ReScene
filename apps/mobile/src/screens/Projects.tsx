@@ -1,5 +1,5 @@
 import { explainError, isOfflineError } from "@rescene/api-client";
-import { LEGACY_QUEUE_NOTICE, QUEUE_PAUSED } from "@rescene/uploader";
+import { LEGACY_QUEUE_NOTICE, QUEUE_PAUSED, newIdempotencyKey } from "@rescene/uploader";
 import type { AppNotification, Project, User } from "@rescene/schemas";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Pressable, Text, View } from "react-native";
@@ -30,6 +30,7 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const flight = useRef(false);
+  const attemptKey = useRef<{ name: string; key: string } | null>(null);
   const replayed = useRef(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -83,15 +84,20 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
   }, [loadNotifications, replay]);
 
   async function create() {
-    if (!name.trim() || flight.current) return;
+    const trimmed = name.trim();
+    if (!trimmed || flight.current) return;
     const owner = currentQueueOwner();
     if (!owner) { setError(QUEUE_PAUSED); return; }
     const scopedClient = queueClient(owner);
+    // Retry with the same key; a different name starts a new operation.
+    const attempt = attemptKey.current?.name === trimmed ? attemptKey.current : { name: trimmed, key: newIdempotencyKey() };
+    attemptKey.current = attempt;
     flight.current = true;
     setBusy(true);
     setError("");
     try {
-      const project = await scopedClient.createProject(name.trim());
+      const project = await scopedClient.createProject(trimmed, attempt.key);
+      attemptKey.current = null;
       if (!isQueueOwnerCurrent(owner)) return;
       setName("");
       onOpen(project);
@@ -99,7 +105,14 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
       if (!isQueueOwnerCurrent(owner)) return;
       if (isOfflineError(reason)) {
         try {
-          await enqueue(owner, { kind: "project", id: `project-${Date.now()}`, name: name.trim(), createdAt: Date.now() });
+          await enqueue(owner, {
+            kind: "project",
+            id: `project-${Date.now()}`,
+            name: trimmed,
+            createdAt: Date.now(),
+            idempotencyKey: attempt.key,
+          });
+          attemptKey.current = null;
           if (!isQueueOwnerCurrent(owner)) return;
           setName("");
           setNotice("已离线保存，联网后自动创建。");

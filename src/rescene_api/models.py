@@ -59,6 +59,22 @@ class Asset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class IdempotencyRecord(Base):
+    """Stores the first response for a client-supplied retry key."""
+
+    __tablename__ = "idempotency_records"
+    __table_args__ = (UniqueConstraint("user_id", "operation", "scope", "key"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    operation: Mapped[str] = mapped_column(String(60))
+    scope: Mapped[str] = mapped_column(String(36), default="")
+    key: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    status_code: Mapped[int] = mapped_column(Integer, default=201)
+    response_json: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class AssetCleanup(Base):
     """Deferred object deletion: the row commits first, the bytes follow."""
 

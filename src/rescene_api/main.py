@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import secrets
+from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import version as package_version
@@ -21,6 +22,7 @@ import segno
 import uvicorn
 from aliyunsdkcore.acs_exception.exceptions import ClientException, ServerException
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -39,6 +41,7 @@ from rescene_api.models import (
     Asset,
     AssetCleanup,
     AuditLog,
+    IdempotencyRecord,
     JobLog,
     JobStage,
     Notification,
@@ -440,14 +443,105 @@ def list_projects(db: Db, user: UserDep) -> list[dict[str, object]]:
     return [project_view(db, item, user) for item in rows]
 
 
+IDEMPOTENCY_MAX_LENGTH = 128
+
+
+def idempotency_digest(request: dict[str, object]) -> str:
+    canonical = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def idempotency_record(db: Session, user_id: str, operation: str, scope: str, key: str) -> IdempotencyRecord | None:
+    return db.scalar(
+        select(IdempotencyRecord).where(
+            IdempotencyRecord.user_id == user_id,
+            IdempotencyRecord.operation == operation,
+            IdempotencyRecord.scope == scope,
+            IdempotencyRecord.key == key,
+        )
+    )
+
+
+def replay_idempotent(record: IdempotencyRecord, digest: str) -> dict[str, object]:
+    if not hmac.compare_digest(record.request_hash, digest):
+        fail(
+            status.HTTP_409_CONFLICT,
+            "Idempotency key was already used for a different request",
+            "idempotency.conflict",
+        )
+    return record.response_json
+
+
+def idempotent_create(
+    db: Session,
+    user: User,
+    *,
+    operation: str,
+    scope: str,
+    key: str | None,
+    request: dict[str, object],
+    build: Callable[[], dict[str, object]],
+) -> dict[str, object]:
+    """Commit ``build()`` once per key and replay its response for retries.
+
+    Without a key the call keeps the previous behaviour and always creates a row.
+    """
+    if key is None:
+        result = build()
+        db.commit()
+        return result
+    if not 1 <= len(key) <= IDEMPOTENCY_MAX_LENGTH:
+        fail(status.HTTP_400_BAD_REQUEST, "Idempotency-Key must be 1-128 characters", "idempotency.invalid_key")
+    digest = idempotency_digest(request)
+    for _ in range(2):
+        stored = idempotency_record(db, user.id, operation, scope, key)
+        if stored is not None:
+            return replay_idempotent(stored, digest)
+        snapshot = jsonable_encoder(build())
+        db.add(
+            IdempotencyRecord(
+                user_id=user.id,
+                operation=operation,
+                scope=scope,
+                key=key,
+                request_hash=digest,
+                status_code=201,
+                response_json=snapshot,
+            )
+        )
+        try:
+            db.commit()
+        except IntegrityError:
+            # Another request with this key won the insert; its response is authoritative.
+            db.rollback()
+            continue
+        # Return the stored snapshot so a retry is byte-identical to this response.
+        return snapshot
+    stored = idempotency_record(db, user.id, operation, scope, key)
+    if stored is not None:
+        return replay_idempotent(stored, digest)
+    fail(status.HTTP_409_CONFLICT, "Idempotency key is still being processed", "idempotency.conflict")
+
+
 @app.post("/v1/projects", status_code=201)
-def create_project(payload: CreateProjectRequest, db: Db, user: UserDep) -> dict[str, object]:
-    project = Project(owner_id=user.id, name=payload.name.strip())
-    db.add(project)
-    db.flush()
-    audit(db, user.id, "project.create", "project", project.id, project_id=project.id)
-    db.commit()
-    return project_view(db, project, user)
+def create_project(
+    payload: CreateProjectRequest,
+    db: Db,
+    user: UserDep,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> dict[str, object]:
+    name = payload.name.strip()
+
+    def build() -> dict[str, object]:
+        project = Project(owner_id=user.id, name=name)
+        db.add(project)
+        db.flush()
+        audit(db, user.id, "project.create", "project", project.id, project_id=project.id)
+        return project_view(db, project, user)
+
+    return idempotent_create(
+        db, user, operation="project.create", scope="", key=idempotency_key, request={"name": name}, build=build
+    )
 
 
 @app.patch("/v1/projects/{project_id}")
@@ -1038,31 +1132,51 @@ def asset_preview(asset_id: str, db: Db, user: UserDep) -> dict[str, str]:
 
 
 @app.post("/v1/projects/{project_id}/jobs", status_code=201)
-def create_job(project_id: str, payload: CreateJobRequest, db: Db, user: UserDep) -> dict[str, object]:
+def create_job(
+    project_id: str,
+    payload: CreateJobRequest,
+    db: Db,
+    user: UserDep,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> dict[str, object]:
     project_for_user(db, project_id, user, write=True, lock=True)
-    assets = db.scalars(
-        select(Asset).where(Asset.project_id == project_id, Asset.id.in_(payload.asset_ids), Asset.status == "READY")
-    ).all()
-    if len(assets) != len(set(payload.asset_ids)):
-        fail(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "All assets must be ready and belong to the project",
-            "job.invalid_inputs",
-        )
-    suffixes = [PurePosixPath(asset.filename).suffix.lower() for asset in assets]
-    if not (
-        all(suffix in IMAGE_SUFFIXES for suffix in suffixes) or (len(suffixes) == 1 and suffixes[0] in VIDEO_SUFFIXES)
-    ):
-        fail(status.HTTP_422_UNPROCESSABLE_ENTITY, "Select a set of images or one video", "job.invalid_inputs")
-    if sum(asset.size for asset in assets) > 8 * 1024**3:
-        fail(status.HTTP_422_UNPROCESSABLE_ENTITY, "Job inputs exceed 8 GiB", "job.invalid_inputs")
-    job = ReconstructionJob(project_id=project_id, profile=payload.profile, status="QUEUED", created_by=user.id)
-    db.add(job)
-    db.flush()
-    audit(db, user.id, "job.create", "job", job.id, project_id=project_id, asset_ids=payload.asset_ids)
-    db.add(JobStage(job_id=job.id, stage="queued", status="success", message=json.dumps(payload.asset_ids)))
-    db.commit()
-    return job_view(job)
+
+    def build() -> dict[str, object]:
+        assets = db.scalars(
+            select(Asset).where(
+                Asset.project_id == project_id, Asset.id.in_(payload.asset_ids), Asset.status == "READY"
+            )
+        ).all()
+        if len(assets) != len(set(payload.asset_ids)):
+            fail(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "All assets must be ready and belong to the project",
+                "job.invalid_inputs",
+            )
+        suffixes = [PurePosixPath(asset.filename).suffix.lower() for asset in assets]
+        if not (
+            all(suffix in IMAGE_SUFFIXES for suffix in suffixes)
+            or (len(suffixes) == 1 and suffixes[0] in VIDEO_SUFFIXES)
+        ):
+            fail(status.HTTP_422_UNPROCESSABLE_ENTITY, "Select a set of images or one video", "job.invalid_inputs")
+        if sum(asset.size for asset in assets) > 8 * 1024**3:
+            fail(status.HTTP_422_UNPROCESSABLE_ENTITY, "Job inputs exceed 8 GiB", "job.invalid_inputs")
+        job = ReconstructionJob(project_id=project_id, profile=payload.profile, status="QUEUED", created_by=user.id)
+        db.add(job)
+        db.flush()
+        audit(db, user.id, "job.create", "job", job.id, project_id=project_id, asset_ids=payload.asset_ids)
+        db.add(JobStage(job_id=job.id, stage="queued", status="success", message=json.dumps(payload.asset_ids)))
+        return job_view(job)
+
+    return idempotent_create(
+        db,
+        user,
+        operation="job.create",
+        scope=project_id,
+        key=idempotency_key,
+        request={"project_id": project_id, "profile": payload.profile, "asset_ids": sorted(payload.asset_ids)},
+        build=build,
+    )
 
 
 def job_view(job: ReconstructionJob, reconstruction_id: str | None = None) -> dict[str, object]:

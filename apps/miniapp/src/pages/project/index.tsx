@@ -3,7 +3,7 @@ import { AssetThumbnail } from "../../asset-thumbnail";
 import { explainError, isOfflineError, ResceneApiError } from "@rescene/api-client";
 import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, canRetryJob, jobErrorHint, queuedJobHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
 import type { Asset, Job, JobLog, MemberRole, Profile, ProjectWorkspace, ProjectMember, ShareSummary, WorkerStatus } from "@rescene/schemas";
-import { MediaPreflightError, QUEUE_PAUSED, summarizeMediaWarnings, type QueueOwner } from "@rescene/uploader";
+import { MediaPreflightError, newIdempotencyKey, QUEUE_PAUSED, summarizeMediaWarnings, type QueueOwner } from "@rescene/uploader";
 import { Button, Image, Input, Progress, ScrollView, Text, View } from "@tarojs/components";
 import Taro, { useDidHide, useDidShow, useRouter } from "@tarojs/taro";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -102,6 +102,7 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
   const [uploading, setUploading] = useState(false);
   const [visible, setVisible] = useState(true);
   const createLock = useRef(false);
+  const jobAttempt = useRef<{ signature: string; key: string } | null>(null);
   const jobLock = useRef(false);
   const shareLock = useRef(false);
   const renameLock = useRef(false);
@@ -368,8 +369,13 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
     if (createLock.current || !canWrite || !selected.length) return;
     createLock.current = true;
     setCreating(true);
+    const ids = selected.map((asset) => asset.id);
+    const signature = JSON.stringify([profile, [...ids].sort()]);
+    const attempt = jobAttempt.current?.signature === signature ? jobAttempt.current : { signature, key: newIdempotencyKey() };
+    jobAttempt.current = attempt;
     try {
-      const created = await client.createJob(projectId, profile, selected.map((asset) => asset.id));
+      const created = await client.createJob(projectId, profile, ids, attempt.key);
+      jobAttempt.current = null;
       setJob(created);
       setShowLogs(false);
       showSection("tasks");

@@ -9,7 +9,7 @@ import {
   apiBaseUrl, authenticate, changeSessionPassword, client, currentQueueOwner, hasToken, isQueueOwnerCurrent,
   onSessionExpired, queueClient, renewSession, signOutSession, verifySession,
 } from "../../api";
-import { LEGACY_QUEUE_NOTICE, QUEUE_PAUSED, type QueueOwner } from "@rescene/uploader";
+import { LEGACY_QUEUE_NOTICE, QUEUE_PAUSED, newIdempotencyKey, type QueueOwner } from "@rescene/uploader";
 import { enqueue, hasLegacyQueue, replayQueued } from "../../queue";
 
 // api.ts relaunches this page when a credential expires, so the notice must
@@ -68,6 +68,7 @@ export default function IndexPage() {
   const authLock = useRef(false);
   const passwordLock = useRef(false);
   const projectLock = useRef(false);
+  const attemptKey = useRef<{ name: string; key: string } | null>(null);
   const recoveryLock = useRef(false);
   const booted = useRef(false);
 
@@ -257,11 +258,15 @@ export default function IndexPage() {
     const owner = currentQueueOwner();
     if (!owner) { setError(QUEUE_PAUSED); return; }
     const scopedClient = queueClient(owner);
+    // Retry with the same key; a different name starts a new operation.
+    const attempt = attemptKey.current?.name === trimmed ? attemptKey.current : { name: trimmed, key: newIdempotencyKey() };
+    attemptKey.current = attempt;
     projectLock.current = true;
     setCreatingProject(true);
     setError("");
     try {
-      const project = await scopedClient.createProject(trimmed);
+      const project = await scopedClient.createProject(trimmed, attempt.key);
+      attemptKey.current = null;
       if (!isQueueOwnerCurrent(owner)) return;
       setName("");
       setProjects((current) => [project, ...current]);
@@ -274,7 +279,9 @@ export default function IndexPage() {
             id: `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             name: trimmed,
             createdAt: Date.now(),
+            idempotencyKey: attempt.key,
           });
+          attemptKey.current = null;
           if (!isQueueOwnerCurrent(owner)) return;
           setName("");
           setError("");

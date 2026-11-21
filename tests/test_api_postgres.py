@@ -404,6 +404,46 @@ def test_postgres_stale_upload_cleanup_fences_completion(postgres_sessions, stal
         assert db.scalars(select(AuditLog.action).where(AuditLog.target_id == asset_id)).all() == ["asset.expire"]
 
 
+def test_postgres_same_key_creates_one_job(postgres_sessions, monkeypatch):
+    with postgres_sessions.begin() as db:
+        owner = User(email="idempotent@example.com", password_hash=hash_password("correct-horse"))
+        db.add(owner)
+        db.flush()
+        project = Project(name="Retry", owner_id=owner.id)
+        db.add(project)
+        db.flush()
+        asset = Asset(
+            project_id=project.id,
+            object_key="idempotent/frame.jpg",
+            filename="frame.jpg",
+            size=10,
+            content_type="image/jpeg",
+            sha256="a" * 64,
+            status="READY",
+        )
+        db.add(asset)
+        db.flush()
+        headers = {"Authorization": f"Bearer {issue_token(owner.id)}", "Idempotency-Key": "concurrent-1"}
+        project_id, asset_id = project.id, asset.id
+
+    barrier = Barrier(2)
+
+    def submit(client):
+        barrier.wait(timeout=10)
+        return client.post(f"/v1/projects/{project_id}/jobs", headers=headers, json={"asset_ids": [asset_id]})
+
+    with TestClient(main.app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(submit, client) for _ in range(2)]
+        responses = [future.result(timeout=30) for future in futures]
+
+    assert [response.status_code for response in responses] == [201, 201]
+    assert len({response.json()["id"] for response in responses}) == 1
+    with postgres_sessions() as db:
+        jobs = db.scalars(select(ReconstructionJob).where(ReconstructionJob.project_id == project_id)).all()
+        assert len(jobs) == 1
+        assert db.scalars(select(AuditLog).where(AuditLog.action == "job.create")).all() != []
+
+
 @pytest.mark.parametrize("postgres_sessions", ["0007"], indirect=True)
 def test_postgres_asset_cleanup_migration_reaches_head(postgres_sessions):
     with postgres_sessions.kw["bind"].begin() as connection:

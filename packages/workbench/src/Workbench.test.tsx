@@ -148,7 +148,38 @@ describe("session gate", () => {
     const previous = await screen.findByRole<HTMLInputElement>("checkbox", { name: /frame.jpg/ });
     expect(previous.checked).toBe(true);
     await userEvent.click(screen.getByRole("button", { name: "开始三维重建" }));
-    await waitFor(() => expect(submit).toHaveBeenCalledWith("p1", "balanced", ["a1", "a2"]));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith("p1", "balanced", ["a1", "a2"], expect.any(String)));
+  });
+
+  it("reuses the retry key after a failed job submission and drops it after success", async () => {
+    const job = { id: "new-job", project_id: "p1", profile: "balanced", status: "QUEUED", progress: 0, attempt: 0,
+      cancel_requested: false, created_at: "2026-01-01", updated_at: "2026-01-01" };
+    const client = new ResceneClient("https://api.example");
+    const submit = vi.spyOn(client, "createJob")
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValue(job as Awaited<ReturnType<typeof client.createJob>>);
+    stubFetch(routeTable({ "/v1/jobs/new-job": job }));
+    renderWorkbench(client, memoryStore({ "rescene-token": "token-1", "rescene-project": "p1" }));
+
+    await userEvent.click(await screen.findByRole("checkbox", { name: /frame.jpg/ }));
+    const start = screen.getByRole("button", { name: "开始三维重建" });
+    await userEvent.click(start);
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    await userEvent.click(start);
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+    await userEvent.click(start);
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(3));
+
+    const keys = submit.mock.calls.map((call) => call[3]);
+    expect(keys[0]).toBeTruthy();
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).toBe(keys[0]);
+
+    await submit.mock.results[2]?.value;
+    await userEvent.click(await screen.findByRole("button", { name: "开始三维重建" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(4));
+    expect(submit.mock.calls[3]?.[3]).not.toBe(keys[0]);
   });
 
   it("registers a new account and keeps the token", async () => {
