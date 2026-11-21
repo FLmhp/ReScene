@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { apiBaseUrl, assertQueueOwner, client, currentQueueOwner, isQueueOwnerCurrent, onSessionExpired, webBaseUrl } from "../../api";
 import { discardQueued, enqueue, replayQueued, uploadQueued } from "../../queue";
+import { createJobLogReader, type JobLogReader } from "./job-logs";
 import {
   chooseMedia,
   inspectChosenFiles,
@@ -110,7 +111,14 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
   const renameLock = useRef(false);
   const selectLock = useRef(false);
   const uploadLock = useRef(false);
-  const logsRef = useRef<JobLog[]>([]);
+  const logReader = useRef<JobLogReader | null>(null);
+  if (!logReader.current) {
+    logReader.current = createJobLogReader(
+      (id, options) => client.listJobLogs(id, options),
+      setLogs,
+      (reason) => setError(message(reason, "加载运行日志失败")),
+    );
+  }
   const role = detail?.effective_role;
   const canManage = role === "owner" || role === "admin";
   const canWrite = canManage || role === "member";
@@ -187,7 +195,10 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
     reload();
   });
 
-  useDidHide(() => setVisible(false));
+  useDidHide(() => {
+    logReader.current?.context(job?.id ?? "", logLevel, false);
+    setVisible(false);
+  });
   useEffect(() => onSessionExpired(() => { setUploads([]); setNotice(""); }), []);
   useEffect(() => {
     if (!visible) return;
@@ -233,37 +244,16 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
       if (!ACTIVE[event.status]) void load();
     }, (reason) => setError(message(reason, "任务更新失败")), { transport: "polling", pollIntervalMs: POLL_MS });
   }, [jobId, jobActive, load]);
-  useEffect(() => { logsRef.current = logs; }, [logs]);
   useEffect(() => {
-    logsRef.current = [];
-    setLogs([]);
-    if (!jobId) return;
-    let cancelled = false;
-    void client.listJobLogs(jobId, { limit: 200, ...(logLevel ? { level: logLevel } : {}) })
-      .then((rows) => { if (!cancelled) setLogs(rows); })
-      .catch((reason) => { if (!cancelled) setError(message(reason, "加载运行日志失败")); });
-    return () => { cancelled = true; };
-  }, [jobId, logLevel]);
-  useEffect(() => {
-    if (!jobId || !jobActive) return;
-    let cancelled = false;
-    // useDidHide flips `visible`, which stops `jobActive` and clears this timer
-    // while the page is in the background.
-    const timer = setInterval(() => {
-      const last = logsRef.current[logsRef.current.length - 1];
-      if (!last) return;
-      void client.listJobLogs(jobId, { afterId: last.id, limit: 200, ...(logLevel ? { level: logLevel } : {}) })
-        .then((rows) => {
-          if (cancelled || rows.length === 0) return;
-          setLogs((previous) => {
-            const known = new Set(previous.map((row) => row.id));
-            return [...previous, ...rows.filter((row) => !known.has(row.id))].slice(-400);
-          });
-        })
-        .catch((reason) => { if (!cancelled) setError(message(reason, "刷新运行日志失败")); });
-    }, POLL_MS);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [jobId, jobActive, logLevel]);
+    const reader = logReader.current!;
+    reader.context(jobId ?? "", logLevel, visible);
+    if (visible && jobId) void reader.poll();
+    const timer = jobActive ? setInterval(() => void reader.poll(), POLL_MS) : undefined;
+    return () => {
+      clearInterval(timer);
+      reader.context(jobId ?? "", logLevel, false);
+    };
+  }, [jobId, jobActive, logLevel, visible]);
 
   const reconstructionId = job?.reconstruction_id ?? "";
   const activeReconstruction = useRef(reconstructionId);

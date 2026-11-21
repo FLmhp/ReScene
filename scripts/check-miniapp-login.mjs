@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createContext, runInContext } from "node:vm";
+import ts from "typescript";
 
 const dist = new URL("../apps/miniapp/dist/", import.meta.url);
 const app = JSON.parse(readFileSync(new URL("app.json", dist), "utf8"));
@@ -8,7 +9,7 @@ assert.equal(app.entryPagePath, "pages/index/index");
 assert.equal(app.pages[0], app.entryPagePath);
 assert.equal(app.lazyCodeLoading, undefined);
 // The WeChat module wrapper has a local fetch binding independent of globalThis.
-const context = createContext({ wx: {}, fetch: undefined, setTimeout, clearTimeout });
+const context = createContext({ wx: {}, fetch: undefined, setTimeout, clearTimeout, URLSearchParams });
 Object.defineProperty(context, "fetch", { get: () => undefined, set: () => {} });
 runInContext(`
   let evalAttempts = 0;
@@ -19,6 +20,12 @@ runInContext(`
 for (const file of ["runtime.js", "vendors.js", "taro.js", "common.js"]) {
   runInContext(readFileSync(new URL(file, dist), "utf8"), context, { filename: file, displayErrors: false });
 }
+
+// The production page concatenates private modules, so exercise its exact shared reader
+// in isolation while retaining the built client and Taro request fixtures below.
+const readerSource = readFileSync(new URL("../apps/miniapp/src/pages/project/job-logs.ts", import.meta.url), "utf8");
+const readerJs = ts.transpileModule(readerSource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
+runInContext(`globalThis.readerModule = { exports: {} }; (function(module, exports) { ${readerJs}\n})(readerModule, readerModule.exports);`, context);
 
 await runInContext(`
   wx.webpackJsonp.push([["rescene-login-test"], {}, require => {
@@ -37,6 +44,8 @@ await runInContext(`
     const oldIdentityResponse = new Promise(resolve => { finishOldIdentity = resolve; });
     const legacy = JSON.stringify([{ kind: "project", id: "old", name: "Legacy fixture", createdAt: 1 }]);
     const createdDrafts = [];
+    const logRequests = [];
+    const logReplies = [];
     const storage = new Map([["rescene-queue", legacy]]);
     const mediaFiles = new Map([["wxfile://tmp/kept.jpg", 12]]);
     const copiedMedia = [];
@@ -51,7 +60,7 @@ await runInContext(`
       unlinkSync: path => { mediaFiles.delete(path); },
     };
     let storageUnavailable = true;
-    require.m[runtime[0]] = module => { module.exports = { navigator: { userAgent: "WeChat" } }; };
+    require.m[runtime[0]] = module => { module.exports = { navigator: { userAgent: "WeChat" }, URLSearchParams }; };
     require.m[taro[0]] = module => {
       module.exports = {
         env: { USER_DATA_PATH: "wxfile://usr" },
@@ -85,6 +94,13 @@ await runInContext(`
           }
           if (header.Authorization !== "Bearer fixture-token") throw new Error("Missing login token");
           if (url.endsWith("/v1/auth/me")) return { statusCode: 200, data: { id: "user", email: "test@example.org", is_admin: false } };
+          if (url.includes("/v1/jobs/") && url.includes("/logs?")) {
+            logRequests.push(url);
+            if (!logReplies.length) throw new Error("Unexpected log request");
+            const reply = await logReplies.shift();
+            if (reply instanceof Error) throw reply;
+            return { statusCode: 200, data: { items: reply } };
+          }
           if (url.endsWith("/v1/projects") && method === "POST") {
             const { name } = JSON.parse(data);
             createdDrafts.push(name);
@@ -140,6 +156,65 @@ await runInContext(`
       await replay(currentOwner(), () => {});
       const keptLost = JSON.parse(storage.get("rescene-queue-user")).some(entry => entry.id === "lost");
       const checkedMissing = accessChecks.includes("wxfile://tmp/lost.jpg") && !readFiles.includes("wxfile://tmp/lost.jpg");
+      const log = id => ({ id, level: "info", message: "fixture " + id, created_at: "2026-01-01T00:00:00Z" });
+      let shown = [];
+      let failures = 0;
+      let lastFailure;
+      const reader = readerModule.exports.createJobLogReader((id, options) => client.listJobLogs(id, options), rows => { shown = rows; }, error => { failures++; lastFailure = error; });
+      const check = (condition, text) => { if (!condition) throw new Error(text); };
+      reader.context("one", "", true);
+      logReplies.push([], [log(1), log(1)], [log(1), log(2)]);
+      await reader.poll();
+      await reader.poll();
+      check(shown.map(row => row.id).join() === "1", "Empty first page did not acquire and deduplicate the first log: " + lastFailure);
+      check(!logRequests[0].includes("after_id=") && !logRequests[1].includes("after_id="), "Empty cursor sent after_id");
+      await reader.poll();
+      check(logRequests[2].includes("after_id=1") && shown.map(row => row.id).join() === "1,2", "Incremental cursor or deduplication failed");
+      logReplies.push(new Error("offline"), [log(3)]);
+      await reader.poll();
+      check(failures === 1 && shown.length === 2, "Failure discarded logs");
+      await reader.poll();
+      check(shown.map(row => row.id).join() === "1,2,3", "Failure prevented retry");
+      reader.context("one", "warning", true);
+      logReplies.push([], [log(4)]);
+      await reader.poll();
+      await reader.poll();
+      check(shown.map(row => row.id).join() === "4" && logRequests.at(-1).includes("level=warning") && !logRequests.at(-1).includes("after_id="), "Empty filtered page did not recover");
+      let finishOld;
+      logReplies.push(new Promise(resolve => { finishOld = resolve; }));
+      const old = reader.poll();
+      const inFlightCount = logRequests.length;
+      await reader.poll();
+      check(logRequests.length === inFlightCount, "Concurrent request was not bounded");
+      reader.context("two", "warning", true);
+      logReplies.push([log(5)]);
+      await reader.poll();
+      finishOld([log(99)]);
+      await old;
+      check(shown.map(row => row.id).join() === "5", "Stale task response was applied");
+      let finishLevel;
+      logReplies.push(new Promise(resolve => { finishLevel = resolve; }));
+      const oldLevel = reader.poll();
+      reader.context("two", "error", true);
+      logReplies.push([log(5)]);
+      await reader.poll();
+      finishLevel([log(97)]);
+      await oldLevel;
+      check(shown.map(row => row.id).join() === "5", "Stale level response was applied");
+      let finishHidden;
+      logReplies.push(new Promise(resolve => { finishHidden = resolve; }));
+      const hidden = reader.poll();
+      const count = logRequests.length;
+      reader.context("two", "error", false);
+      await reader.poll();
+      check(logRequests.length === count, "Hidden page polled");
+      finishHidden([log(98)]);
+      await hidden;
+      check(shown.map(row => row.id).join() === "5", "Hidden page accepted a response");
+      reader.context("two", "error", true);
+      logReplies.push([log(6)]);
+      await reader.poll();
+      check(logRequests.at(-1).includes("after_id=5") && shown.map(row => row.id).join() === "5,6", "Re-entry did not refetch the tail");
       return [client.getToken(), user.id, project.effective_role, workspace.asset_count, workspace.assets[0].id, warnings.length, rejected, migrated, checkedMissing, keptLost];
     })();
   }]);
