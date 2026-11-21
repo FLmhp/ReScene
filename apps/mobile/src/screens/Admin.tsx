@@ -236,9 +236,9 @@ export function AdminScreen({ onBack }: { onBack: () => void }) {
             <Text style={textStyles.muted}>共 {directory?.total ?? 0} 个账户</Text>
           </Card>
           <Card>
-            <Text style={textStyles.body}>用户列表</Text>
+            <Text accessibilityRole="header" style={textStyles.heading}>用户列表</Text>
             {directory && users.length === 0 ? <Text style={textStyles.muted}>没有匹配的账户。</Text> : null}
-            {!directory ? <Text style={textStyles.muted}>加载中…</Text> : null}
+            {!directory && !error ? <Text style={textStyles.muted}>正在加载用户…</Text> : null}
             {users.map((user) => (
               <View
                 key={user.id}
@@ -248,8 +248,8 @@ export function AdminScreen({ onBack }: { onBack: () => void }) {
                 <Text style={textStyles.muted}>
                   {user.is_admin ? "管理员" : "成员"} · {user.active ? "启用" : "已停用"} · 创建于 {new Date(user.created_at).toLocaleDateString()}
                 </Text>
-                <View style={{ flexDirection: "row", gap: spacing.sm }}>
-                  <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>
+                  <View style={{ flexGrow: 1, flexBasis: 96 }}>
                     <Button
                       disabled={busy}
                       label={user.active ? "停用" : "启用"}
@@ -263,7 +263,7 @@ export function AdminScreen({ onBack }: { onBack: () => void }) {
                       }
                     />
                   </View>
-                  <View style={{ flex: 1 }}>
+                  <View style={{ flexGrow: 1, flexBasis: 96 }}>
                     <Button
                       label={passwordFor === user.id ? "取消" : "重置密码"}
                       tone="ghost"
@@ -273,7 +273,7 @@ export function AdminScreen({ onBack }: { onBack: () => void }) {
                       }}
                     />
                   </View>
-                  <View style={{ flex: 1 }}>
+                  <View style={{ flexGrow: 1, flexBasis: 96 }}>
                     <Button
                       label={detailFor === user.id ? "收起" : "详情"}
                       tone="ghost"
@@ -334,7 +334,7 @@ export function AdminScreen({ onBack }: { onBack: () => void }) {
             ) : null}
           </Card>
           <Card>
-            <Text style={textStyles.body}>创建账户</Text>
+            <Text accessibilityRole="header" style={textStyles.heading}>创建账户</Text>
             <Field label="邮箱" value={newEmail} onChangeText={setNewEmail} keyboardType="email-address" autoComplete="email" placeholder="member@example.com" />
             <Field label="初始密码（至少 12 位）" value={newPassword} onChangeText={setNewPassword} secureTextEntry autoComplete="new-password" />
             <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: newAdmin }} onPress={() => setNewAdmin(!newAdmin)}>
@@ -361,7 +361,7 @@ export function AdminScreen({ onBack }: { onBack: () => void }) {
       {tab === "announcements" ? (
         <>
           <Card>
-            <Text style={textStyles.body}>发布公告</Text>
+            <Text accessibilityRole="header" style={textStyles.heading}>发布公告</Text>
             <Field label="标题" value={title} onChangeText={setTitle} placeholder="公告标题" />
             <Field label="正文" value={body} onChangeText={setBody} multiline placeholder="向所有活跃用户发布的说明" />
             <Segmented value={level} onChange={setLevel} options={LEVELS} />
@@ -380,7 +380,7 @@ export function AdminScreen({ onBack }: { onBack: () => void }) {
             />
           </Card>
           <Card>
-            <Text style={textStyles.body}>已发布（{announcements.length}）</Text>
+            <Text accessibilityRole="header" style={textStyles.heading}>已发布（{announcements.length}）</Text>
             {announcements.length === 0 ? <Text style={textStyles.muted}>暂无公告。</Text> : null}
             {announcements.map((item) => (
               <View
@@ -424,9 +424,9 @@ export function AdminScreen({ onBack }: { onBack: () => void }) {
             <Button label="刷新" disabled={busy} tone="ghost" onPress={() => setAuditRevision((value) => value + 1)} />
           </Card>
           <Card>
-            <Text style={textStyles.body}>操作日志（{audit?.total ?? 0}）</Text>
+            <Text accessibilityRole="header" style={textStyles.heading}>操作日志（{audit?.total ?? 0}）</Text>
             {audit && auditRows.length === 0 ? <Text style={textStyles.muted}>没有匹配的记录。</Text> : null}
-            {!audit ? <Text style={textStyles.muted}>加载中…</Text> : null}
+            {!audit && !error ? <Text style={textStyles.muted}>正在加载日志…</Text> : null}
             {auditRows.map((entry) => (
               <View
                 key={entry.id}

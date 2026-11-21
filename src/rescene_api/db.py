@@ -41,8 +41,27 @@ def init_db() -> None:
         migration.attributes["connection"] = connection
         tables = set(inspect(connection).get_table_names())
         if "alembic_version" not in tables and tables.intersection(Base.metadata.tables):
-            diffs = compare_metadata(MigrationContext.configure(connection), Base.metadata)
-            if len(diffs) != 1 or diffs[0][0:3] != ("add_column", None, "users") or diffs[0][3].name != "token_version":
-                raise RuntimeError("Existing ReScene schema differs from the migration baseline")
+            from rescene_api.migrations.legacy_0001 import metadata as legacy_metadata
+
+            project_tables = set(Base.metadata.tables) | set(legacy_metadata.tables)
+            context = MigrationContext.configure(
+                connection,
+                opts={
+                    "compare_server_default": True,
+                    "include_name": lambda name, type_, parent: type_ != "table" or name in project_tables,
+                },
+            )
+            diffs = compare_metadata(context, legacy_metadata)
+            inspector = inspect(connection)
+            for name in sorted(tables & set(legacy_metadata.tables)):
+                actual_pk = inspector.get_pk_constraint(name).get("constrained_columns") or []
+                expected_pk = [column.name for column in legacy_metadata.tables[name].primary_key.columns]
+                if actual_pk != expected_pk:
+                    diffs.append(("primary_key", name, expected_pk, actual_pk))
+                checks = inspector.get_check_constraints(name)
+                if checks:
+                    diffs.append(("unexpected_check_constraints", name, checks))
+            if diffs:
+                raise RuntimeError(f"Existing ReScene schema differs from revision 0001: {diffs}")
             command.stamp(migration, "0001")
         command.upgrade(migration, "head")

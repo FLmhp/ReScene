@@ -5,17 +5,19 @@ import {
   BackHandler,
   KeyboardAvoidingView,
   Platform,
-  SafeAreaView,
   StatusBar,
   Text,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
   apiBaseUrl,
   clearSession,
   client,
+  currentQueueOwner,
   discardSession,
+  onSessionExpired,
   restoreSession,
   sessionExpiry,
   type RestoredSession,
@@ -23,7 +25,7 @@ import {
 import { AdminScreen } from "./screens/Admin";
 import { JobScreen } from "./screens/Job";
 import { LoginScreen } from "./screens/Login";
-import { ProjectScreen } from "./screens/Project";
+import { ProjectScreen, type ProjectDraft } from "./screens/Project";
 import { ProjectsScreen } from "./screens/Projects";
 import { ViewerScreen } from "./screens/ViewerScreen";
 import { useAppearance } from "./appearance";
@@ -31,7 +33,7 @@ import { Busy, Button, ErrorText, Screen } from "./ui";
 
 type Route =
   | { name: "projects" }
-  | { name: "project"; id: string; label: string }
+  | { name: "project"; id: string; label: string; draft?: ProjectDraft }
   | { name: "job"; id: string }
   | { name: "viewer"; reconstructionId: string }
   | { name: "admin" };
@@ -68,11 +70,18 @@ export function AppRoot() {
     setSession("signed-out");
   }, []);
 
+  useEffect(() => onSessionExpired(() => resetToLogin("会话已失效，请重新登录。")), [resetToLogin]);
+
   const bootstrap = useCallback(async () => {
     setSession("loading");
     try {
       const result = await restoreSession();
-      if (result === "offline") setNotice("无法连接服务器。登录信息仍安全保存在设备上，请检查网络后重试。");
+      if (result === null) return;
+      if (result === "offline" && currentQueueOwner()) {
+        setSession("signed-in");
+        return;
+      }
+      if (result === "offline") setNotice("无法连接服务器，离线队列已暂停。请联网验证当前账户后重试。");
       setSession(result);
     } catch {
       setNotice("无法访问设备的安全存储。请检查系统设置后重试。");
@@ -110,7 +119,7 @@ export function AppRoot() {
       } catch {
         result = "offline";
       }
-      if (cancelled) return;
+      if (cancelled || result === null) return;
       if (result === "signed-out") {
         resetToLogin("会话已失效，请重新登录。");
         return;
@@ -236,15 +245,24 @@ export function AppRoot() {
       <JobScreen
         jobId={route.id}
         onBack={back}
+        onReplaceAssets={(project) => setRoutes((current) => {
+          const parent = current.at(-2);
+          if (parent?.name === "project" && parent.id === project.id) return current.slice(0, -1);
+          return [...current.slice(0, -1), { name: "project", id: project.id, label: project.name }];
+        })}
         onOpenScene={(reconstructionId) => push({ name: "viewer", reconstructionId })}
       />
     );
   } else if (route.name === "project") {
     content = (
       <ProjectScreen
+        key={route.id}
         onBack={back}
-        onJob={(id) => push({ name: "job", id })}
+        onJob={(id, draft) => setRoutes((current) => current.at(-1) === route
+          ? [...current.slice(0, -1), { ...route, draft }, { name: "job", id }]
+          : current)}
         project={{ id: route.id, name: route.label }}
+        draft={route.draft}
       />
     );
   } else {
@@ -259,13 +277,7 @@ export function AppRoot() {
   }
 
   return (
-    <SafeAreaView
-      style={{
-        flex: 1,
-        backgroundColor: theme.bg,
-        paddingTop: Platform.OS === "android" ? StatusBar.currentHeight ?? 0 : 0,
-      }}
-    >
+    <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }}>
       <StatusBar barStyle={dark ? "light-content" : "dark-content"} />
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
         <View style={{ backgroundColor: theme.bg, flex: 1 }}>{content}</View>

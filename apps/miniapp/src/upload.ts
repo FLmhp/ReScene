@@ -1,7 +1,12 @@
 import { isOfflineError, ResceneApiError, type ResceneClient } from "@rescene/api-client";
-import type { UploadGrant } from "@rescene/schemas";
 import { sha256 } from "@noble/hashes/sha2.js";
+import type { UploadGrant } from "@rescene/schemas";
+import { inspectMedia, mediaType, SAMPLE_SIDE, type QueueOwner } from "@rescene/uploader";
 import Taro from "@tarojs/taro";
+
+import { accountQueueKey, QueuedMediaMissing, type QueueOwner as MediaQueueOwner } from "@rescene/uploader";
+
+import { assertQueueOwner, isQueueOwnerCurrent } from "./api";
 
 export const MINIAPP_FILE_LIMIT = 10 * 1024 * 1024;
 export const MINIAPP_FILE_COUNT = 8;
@@ -12,6 +17,49 @@ export type ChosenFile = {
   name: string;
   contentType: string;
 };
+
+/** Keep the queue-owned copy in app user storage, not the temporary picker path. */
+export function managedMediaDirectory(owner: MediaQueueOwner): string {
+  const root = (Taro.env as { USER_DATA_PATH?: string }).USER_DATA_PATH ?? "wxfile://usr";
+  return `${root}/rescene-media/${accountQueueKey("queue", owner)}/`;
+}
+
+function managedMediaName(id: string, name: string): string {
+  const safe = name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "media";
+  return `${id}-${safe}`;
+}
+
+/** Copy a chosen file into app storage before the queue may promise to keep it. */
+export function persistChosenFile(owner: MediaQueueOwner, id: string, file: ChosenFile): { path: string; size: number } {
+  const fs = Taro.getFileSystemManager();
+  const directory = managedMediaDirectory(owner);
+  fs.mkdirSync(directory, true);
+  const path = directory + managedMediaName(id, file.name);
+  try {
+    fs.copyFileSync(file.path, path);
+    const stats = fs.statSync(path) as { size?: number };
+    const size = typeof stats.size === "number" ? stats.size : 0;
+    if (size <= 0) throw new Error("素材副本不可读，请检查设备存储。");
+    if (file.size > 0 && size !== file.size) throw new Error("素材副本不完整，请重新选择该文件。");
+    return { path, size };
+  } catch (reason) {
+    try { fs.unlinkSync(path); } catch { /* nothing to roll back */ }
+    throw reason;
+  }
+}
+
+export function managedMediaExists(path: string): boolean {
+  try { Taro.getFileSystemManager().accessSync(path); return true; } catch { return false; }
+}
+
+/** Best effort: an orphan copy must never fail a successful upload. */
+export function removeManagedMedia(path: string): void {
+  try { Taro.getFileSystemManager().unlinkSync(path); } catch { /* already gone */ }
+}
+
+export function requireQueuedMedia(path: string): void {
+  if (!managedMediaExists(path)) throw new QueuedMediaMissing();
+}
 
 /** Selection refused; `cancelled` means the user backed out, not a failure. */
 export class UploadSelectionError extends Error {
@@ -30,10 +78,12 @@ export class UploadError extends Error {
     message: string,
     readonly file: ChosenFile,
     readonly stage: "hash" | "session" | "transfer" | "complete",
-    /** HTTP status of the failed step, so the queue can drop a 409 duplicate. */
+    /** HTTP status of the failed step, so the queue can inspect a 409. */
     readonly status?: number,
     /** No response arrived; the queue keeps the entry for a later replay. */
     readonly offline = false,
+    /** The API's stable error code; only `asset.not_awaiting_upload` is a duplicate. */
+    readonly code?: string,
   ) {
     super(message);
     this.name = "UploadError";
@@ -58,17 +108,30 @@ function hashOf(path: string): string {
   return Array.from(sha256(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function contentTypeOf(name: string): string | null {
-  const lower = name.toLowerCase();
-  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
-  if (lower.endsWith(".png")) return "image/png";
-  if (lower.endsWith(".webm")) return "video/webm";
-  if (lower.endsWith(".m4v")) return "video/x-m4v";
-  if (lower.endsWith(".mov")) return "video/quicktime";
-  if (lower.endsWith(".mp4")) return "video/mp4";
-  if (lower.endsWith(".mkv")) return "video/x-matroska";
-  if (lower.endsWith(".avi")) return "video/x-msvideo";
-  return null;
+export function inspectChosenFiles(files: ChosenFile[]): Promise<string[]> {
+  return inspectMedia(files, async (file) => new Uint8Array(
+    Taro.getFileSystemManager().readFileSync(file.path, undefined, 0, Math.min(file.size, 16)) as ArrayBuffer,
+  ), async (file) => {
+    if (typeof Taro.createOffscreenCanvas !== "function") {
+      await Taro.getImageInfo({ src: file.path });
+      return null;
+    }
+    const canvas = Taro.createOffscreenCanvas({ type: "2d", width: SAMPLE_SIDE, height: SAMPLE_SIDE });
+    const context = canvas.getContext("2d") as CanvasRenderingContext2D | null;
+    if (!context) {
+      await Taro.getImageInfo({ src: file.path });
+      return null;
+    }
+    const image = canvas.createImage();
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("图片检查超时")), 10000);
+      image.onload = () => { clearTimeout(timer); resolve(); };
+      image.onerror = () => { clearTimeout(timer); reject(new Error("无法解码图片")); };
+      image.src = file.path;
+    });
+    context.drawImage(image as unknown as CanvasImageSource, 0, 0, SAMPLE_SIDE, SAMPLE_SIDE);
+    return context.getImageData(0, 0, SAMPLE_SIDE, SAMPLE_SIDE).data;
+  });
 }
 
 /**
@@ -129,7 +192,7 @@ export async function chooseMedia(): Promise<ChosenFile[]> {
   const unsupported: string[] = [];
   const files = result.tempFiles.map((file) => {
     const name = file.tempFilePath.split("/").pop() ?? "upload.jpg";
-    const contentType = contentTypeOf(name);
+    const contentType = mediaType(name);
     if (!contentType) unsupported.push(name);
     return { path: file.tempFilePath, size: file.size, name, contentType: contentType ?? "" };
   });
@@ -148,14 +211,17 @@ export async function chooseMedia(): Promise<ChosenFile[]> {
  * `assetId` resumes that queued asset instead of creating another row.
  */
 export async function uploadFile(
+  owner: QueueOwner,
   client: ResceneClient,
   projectId: string,
   file: ChosenFile,
   onProgress?: (percent: number) => void,
-  options?: { assetId?: string; onAsset?: (id: string) => void },
+  options?: { assetId?: string; onAsset?: (id: string) => void | Promise<void> },
 ): Promise<string> {
+  assertQueueOwner(owner);
   let last = -1;
   const report = (percent: number) => {
+    if (!isQueueOwnerCurrent(owner)) return;
     const value = Math.max(0, Math.min(100, Math.round(percent)));
     if (value <= last) return;
     last = value;
@@ -172,6 +238,7 @@ export async function uploadFile(
   }
   report(20);
 
+  assertQueueOwner(owner);
   let grant: UploadGrant;
   try {
     grant = options?.assetId
@@ -191,9 +258,11 @@ export async function uploadFile(
       "session",
       reason instanceof ResceneApiError ? reason.status : undefined,
       isOfflineError(reason),
+      reason instanceof ResceneApiError ? reason.code : undefined,
     );
   }
-  options?.onAsset?.(grant.asset_id);
+  await options?.onAsset?.(grant.asset_id);
+  assertQueueOwner(owner);
   if (!grant.url || !grant.fields) throw new UploadError("服务端未返回上传表单", file, "session");
 
   const task = Taro.uploadFile({
@@ -217,6 +286,7 @@ export async function uploadFile(
   }
   report(90);
 
+  assertQueueOwner(owner);
   try {
     await client.completeAsset(grant.asset_id, file.size, sha256Hex);
   } catch (reason) {
@@ -227,6 +297,7 @@ export async function uploadFile(
       "complete",
       reason instanceof ResceneApiError ? reason.status : undefined,
       isOfflineError(reason),
+      reason instanceof ResceneApiError ? reason.code : undefined,
     );
   }
   report(100);

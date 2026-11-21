@@ -7,6 +7,7 @@
  */
 
 import {
+  AcceptInvitationResultSchema,
   AddMemberResultSchema,
   AdminUserDetailSchema,
   AdminUserPageSchema,
@@ -14,12 +15,14 @@ import {
   AnnouncementSchema,
   ApiErrorSchema,
   ArtifactSchema,
+  AssetPageSchema,
   AssetPreviewSchema,
   AuditPageSchema,
   AuthTokenSchema,
   CompleteAssetSchema,
   InvitationSchema,
   JobLogPageSchema,
+  JobPageSchema,
   JobSchema,
   JobStageSchema,
   ManifestSchema,
@@ -28,6 +31,7 @@ import {
   ProjectDetailSchema,
   ProjectMemberSchema,
   ProjectSchema,
+  ProjectSummarySchema,
   PublicShareSchema,
   ShareSchema,
   ShareSummarySchema,
@@ -35,6 +39,7 @@ import {
   UploadGrantSchema,
   UserSchema,
   WorkerStatusSchema,
+  type AcceptInvitationResult,
   type AddMemberResult,
   type AdminUser,
   type AdminUserDetail,
@@ -55,6 +60,8 @@ import {
   type ProjectDetail,
   type ProjectInvitation,
   type ProjectMember,
+  type ProjectSummary,
+  type ProjectWorkspace,
   type PublicShare,
   type Share,
   type ShareSummary,
@@ -76,7 +83,7 @@ export type UploadInit = {
 export type UploadMode = "sts" | "post";
 
 export type JobEvent = StageEvent | Job;
-export type JobSubscriptionOptions = { transport?: "sse" | "polling"; pollIntervalMs?: number };
+export type JobSubscriptionOptions = { transport?: "sse" | "polling"; pollIntervalMs?: number; idleTimeoutMs?: number };
 
 export class ResceneApiError extends Error {
   constructor(
@@ -92,11 +99,29 @@ export class ResceneApiError extends Error {
 }
 
 const TERMINAL_STATUSES: Record<string, true> = { SUCCEEDED: true, FAILED: true, CANCELLED: true };
+const ProjectOverviewSchema = ProjectSummarySchema.or(ProjectDetailSchema);
 const MAX_RECONNECTS = 3;
 const POLL_INTERVAL_MS = 2000;
+// The server writes a heartbeat every 2s; a silent socket is treated as dead.
+const IDLE_TIMEOUT_MS = 30_000;
 const MAX_POLL_DELAY_MS = 15000;
 const MAX_RECONNECT_DELAY_MS = 8000;
 const RECONNECT_BASE_MS = 500;
+
+function legacyWorkspace(project: ProjectDetail): ProjectWorkspace {
+  // The deployed API ignores view=summary and returns all assets and jobs.
+  const assets = project.assets.slice().reverse();
+  return {
+    ...project, assets,
+    asset_count: assets.length,
+    job_count: project.jobs.length,
+    has_active_jobs: project.jobs.some((job) => !TERMINAL_STATUSES[job.status]),
+    cover: assets.find((asset) => asset.status === "READY" && /\.(jpe?g|png)$/i.test(asset.filename)) ?? null,
+    latest_job: project.jobs[0] ?? null,
+    nextAssetCursor: null,
+    nextJobCursor: null,
+  };
+}
 
 const ERROR_MESSAGES: Record<string, string> = {
   "auth.invalid_credentials": "邮箱或密码不正确。",
@@ -106,9 +131,11 @@ const ERROR_MESSAGES: Record<string, string> = {
   "asset.in_use": "该素材已被任务使用，无法删除。",
   "asset.not_found": "素材不存在，可能已被删除。",
   "job.invalid_inputs": "素材不满足重建要求，请检查后重试。",
+  "job.invalid_input": "请更换无效素材，再创建新任务。",
   "user.not_found": "账号不存在。",
   "admin.self_locked": "不能停用或降级当前登录的管理员。",
   "share.not_found": "分享链接不存在或已撤销。",
+  "invitation.unavailable": "邀请不可领取。请确认登录邮箱和领取码，或联系项目管理者重新签发。",
   "announcement.not_found": "公告不存在或已删除。",
   "audit.invalid_time": "时间格式不正确。",
 };
@@ -181,6 +208,11 @@ function auditQuery(params: AuditFilters): URLSearchParams {
   if (params.since) search.set("since", params.since);
   if (params.until) search.set("until", params.until);
   return search;
+}
+
+/** Sends the retry key only when the caller holds one; requests without it keep the old contract. */
+function idempotencyHeader(key?: string): { headers?: Record<string, string> } {
+  return key ? { headers: { "Idempotency-Key": key } } : {};
 }
 
 export class ResceneClient {
@@ -309,12 +341,44 @@ export class ResceneClient {
     return this.send("/v1/projects", ProjectSchema.array());
   }
 
-  async createProject(name: string): Promise<Project> {
-    return this.send("/v1/projects", ProjectSchema, { method: "POST", body: JSON.stringify({ name }) });
+  /** Batched card data: one request and one aggregate pass for the whole library. */
+  async listProjectSummaries(): Promise<ProjectSummary[]> {
+    return this.send("/v1/projects?view=summary", ProjectSummarySchema.array());
+  }
+
+  async createProject(name: string, idempotencyKey?: string): Promise<Project> {
+    return this.send("/v1/projects", ProjectSchema, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+      ...idempotencyHeader(idempotencyKey),
+    });
   }
 
   async getProject(id: string): Promise<ProjectDetail> {
     return this.send(`/v1/projects/${encodeURIComponent(id)}`, ProjectDetailSchema);
+  }
+
+  private getProjectOverview(id: string): Promise<ProjectSummary | ProjectDetail> {
+    return this.send(`/v1/projects/${encodeURIComponent(id)}?view=summary`, ProjectOverviewSchema);
+  }
+
+  async getProjectSummary(id: string): Promise<ProjectSummary> {
+    const project = await this.getProjectOverview(id);
+    return "assets" in project ? legacyWorkspace(project) : project;
+  }
+
+  async getWorkspace(id: string, assetCursor = "", jobCursor = ""): Promise<ProjectWorkspace> {
+    const project = await this.getProjectOverview(id);
+    if ("assets" in project) return legacyWorkspace(project);
+    const path = `/v1/projects/${encodeURIComponent(id)}`;
+    const [assets, jobs] = await Promise.all([
+      this.send(`${path}/assets?cursor=${encodeURIComponent(assetCursor)}`, AssetPageSchema),
+      this.send(`${path}/jobs?cursor=${encodeURIComponent(jobCursor)}`, JobPageSchema),
+    ]);
+    return {
+      ...project, assets: assets.items, jobs: jobs.items,
+      nextAssetCursor: assets.next_cursor, nextJobCursor: jobs.next_cursor,
+    };
   }
 
   async updateProject(id: string, name: string): Promise<Project> {
@@ -337,6 +401,13 @@ export class ResceneClient {
       AddMemberResultSchema,
       { method: "POST", body: JSON.stringify({ email, role }) },
     );
+  }
+
+  async acceptInvitation(code: string): Promise<AcceptInvitationResult> {
+    return this.send("/v1/project-invitations/accept", AcceptInvitationResultSchema, {
+      method: "POST",
+      body: JSON.stringify({ code: code.trim() }),
+    });
   }
 
   async listInvitations(projectId: string): Promise<ProjectInvitation[]> {
@@ -437,10 +508,11 @@ export class ResceneClient {
     await this.send(`/v1/assets/${encodeURIComponent(assetId)}`, z.void(), { method: "DELETE" });
   }
 
-  async createJob(projectId: string, profile: Profile, assetIds: string[]): Promise<Job> {
+  async createJob(projectId: string, profile: Profile, assetIds: string[], idempotencyKey?: string): Promise<Job> {
     return this.send(`/v1/projects/${encodeURIComponent(projectId)}/jobs`, JobSchema, {
       method: "POST",
       body: JSON.stringify({ profile, asset_ids: assetIds }),
+      ...idempotencyHeader(idempotencyKey),
     });
   }
 
@@ -535,6 +607,7 @@ export class ResceneClient {
   subscribeJob(id: string, onEvent: Listener, onError?: (error: Error) => void, options?: JobSubscriptionOptions): () => void {
     let closed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
     let lastEventId: string | undefined;
     let reconnects = 0;
@@ -543,6 +616,7 @@ export class ResceneClient {
     const stop = () => {
       closed = true;
       clearTimeout(timer);
+      clearTimeout(idleTimer);
       controller?.abort();
     };
     const report = (error: unknown) => {
@@ -580,6 +654,15 @@ export class ResceneClient {
       if (closed) return;
       try {
         controller = new AbortController();
+        const active = controller;
+        const armIdle = () => {
+          clearTimeout(idleTimer);
+          if (closed) return;
+          idleTimer = setTimeout(() => {
+            if (!closed) active.abort();
+          }, options?.idleTimeoutMs ?? IDLE_TIMEOUT_MS);
+        };
+        armIdle();
         const query = lastEventId ? `?lastEventId=${encodeURIComponent(lastEventId)}` : "";
         const response = await this.fetcher(`${this.baseUrl}/v1/jobs/${encodeURIComponent(id)}/events${query}`, {
           headers: {
@@ -588,6 +671,11 @@ export class ResceneClient {
           },
           signal: controller.signal,
         });
+        if (lastEventId && response.status === 422) {
+          // Fetch a fresh snapshot without replaying already displayed stages.
+          void poll();
+          return;
+        }
         if (!response.ok || !response.body || typeof response.body.getReader !== "function") {
           throw new ResceneApiError(response.status, "Event stream unavailable");
         }
@@ -599,6 +687,7 @@ export class ResceneClient {
             const { done, value } = await reader.read();
             if (closed) return;
             if (done) break;
+            armIdle();
             buffer += decoder.decode(value, { stream: true });
             let match: RegExpExecArray | null;
             while ((match = /\r?\n\r?\n/.exec(buffer))) {
@@ -615,6 +704,7 @@ export class ResceneClient {
             }
           }
         } finally {
+          clearTimeout(idleTimer);
           reader.releaseLock();
         }
         throw new Error("Event stream ended before the job completed");

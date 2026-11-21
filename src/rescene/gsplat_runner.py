@@ -8,6 +8,9 @@ import math
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
+
+from rescene.metrics import validation_coverage_allowed
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -29,16 +32,20 @@ def registered_split(manifest: dict, image_names: list[str], scene: Path) -> dic
     train = [by_image[name] for name in image_names if not mapping[name]["validation"]]
     val = [by_image[name] for name in image_names if mapping[name]["validation"]]
     expected_val = {frame["source_id"] for frame in frames if frame["validation"]}
-    if set(val) != expected_val:
+    missing = expected_val - set(val)
+    if not validation_coverage_allowed(scene, len(expected_val), len(missing)):
         raise ValueError("Selected validation sources are missing from registered images")
     if not train or not val or set(train) & set(val):
         raise ValueError("Photometric split requires disjoint, nonempty registered train and validation sets")
-    return {
+    result = {
         "schema_version": 1,
         "train_source_ids": train,
         "validation_source_ids": val,
         "image_to_source_id": by_image,
     }
+    if missing:
+        result["missing_validation_source_ids"] = sorted(missing)
+    return result
 
 
 def _dense_parser(original_parser: object):
@@ -74,7 +81,9 @@ def _dense_parser(original_parser: object):
     return DenseParser
 
 
-def configure_trainer(trainer: object, split_file: Path, init_points: str = "sparse") -> None:
+def configure_trainer(
+    trainer: object, split_file: Path, init_points: str = "sparse", *, train_workers: int | None = None
+) -> None:
     """Install split and per-view evaluation hooks on the pinned trainer."""
     import imageio.v2 as imageio
     import numpy as np
@@ -138,6 +147,21 @@ def configure_trainer(trainer: object, split_file: Path, init_points: str = "spa
             )
 
     class SplitRunner(original_runner):
+        def train(self):
+            if train_workers is None:
+                return super().train()
+            parent_loader = torch.utils.data.DataLoader
+
+            class TrainLoader(parent_loader):
+                def __init__(loader, dataset, *args, **kwargs):
+                    if dataset is self.trainset:
+                        kwargs["num_workers"] = train_workers
+                    super().__init__(dataset, *args, **kwargs)
+
+            print(f"ReScene training DataLoader workers: {train_workers}", flush=True)
+            with patch.object(torch.utils.data, "DataLoader", TrainLoader):
+                return super().train()
+
         @torch.no_grad()
         def eval(self, step: int, stage: str = "val") -> None:
             if stage != "val" or self.world_size != 1 or self.world_rank != 0:
@@ -147,6 +171,16 @@ def configure_trainer(trainer: object, split_file: Path, init_points: str = "spa
             train_ids = [split["image_to_source_id"][self.parser.image_names[int(i)]] for i in self.trainset.indices]
             val_names = [self.parser.image_names[int(i)] for i in self.valset.indices]
             expected = split["validation_source_ids"]
+            manifest = json.loads((scene / "input_manifest.json").read_text(encoding="utf-8"))
+            scoring_sizes = (
+                {
+                    frame["source_id"]: (frame["height"], frame["width"])
+                    for frame in manifest["frames"]
+                    if frame["validation"]
+                }
+                if manifest.get("retain_frozen_sources")
+                else {}
+            )
             if (
                 train_ids != split["train_source_ids"]
                 or [split["image_to_source_id"][n] for n in val_names] != expected
@@ -184,13 +218,25 @@ def configure_trainer(trainer: object, split_file: Path, init_points: str = "spa
                     f"{self.render_dir}/{stage}_step{step}_{index:04d}.png", (canvas * 255).astype(np.uint8)
                 )
                 prediction, target = colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2)
+                name = val_names[index]
+                source = split["image_to_source_id"][name]
+                scoring_size = scoring_sizes.get(source, (height, width))
+                if scoring_size != (height, width):
+                    prediction, target = torch.nn.functional.interpolate(
+                        torch.cat((prediction, target)),
+                        size=scoring_size,
+                        mode="bilinear",
+                        align_corners=False,
+                        antialias=True,
+                    ).chunk(2)
                 values = {
                     name: float(getattr(self, name)(prediction, target).item()) for name in ("psnr", "ssim", "lpips")
                 }
                 if not all(math.isfinite(value) for value in values.values()):
                     raise ValueError("Non-finite photometric metric")
-                name = val_names[index]
-                views.append({"source_id": split["image_to_source_id"][name], "image_name": name, **values})
+                if scoring_sizes:
+                    values["scoring_height"], values["scoring_width"] = scoring_size
+                views.append({"source_id": source, "image_name": name, **values})
             actual = [view["source_id"] for view in views]
             if actual != expected or set(actual) & set(train_ids):
                 raise ValueError("Rendered views do not match validation split")
@@ -222,13 +268,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--split-file", type=Path, required=True)
     parser.add_argument("--init-points", choices=("sparse", "dense"), default="sparse")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--train-workers", type=int, choices=range(1, 13))
     args, remaining = parser.parse_known_args()
     sys.argv = [sys.argv[0], *remaining]
     root = Path(os.environ.get("RESCENE_ROOT", Path.cwd())).resolve()
     sys.path.insert(0, str(root / "third_party" / "gsplat" / "examples"))
     import simple_trainer as trainer
 
-    configure_trainer(trainer, args.split_file, args.init_points)
+    seed_upstream = trainer.set_random_seed
+    trainer.set_random_seed = lambda seed: seed_upstream(seed + args.seed - 42)
+
+    configure_trainer(trainer, args.split_file, args.init_points, train_workers=args.train_workers)
     configs = {
         "default": ("Gaussian splatting", trainer.Config(strategy=trainer.DefaultStrategy(verbose=True))),
     }

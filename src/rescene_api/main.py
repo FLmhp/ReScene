@@ -5,9 +5,12 @@ import csv
 import hashlib
 import hmac
 import io
+import ipaddress
 import json
+import logging
 import math
 import secrets
+from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import version as package_version
@@ -18,24 +21,29 @@ import jwt
 import oss2
 import segno
 import uvicorn
-from aliyunsdkcore.acs_exception.exceptions import ClientException
+from aliyunsdkcore.acs_exception.exceptions import ClientException, ServerException
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy import and_, case, delete, func, or_, select, text, tuple_, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from rescene.preprocess import IMAGE_SUFFIXES, VIDEO_SUFFIXES
+from rescene_api.access_logging import LOGGING_CONFIG
 from rescene_api.auth import decode_token, hash_password, issue_token, verify_password
+from rescene_api.bodylimit import RequestBodyLimitMiddleware
 from rescene_api.config import settings
 from rescene_api.db import SessionLocal, init_db
 from rescene_api.models import (
     Announcement,
     Artifact,
     Asset,
+    AssetCleanup,
     AuditLog,
+    IdempotencyRecord,
     JobLog,
     JobStage,
     Notification,
@@ -51,6 +59,7 @@ from rescene_api.models import (
 )
 from rescene_api.ratelimit import limiter
 from rescene_api.schemas import (
+    AcceptInvitationRequest,
     AddMemberRequest,
     ChangePasswordRequest,
     CompleteAssetRequest,
@@ -75,17 +84,43 @@ from rescene_api.schemas import (
 from rescene_api.storage import POST_OBJECT_LIMIT, POST_OBJECT_TTL_SECONDS, OssStorage, credentials_dict
 
 bearer = HTTPBearer(auto_error=False)
+logger = logging.getLogger(__name__)
 
 
-def fail(status_code: int, detail: str, code: str, headers: dict[str, str] | None = None) -> NoReturn:
+def fail(
+    status_code: int,
+    detail: str,
+    code: str,
+    headers: dict[str, str] | None = None,
+    cause: BaseException | None = None,
+) -> NoReturn:
     """Raise an HTTP error carrying a stable machine code for client mapping."""
-    raise HTTPException(status_code, detail, headers={**(headers or {}), "X-Error-Code": code})
+    error = HTTPException(status_code, detail, headers={**(headers or {}), "X-Error-Code": code})
+    if cause is not None:
+        raise error from cause
+    raise error
+
+
+def client_address(request: Request) -> str:
+    """Rate-limit identity from the hop Caddy vouches for, never the XFF chain.
+
+    Caddy overwrites `X-Real-IP` with the client address resolved through its
+    trusted-proxy list, so the value cannot be chosen by the caller. Direct API
+    exposure is unsupported.
+    """
+    forwarded = request.headers.get("x-real-ip", "").strip()
+    if forwarded:
+        try:
+            return ipaddress.ip_address(forwarded).compressed
+        except ValueError:
+            logger.warning("Ignoring malformed X-Real-IP %r", forwarded[:64])
+    return request.client.host if request.client else "unknown"
 
 
 def rate_limit(request: Request) -> None:
-    """Cap anonymous credential attempts per client and route."""
+    """Cap credential attempts per client and route."""
     config = settings()
-    key = f"{request.client.host if request.client else 'unknown'}:{request.url.path}"
+    key = f"{client_address(request)}:{request.url.path}"
     retry = limiter.allow(key, config.auth_rate_limit, 60)
     if retry is not None:
         fail(429, "Too many requests", "auth.rate_limited", {"Retry-After": str(math.ceil(retry))})
@@ -175,12 +210,19 @@ def require_project_manager(project: Project, user: User) -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Project owner or administrator access required")
 
 
-def project_view(db: Session, project: Project, user: User) -> dict[str, object]:
+_UNRESOLVED = object()
+
+
+def project_view(
+    db: Session, project: Project, user: User, *, role: str | None | object = _UNRESOLVED
+) -> dict[str, object]:
+    """Serialize one project; list routes pass a role resolved in one batch."""
+    effective = effective_role(db, project, user) if role is _UNRESOLVED else role
     return {
         "id": project.id,
         "name": project.name,
         "owner_id": project.owner_id,
-        "effective_role": effective_role(db, project, user),
+        "effective_role": effective,
         "created_at": project.created_at,
     }
 
@@ -246,10 +288,17 @@ def bootstrap_admin() -> None:
 async def lifespan(_: FastAPI):
     init_db()
     bootstrap_admin()
-    yield
+    reaper = asyncio.create_task(reap_expired_leases())
+    try:
+        yield
+    finally:
+        reaper.cancel()
+        with suppress(asyncio.CancelledError):
+            await reaper
 
 
 app = FastAPI(title="ReScene API", version=package_version("rescene"), lifespan=lifespan)
+app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings().cors_origins),
@@ -273,8 +322,8 @@ def ready(db: Db) -> dict[str, str]:
 
 @app.post("/v1/auth/register", status_code=201)
 def register(payload: RegisterRequest, db: Db, _: Annotated[None, Depends(rate_limit)] = None) -> dict[str, str]:
-    """Create a self-service account, claim pending invitations, and sign it in."""
-    email = payload.email.strip().lower()
+    """Create a self-service account and sign it in."""
+    email = payload.email
     if db.scalar(select(User).where(User.email == email)):
         fail(status.HTTP_409_CONFLICT, "Email already registered", "auth.email_taken")
     user = User(email=email, password_hash=hash_password(payload.password))
@@ -282,26 +331,6 @@ def register(payload: RegisterRequest, db: Db, _: Annotated[None, Depends(rate_l
     try:
         db.flush()
         audit(db, user.id, "user.register", "user", user.id, email=email)
-        for invitation in db.scalars(select(ProjectInvitation).where(ProjectInvitation.email == email)).all():
-            member = db.scalar(
-                select(ProjectMember).where(
-                    ProjectMember.project_id == invitation.project_id, ProjectMember.user_id == user.id
-                )
-            )
-            if member:
-                member.role = invitation.role
-            else:
-                db.add(ProjectMember(project_id=invitation.project_id, user_id=user.id, role=invitation.role))
-            audit(
-                db,
-                user.id,
-                "project.member.invite.accept",
-                "project",
-                invitation.project_id,
-                project_id=invitation.project_id,
-                email=email,
-            )
-            db.delete(invitation)
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -320,8 +349,14 @@ def change_password(
     """Rotate the signed-in account's password and retire every other session."""
     if not verify_password(payload.current_password, user.password_hash):
         fail(status.HTTP_400_BAD_REQUEST, "Current password is incorrect", "auth.password_mismatch")
-    user.password_hash = hash_password(payload.new_password)
-    user.token_version += 1
+    rotated = db.execute(
+        update(User)
+        .where(User.id == user.id, User.active.is_(True), User.password_hash == user.password_hash)
+        .values(password_hash=hash_password(payload.new_password), token_version=User.token_version + 1)
+    )
+    if rotated.rowcount != 1:
+        db.rollback()
+        fail(status.HTTP_409_CONFLICT, "Account changed while the password was verified", "auth.session_stale")
     db.commit()
     db.refresh(user)
     return {"access_token": issue_token(user.id, user.token_version), "token_type": "bearer"}
@@ -329,7 +364,7 @@ def change_password(
 
 @app.post("/v1/auth/login")
 def login(payload: LoginRequest, db: Db, _: Annotated[None, Depends(rate_limit)] = None) -> dict[str, str]:
-    user = db.scalar(select(User).where(User.email == payload.email.strip().lower()))
+    user = db.scalar(select(User).where(User.email == payload.email))
     if not user or not verify_password(payload.password, user.password_hash) or not user.active:
         fail(status.HTTP_401_UNAUTHORIZED, "Invalid credentials", "auth.invalid_credentials")
     return {"access_token": issue_token(user.id, user.token_version), "token_type": "bearer"}
@@ -354,7 +389,7 @@ def logout(user: UserDep, db: Db) -> None:
 
 @app.post("/v1/users", status_code=201)
 def create_user(payload: CreateUserRequest, db: Db, admin: AdminDep) -> dict[str, object]:
-    email = payload.email.lower()
+    email = payload.email
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(status.HTTP_409_CONFLICT, "User already exists")
     user = User(email=email, password_hash=hash_password(payload.password), is_admin=payload.is_admin)
@@ -417,7 +452,7 @@ def update_user(user_id: str, payload: UpdateUserRequest, db: Db, admin: AdminDe
     if payload.active is not None:
         target.active = payload.active
         if not payload.active:
-            target.token_version += 1
+            db.execute(update(User).where(User.id == target.id).values(token_version=User.token_version + 1))
     if payload.is_admin is not None:
         target.is_admin = payload.is_admin
     audit(db, admin.id, "user.update", "user", target.id, active=target.active, is_admin=target.is_admin)
@@ -431,14 +466,139 @@ def reset_user_password(user_id: str, payload: ResetPasswordRequest, db: Db, adm
     target = db.get(User, user_id)
     if not target:
         fail(status.HTTP_404_NOT_FOUND, "User not found", "user.not_found")
-    target.password_hash = hash_password(payload.password)
-    target.token_version += 1
+    reset = db.execute(
+        update(User)
+        .where(User.id == target.id, User.password_hash == target.password_hash)
+        .values(password_hash=hash_password(payload.password), token_version=User.token_version + 1)
+    )
+    if reset.rowcount != 1:
+        db.rollback()
+        fail(status.HTTP_409_CONFLICT, "Account password changed concurrently; retry", "user.concurrent_change")
     audit(db, admin.id, "user.password.reset", "user", target.id)
     db.commit()
 
 
+ACTIVE_JOB_STATUSES = ("QUEUED", "LEASED", "RUNNING")
+_COVER_SUFFIXES = tuple(sorted(IMAGE_SUFFIXES))
+
+
+def project_summaries(db: Session, user: User) -> list[dict[str, object]]:
+    """One fixed set of aggregate queries for every project the user can see.
+
+    Counts, active flags, covers and latest jobs are resolved in batches so the
+    project library stays flat as the number of cards grows.
+    """
+    membership_role = aliased(ProjectMember)
+    query = (
+        select(Project, membership_role.role)
+        .outerjoin(
+            membership_role,
+            and_(membership_role.project_id == Project.id, membership_role.user_id == user.id),
+        )
+        .where(Project.deleted_at.is_(None))
+    )
+    if not user.is_admin:
+        query = query.where(or_(Project.owner_id == user.id, membership_role.role.in_(["member", "viewer"])))
+    rows = db.execute(query.order_by(Project.created_at.desc())).all()
+    ids = [project.id for project, _ in rows]
+    if not ids:
+        return []
+
+    asset_counts = dict(
+        db.execute(
+            select(Asset.project_id, func.count()).where(Asset.project_id.in_(ids)).group_by(Asset.project_id)
+        ).all()
+    )
+    job_stats = {
+        project_id: (count, bool(active))
+        for project_id, count, active in db.execute(
+            select(
+                ReconstructionJob.project_id,
+                func.count(),
+                func.coalesce(func.sum(case((ReconstructionJob.status.in_(ACTIVE_JOB_STATUSES), 1), else_=0)), 0),
+            )
+            .where(ReconstructionJob.project_id.in_(ids))
+            .group_by(ReconstructionJob.project_id)
+        ).all()
+    }
+
+    cover_candidates = (
+        select(
+            Asset,
+            func.row_number()
+            .over(
+                partition_by=Asset.project_id,
+                order_by=(Asset.created_at.desc(), Asset.id.desc()),
+            )
+            .label("cover_rank"),
+        )
+        .where(
+            Asset.project_id.in_(ids),
+            Asset.status == "READY",
+            or_(*(func.lower(Asset.filename).endswith(suffix) for suffix in _COVER_SUFFIXES)),
+        )
+        .subquery()
+    )
+    cover_asset = aliased(Asset, cover_candidates)
+    covers = {
+        asset.project_id: asset
+        for asset in db.scalars(select(cover_asset).where(cover_candidates.c.cover_rank == 1)).all()
+    }
+
+    job_candidates = (
+        select(
+            ReconstructionJob,
+            Reconstruction.id.label("reconstruction_id"),
+            func.row_number()
+            .over(
+                partition_by=ReconstructionJob.project_id,
+                order_by=(ReconstructionJob.created_at.desc(), ReconstructionJob.id.desc()),
+            )
+            .label("latest_rank"),
+        )
+        .outerjoin(Reconstruction, Reconstruction.job_id == ReconstructionJob.id)
+        .where(ReconstructionJob.project_id.in_(ids))
+        .subquery()
+    )
+    latest_job = aliased(ReconstructionJob, job_candidates)
+    latest_jobs = {
+        job.project_id: (job, reconstruction_id)
+        for job, reconstruction_id in db.execute(
+            select(latest_job, job_candidates.c.reconstruction_id).where(job_candidates.c.latest_rank == 1)
+        ).all()
+    }
+
+    summaries: list[dict[str, object]] = []
+    for project, member_role in rows:
+        if project.owner_id == user.id:
+            role = "owner"
+        elif user.is_admin:
+            role = "admin"
+        else:
+            role = member_role if member_role in {"member", "viewer"} else None
+        job_count, has_active_jobs = job_stats.get(project.id, (0, False))
+        cover = covers.get(project.id)
+        latest = latest_jobs.get(project.id)
+        summaries.append(
+            {
+                "id": project.id,
+                "name": project.name,
+                "owner_id": project.owner_id,
+                "effective_role": role,
+                "asset_count": asset_counts.get(project.id, 0),
+                "job_count": job_count,
+                "has_active_jobs": has_active_jobs,
+                "cover": asset_summary(cover) if cover else None,
+                "latest_job": job_view(latest[0], latest[1]) if latest else None,
+            }
+        )
+    return summaries
+
+
 @app.get("/v1/projects")
-def list_projects(db: Db, user: UserDep) -> list[dict[str, object]]:
+def list_projects(db: Db, user: UserDep, view: Literal["list", "summary"] = "list") -> list[dict[str, object]]:
+    if view == "summary":
+        return project_summaries(db, user)
     membership = select(ProjectMember.project_id).where(
         ProjectMember.user_id == user.id, ProjectMember.role.in_(["member", "viewer"])
     )
@@ -446,17 +606,129 @@ def list_projects(db: Db, user: UserDep) -> list[dict[str, object]]:
     if not user.is_admin:
         query = query.where(or_(Project.owner_id == user.id, Project.id.in_(membership)))
     rows = db.scalars(query.order_by(Project.created_at.desc())).all()
-    return [project_view(db, item, user) for item in rows]
+    ids = [item.id for item in rows]
+    memberships = (
+        dict(
+            db.execute(
+                select(ProjectMember.project_id, ProjectMember.role).where(
+                    ProjectMember.user_id == user.id, ProjectMember.project_id.in_(ids)
+                )
+            ).all()
+        )
+        if ids
+        else {}
+    )
+
+    def role_for(project: Project) -> str | None:
+        if project.owner_id == user.id:
+            return "owner"
+        if user.is_admin:
+            return "admin"
+        role = memberships.get(project.id)
+        return role if role in {"member", "viewer"} else None
+
+    return [project_view(db, item, user, role=role_for(item)) for item in rows]
+
+
+IDEMPOTENCY_MAX_LENGTH = 128
+
+
+def idempotency_digest(request: dict[str, object]) -> str:
+    canonical = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def idempotency_record(db: Session, user_id: str, operation: str, scope: str, key: str) -> IdempotencyRecord | None:
+    return db.scalar(
+        select(IdempotencyRecord).where(
+            IdempotencyRecord.user_id == user_id,
+            IdempotencyRecord.operation == operation,
+            IdempotencyRecord.scope == scope,
+            IdempotencyRecord.key == key,
+        )
+    )
+
+
+def replay_idempotent(record: IdempotencyRecord, digest: str) -> dict[str, object]:
+    if not hmac.compare_digest(record.request_hash, digest):
+        fail(
+            status.HTTP_409_CONFLICT,
+            "Idempotency key was already used for a different request",
+            "idempotency.conflict",
+        )
+    return record.response_json
+
+
+def idempotent_create(
+    db: Session,
+    user: User,
+    *,
+    operation: str,
+    scope: str,
+    key: str | None,
+    request: dict[str, object],
+    build: Callable[[], dict[str, object]],
+) -> dict[str, object]:
+    """Commit ``build()`` once per key and replay its response for retries.
+
+    Without a key the call keeps the previous behaviour and always creates a row.
+    """
+    if key is None:
+        result = build()
+        db.commit()
+        return result
+    if not 1 <= len(key) <= IDEMPOTENCY_MAX_LENGTH:
+        fail(status.HTTP_400_BAD_REQUEST, "Idempotency-Key must be 1-128 characters", "idempotency.invalid_key")
+    digest = idempotency_digest(request)
+    for _ in range(2):
+        stored = idempotency_record(db, user.id, operation, scope, key)
+        if stored is not None:
+            return replay_idempotent(stored, digest)
+        snapshot = jsonable_encoder(build())
+        db.add(
+            IdempotencyRecord(
+                user_id=user.id,
+                operation=operation,
+                scope=scope,
+                key=key,
+                request_hash=digest,
+                status_code=201,
+                response_json=snapshot,
+            )
+        )
+        try:
+            db.commit()
+        except IntegrityError:
+            # Another request with this key won the insert; its response is authoritative.
+            db.rollback()
+            continue
+        # Return the stored snapshot so a retry is byte-identical to this response.
+        return snapshot
+    stored = idempotency_record(db, user.id, operation, scope, key)
+    if stored is not None:
+        return replay_idempotent(stored, digest)
+    fail(status.HTTP_409_CONFLICT, "Idempotency key is still being processed", "idempotency.conflict")
 
 
 @app.post("/v1/projects", status_code=201)
-def create_project(payload: CreateProjectRequest, db: Db, user: UserDep) -> dict[str, object]:
-    project = Project(owner_id=user.id, name=payload.name.strip())
-    db.add(project)
-    db.flush()
-    audit(db, user.id, "project.create", "project", project.id, project_id=project.id)
-    db.commit()
-    return project_view(db, project, user)
+def create_project(
+    payload: CreateProjectRequest,
+    db: Db,
+    user: UserDep,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> dict[str, object]:
+    name = payload.name.strip()
+
+    def build() -> dict[str, object]:
+        project = Project(owner_id=user.id, name=name)
+        db.add(project)
+        db.flush()
+        audit(db, user.id, "project.create", "project", project.id, project_id=project.id)
+        return project_view(db, project, user)
+
+    return idempotent_create(
+        db, user, operation="project.create", scope="", key=idempotency_key, request={"name": name}, build=build
+    )
 
 
 @app.patch("/v1/projects/{project_id}")
@@ -470,8 +742,47 @@ def update_project(project_id: str, payload: CreateProjectRequest, db: Db, user:
 
 
 @app.get("/v1/projects/{project_id}")
-def get_project(project_id: str, db: Db, user: UserDep) -> dict[str, object]:
+def get_project(project_id: str, db: Db, user: UserDep, view: Literal["full", "summary"] = "full") -> dict[str, object]:
     project = project_for_user(db, project_id, user)
+    summary = {
+        "id": project.id,
+        "name": project.name,
+        "owner_id": project.owner_id,
+        "effective_role": effective_role(db, project, user),
+    }
+    if view == "summary":
+        job_filter = ReconstructionJob.project_id == project.id
+        latest = db.execute(
+            select(ReconstructionJob, Reconstruction.id)
+            .outerjoin(Reconstruction, Reconstruction.job_id == ReconstructionJob.id)
+            .where(job_filter)
+            .order_by(ReconstructionJob.created_at.desc(), ReconstructionJob.id.desc())
+            .limit(1)
+        ).first()
+        cover = db.scalar(
+            select(Asset)
+            .where(
+                Asset.project_id == project.id,
+                Asset.status == "READY",
+                or_(*(func.lower(Asset.filename).endswith(suffix) for suffix in sorted(IMAGE_SUFFIXES))),
+            )
+            .order_by(Asset.created_at.desc(), Asset.id.desc())
+            .limit(1)
+        )
+        return {
+            **summary,
+            "asset_count": db.scalar(select(func.count()).select_from(Asset).where(Asset.project_id == project.id)),
+            "job_count": db.scalar(select(func.count()).select_from(ReconstructionJob).where(job_filter)),
+            "has_active_jobs": bool(
+                db.scalar(
+                    select(ReconstructionJob.id)
+                    .where(job_filter, ReconstructionJob.status.in_(["QUEUED", "LEASED", "RUNNING"]))
+                    .limit(1)
+                )
+            ),
+            "cover": asset_summary(cover) if cover else None,
+            "latest_job": job_view(latest[0], latest[1]) if latest else None,
+        }
     expire_stale_uploads(db, project)
     assets = db.scalars(select(Asset).where(Asset.project_id == project.id).order_by(Asset.created_at)).all()
     jobs = db.scalars(
@@ -484,14 +795,65 @@ def get_project(project_id: str, db: Db, user: UserDep) -> dict[str, object]:
         for row in db.scalars(select(Reconstruction).where(Reconstruction.project_id == project.id)).all()
     }
     return {
-        "id": project.id,
-        "name": project.name,
-        "owner_id": project.owner_id,
-        "effective_role": effective_role(db, project, user),
-        "assets": [
-            {"id": item.id, "filename": item.filename, "size": item.size, "status": item.status} for item in assets
-        ],
+        **summary,
+        "assets": [asset_summary(item) for item in assets],
         "jobs": [job_view(item, reconstructions.get(item.id)) for item in jobs],
+    }
+
+
+def asset_summary(asset: Asset) -> dict[str, object]:
+    return {"id": asset.id, "filename": asset.filename, "size": asset.size, "status": asset.status}
+
+
+def page_anchor(cursor: str) -> tuple[datetime, str]:
+    try:
+        timestamp, item_id = cursor.split("|", 1)
+        date = datetime.fromisoformat(timestamp)
+        if not item_id or len(item_id) > 36 or "|" in item_id:
+            raise ValueError
+        return date.astimezone(UTC) if date.tzinfo else date.replace(tzinfo=UTC), item_id
+    except (ValueError, OverflowError):
+        fail(422, "Invalid pagination cursor", "page.invalid_cursor")
+
+
+def next_cursor(item: Asset | ReconstructionJob) -> str:
+    return f"{item.created_at.isoformat()}|{item.id}"
+
+
+PageLimit = Annotated[int, Query(ge=1, le=100)]
+PageCursor = Annotated[str, Query(max_length=100)]
+
+
+@app.get("/v1/projects/{project_id}/assets")
+def list_project_assets(project_id: str, db: Db, user: UserDep, limit: PageLimit = 24, cursor: PageCursor = ""):
+    project = project_for_user(db, project_id, user)
+    expire_stale_uploads(db, project)
+    query = select(Asset).where(Asset.project_id == project.id)
+    if cursor:
+        query = query.where(tuple_(Asset.created_at, Asset.id) < page_anchor(cursor))
+    rows = db.scalars(query.order_by(Asset.created_at.desc(), Asset.id.desc()).limit(limit + 1)).all()
+    return {
+        "items": [asset_summary(row) for row in rows[:limit]],
+        "next_cursor": next_cursor(rows[limit - 1]) if len(rows) > limit else None,
+    }
+
+
+@app.get("/v1/projects/{project_id}/jobs")
+def list_project_jobs(project_id: str, db: Db, user: UserDep, limit: PageLimit = 24, cursor: PageCursor = ""):
+    project = project_for_user(db, project_id, user)
+    query = (
+        select(ReconstructionJob, Reconstruction.id)
+        .outerjoin(Reconstruction, Reconstruction.job_id == ReconstructionJob.id)
+        .where(ReconstructionJob.project_id == project.id)
+    )
+    if cursor:
+        query = query.where(tuple_(ReconstructionJob.created_at, ReconstructionJob.id) < page_anchor(cursor))
+    rows = db.execute(
+        query.order_by(ReconstructionJob.created_at.desc(), ReconstructionJob.id.desc()).limit(limit + 1)
+    ).all()
+    return {
+        "items": [job_view(job, reconstruction_id) for job, reconstruction_id in rows[:limit]],
+        "next_cursor": next_cursor(rows[limit - 1][0]) if len(rows) > limit else None,
     }
 
 
@@ -556,53 +918,85 @@ def remove_member(project_id: str, user_id: str, db: Db, user: UserDep) -> None:
 
 
 @app.post("/v1/projects/{project_id}/members", status_code=201)
-def add_member(project_id: str, payload: AddMemberRequest, db: Db, user: UserDep) -> dict[str, object]:
-    """Add an existing account, or invite an email that has not registered yet."""
+def add_member(
+    project_id: str, payload: AddMemberRequest, response: Response, db: Db, user: UserDep
+) -> dict[str, object]:
+    """Issue a one-time invitation or report the existing membership."""
     project = project_for_user(db, project_id, user, lock=True)
     require_project_manager(project, user)
-    email = payload.email.strip().lower()
-    member_user = db.scalar(select(User).where(User.email == email, User.active.is_(True)))
-    if not member_user:
-        invitation = db.scalar(
-            select(ProjectInvitation).where(
-                ProjectInvitation.project_id == project_id, ProjectInvitation.email == email
-            )
-        )
-        if invitation:
-            invitation.role = payload.role
-        else:
-            db.add(ProjectInvitation(project_id=project_id, email=email, role=payload.role, invited_by=user.id))
-        audit(db, user.id, "project.member.invite", "project", project_id, project_id=project_id, email=email)
-        db.commit()
-        return {"status": "invited", "email": email, "role": payload.role}
-    if member_user.id == project.owner_id:
+    email = payload.email
+    account = db.scalar(select(User).where(User.email == email))
+    if account and account.id == project.owner_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot alter the project owner")
-    existing = db.scalar(
-        select(ProjectMember).where(
-            ProjectMember.project_id == project_id,
-            ProjectMember.user_id == member_user.id,
+    if account and account.active:
+        existing = db.scalar(
+            select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == account.id)
+        )
+        if existing:
+            return {"status": "member", "user_id": account.id, "role": existing.role}
+
+    invitation = db.scalar(
+        select(ProjectInvitation).where(ProjectInvitation.project_id == project_id, ProjectInvitation.email == email)
+    )
+    if not invitation:
+        invitation = ProjectInvitation(project_id=project_id, email=email)
+        db.add(invitation)
+    code = secrets.token_urlsafe(32)
+    expires_at = now() + timedelta(days=7)
+    invitation.role = payload.role
+    invitation.invited_by = user.id
+    invitation.claim_digest = hashlib.sha256(code.encode()).hexdigest()
+    invitation.expires_at = expires_at
+    audit(db, user.id, "project.member.invite", "project", project_id, project_id=project_id, email=email)
+    db.commit()
+    response.headers["Cache-Control"] = "no-store"
+    return {"status": "invited", "email": email, "role": payload.role, "claim_code": code, "expires_at": expires_at}
+
+
+@app.post("/v1/project-invitations/accept", dependencies=[Depends(rate_limit)])
+def accept_invitation(payload: AcceptInvitationRequest, db: Db, user: UserDep) -> dict[str, str]:
+    """Grant access once to the authenticated account matching an active invitation."""
+    digest = hashlib.sha256(payload.code.encode()).hexdigest()
+    project_id = db.scalar(select(ProjectInvitation.project_id).where(ProjectInvitation.claim_digest == digest))
+    project = db.get(Project, project_id, with_for_update=True) if project_id else None
+    if not project or project.deleted_at or project.owner_id == user.id:
+        fail(status.HTTP_404_NOT_FOUND, "Invitation is unavailable", "invitation.unavailable")
+    invitation = db.scalar(
+        select(ProjectInvitation).where(
+            ProjectInvitation.project_id == project.id,
+            ProjectInvitation.claim_digest == digest,
+            ProjectInvitation.email == user.email,
+            ProjectInvitation.expires_at > now(),
         )
     )
-    if existing:
-        existing.role = payload.role
-    else:
-        db.add(ProjectMember(project_id=project_id, user_id=member_user.id, role=payload.role))
+    if not invitation:
+        fail(status.HTTP_404_NOT_FOUND, "Invitation is unavailable", "invitation.unavailable")
+    existing = db.scalar(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project.id,
+            ProjectMember.user_id == user.id,
+        )
+    )
+    role = existing.role if existing else invitation.role
+    if not existing:
+        db.add(ProjectMember(project_id=project.id, user_id=user.id, role=role))
     audit(
         db,
         user.id,
-        "project.member.add",
+        "project.member.invite.accept",
         "project",
-        project_id,
-        project_id=project_id,
-        member_id=member_user.id,
+        project.id,
+        project_id=project.id,
+        email=user.email,
     )
+    db.delete(invitation)
     db.commit()
-    return {"status": "member", "user_id": member_user.id, "role": payload.role}
+    return {"project_id": project.id, "role": role}
 
 
 @app.get("/v1/projects/{project_id}/invitations")
 def list_invitations(project_id: str, db: Db, user: UserDep) -> list[dict[str, object]]:
-    """Pending email invitations; they are consumed when the address registers."""
+    """List pending invitations without their claim credentials."""
     project = project_for_user(db, project_id, user)
     require_project_manager(project, user)
     rows = db.scalars(
@@ -849,9 +1243,22 @@ def create_upload_session(project_id: str, payload: UploadSessionRequest, db: Db
     db.add(asset)
     db.flush()
     asset.object_key = f"projects/{project_id}/assets/{asset.id}/original/{filename}"
+    try:
+        grant = upload_grant(asset, payload.mode)
+    except (HTTPException, ClientException, ServerException, oss2.exceptions.OssError) as error:
+        # The row only exists to mint its object key: keep it out of the database
+        # until the client actually holds usable credentials.
+        db.rollback()
+        logger.warning("Could not issue upload credentials for project %s (%s)", project_id, type(error).__name__)
+        fail(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Upload credentials are unavailable",
+            "asset.upload_credentials_unavailable",
+            {"Retry-After": "30"},
+        )
     audit(db, user.id, "asset.upload.init", "asset", asset.id, project_id=project_id)
     db.commit()
-    return upload_grant(asset, payload.mode)
+    return grant
 
 
 @app.post("/v1/assets/{asset_id}/complete")
@@ -865,11 +1272,19 @@ def complete_asset(asset_id: str, payload: CompleteAssetRequest, db: Db, user: U
     try:
         actual_size, content_type = storage().head(asset.object_key)
     except oss2.exceptions.NotFound as error:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Upload is not complete") from error
+        fail(status.HTTP_409_CONFLICT, "Upload is not complete", "asset.upload_incomplete", cause=error)
     if actual_size != payload.size or actual_size != asset.size:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Uploaded object size does not match")
+        fail(
+            status.HTTP_409_CONFLICT,
+            "Uploaded object size does not match",
+            "asset.upload_size_mismatch",
+        )
     if not payload.sha256 or (asset.sha256 and asset.sha256 != payload.sha256):
-        raise HTTPException(status.HTTP_409_CONFLICT, "Uploaded object hash does not match")
+        fail(
+            status.HTTP_409_CONFLICT,
+            "Uploaded object hash does not match",
+            "asset.upload_hash_mismatch",
+        )
     asset.sha256 = payload.sha256
     asset.content_type = content_type or asset.content_type
     asset.status = "READY"
@@ -887,13 +1302,13 @@ def refresh_upload_session(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Asset not found")
     project_for_user(db, asset.project_id, user, write=True)
     if asset.status != "UPLOADING":
-        raise HTTPException(status.HTTP_409_CONFLICT, "Asset is not awaiting upload")
+        fail(status.HTTP_409_CONFLICT, "Asset is not awaiting upload", "asset.not_awaiting_upload")
     return upload_grant(asset, mode)
 
 
 @app.delete("/v1/assets/{asset_id}", status_code=204)
 def delete_asset(asset_id: str, db: Db, user: UserDep) -> None:
-    """Remove one unused asset together with its object."""
+    """Remove one unused asset; the cleanup queue removes its object after commit."""
     asset = db.get(Asset, asset_id)
     if not asset:
         fail(status.HTTP_404_NOT_FOUND, "Asset not found", "asset.not_found")
@@ -903,12 +1318,8 @@ def delete_asset(asset_id: str, db: Db, user: UserDep) -> None:
         fail(status.HTTP_404_NOT_FOUND, "Asset not found", "asset.not_found")
     if asset_referenced(db, asset):
         fail(status.HTTP_409_CONFLICT, "Asset is used by a job", "asset.in_use")
-    try:
-        with suppress(oss2.exceptions.NotFound):
-            storage().delete(asset.object_key)
-    except oss2.exceptions.AccessDenied as error:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Asset storage refused the deletion") from error
     audit(db, user.id, "asset.delete", "asset", asset.id, project_id=asset.project_id, filename=asset.filename)
+    db.add(AssetCleanup(object_key=asset.object_key, reason="asset.delete"))
     db.delete(asset)
     db.commit()
 
@@ -929,31 +1340,51 @@ def asset_preview(asset_id: str, db: Db, user: UserDep) -> dict[str, str]:
 
 
 @app.post("/v1/projects/{project_id}/jobs", status_code=201)
-def create_job(project_id: str, payload: CreateJobRequest, db: Db, user: UserDep) -> dict[str, object]:
+def create_job(
+    project_id: str,
+    payload: CreateJobRequest,
+    db: Db,
+    user: UserDep,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> dict[str, object]:
     project_for_user(db, project_id, user, write=True, lock=True)
-    assets = db.scalars(
-        select(Asset).where(Asset.project_id == project_id, Asset.id.in_(payload.asset_ids), Asset.status == "READY")
-    ).all()
-    if len(assets) != len(set(payload.asset_ids)):
-        fail(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "All assets must be ready and belong to the project",
-            "job.invalid_inputs",
-        )
-    suffixes = [PurePosixPath(asset.filename).suffix.lower() for asset in assets]
-    if not (
-        all(suffix in IMAGE_SUFFIXES for suffix in suffixes) or (len(suffixes) == 1 and suffixes[0] in VIDEO_SUFFIXES)
-    ):
-        fail(status.HTTP_422_UNPROCESSABLE_ENTITY, "Select a set of images or one video", "job.invalid_inputs")
-    if sum(asset.size for asset in assets) > 8 * 1024**3:
-        fail(status.HTTP_422_UNPROCESSABLE_ENTITY, "Job inputs exceed 8 GiB", "job.invalid_inputs")
-    job = ReconstructionJob(project_id=project_id, profile=payload.profile, status="QUEUED", created_by=user.id)
-    db.add(job)
-    db.flush()
-    audit(db, user.id, "job.create", "job", job.id, project_id=project_id, asset_ids=payload.asset_ids)
-    db.add(JobStage(job_id=job.id, stage="queued", status="success", message=json.dumps(payload.asset_ids)))
-    db.commit()
-    return job_view(job)
+
+    def build() -> dict[str, object]:
+        assets = db.scalars(
+            select(Asset).where(
+                Asset.project_id == project_id, Asset.id.in_(payload.asset_ids), Asset.status == "READY"
+            )
+        ).all()
+        if len(assets) != len(set(payload.asset_ids)):
+            fail(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "All assets must be ready and belong to the project",
+                "job.invalid_inputs",
+            )
+        suffixes = [PurePosixPath(asset.filename).suffix.lower() for asset in assets]
+        if not (
+            all(suffix in IMAGE_SUFFIXES for suffix in suffixes)
+            or (len(suffixes) == 1 and suffixes[0] in VIDEO_SUFFIXES)
+        ):
+            fail(status.HTTP_422_UNPROCESSABLE_ENTITY, "Select a set of images or one video", "job.invalid_inputs")
+        if sum(asset.size for asset in assets) > 8 * 1024**3:
+            fail(status.HTTP_422_UNPROCESSABLE_ENTITY, "Job inputs exceed 8 GiB", "job.invalid_inputs")
+        job = ReconstructionJob(project_id=project_id, profile=payload.profile, status="QUEUED", created_by=user.id)
+        db.add(job)
+        db.flush()
+        audit(db, user.id, "job.create", "job", job.id, project_id=project_id, asset_ids=payload.asset_ids)
+        db.add(JobStage(job_id=job.id, stage="queued", status="success", message=json.dumps(payload.asset_ids)))
+        return job_view(job)
+
+    return idempotent_create(
+        db,
+        user,
+        operation="job.create",
+        scope=project_id,
+        key=idempotency_key,
+        request={"project_id": project_id, "profile": payload.profile, "asset_ids": sorted(payload.asset_ids)},
+        build=build,
+    )
 
 
 def job_view(job: ReconstructionJob, reconstruction_id: str | None = None) -> dict[str, object]:
@@ -1119,12 +1550,29 @@ def job_logs(
     }
 
 
+def notification_scope(user: User):
+    """Notifications are the recipient's own, and project ones need live access.
+
+    The project condition is a subquery, so list, badge and read updates agree
+    before pagination and after a membership is revoked or a project is deleted.
+    """
+    membership = select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)
+    projects = select(Project.id).where(
+        Project.deleted_at.is_(None),
+        or_(Project.id.in_(membership), Project.owner_id == user.id),
+    )
+    visible = Notification.project_id.is_(None)
+    if user.is_admin:
+        visible = or_(visible, Notification.project_id.in_(select(Project.id).where(Project.deleted_at.is_(None))))
+    return and_(Notification.user_id == user.id, or_(visible, Notification.project_id.in_(projects)))
+
+
 @app.get("/v1/notifications")
 def list_notifications(
     db: Db, user: UserDep, unread: int = 0, kind: str = "", offset: int = 0, limit: int = 50
 ) -> list[dict[str, object]]:
     """Newest notifications for the signed-in account, optionally unread or type filtered."""
-    query = select(Notification).where(Notification.user_id == user.id)
+    query = select(Notification).where(notification_scope(user))
     if unread:
         query = query.where(Notification.read_at.is_(None))
     if kind.strip():
@@ -1155,7 +1603,7 @@ def notification_count(db: Db, user: UserDep) -> dict[str, int]:
         db.scalar(
             select(func.count())
             .select_from(Notification)
-            .where(Notification.user_id == user.id, Notification.read_at.is_(None))
+            .where(notification_scope(user), Notification.read_at.is_(None))
         )
         or 0
     )
@@ -1165,7 +1613,7 @@ def notification_count(db: Db, user: UserDep) -> dict[str, int]:
 @app.post("/v1/notifications/read")
 def mark_notifications_read(payload: MarkNotificationsRequest, db: Db, user: UserDep) -> dict[str, int]:
     """Mark the listed notifications read, or every unread one when the list is empty."""
-    query = update(Notification).where(Notification.user_id == user.id, Notification.read_at.is_(None))
+    query = update(Notification).where(notification_scope(user), Notification.read_at.is_(None))
     if payload.ids:
         query = query.where(Notification.id.in_(payload.ids))
     result = db.execute(query.values(read_at=now()))
@@ -1207,6 +1655,24 @@ def cancel_job(job_id: str, db: Db, user: UserDep) -> dict[str, object]:
     return job_view(job)
 
 
+def requeue_job(job: ReconstructionJob, *, at: datetime | None = None) -> None:
+    """Return a job to the queue without carrying the previous attempt's state.
+
+    `resume_artifact_key` is intentionally preserved so the worker can resume
+    from its checkpoint; only the fields an observer reads as "current" reset.
+    """
+    job.status = "QUEUED"
+    job.progress = 0.0
+    job.current_stage = None
+    job.leased_by = None
+    job.lease_expires_at = None
+    job.heartbeat_at = None
+    job.error_code = None
+    job.error_message = None
+    if at is not None:
+        job.updated_at = at
+
+
 @app.post("/v1/jobs/{job_id}/retry")
 def retry_job(job_id: str, db: Db, user: UserDep) -> dict[str, object]:
     project_id = db.scalar(select(ReconstructionJob.project_id).where(ReconstructionJob.id == job_id))
@@ -1223,10 +1689,10 @@ def retry_job(job_id: str, db: Db, user: UserDep) -> dict[str, object]:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
     if job.status not in {"FAILED", "CANCELLED"}:
         raise HTTPException(status.HTTP_409_CONFLICT, "Only failed or cancelled jobs can be retried")
-    job.status = "QUEUED"
+    if job.error_code == "INVALID_INPUT":
+        fail(status.HTTP_409_CONFLICT, "Replace the invalid assets and create a new job", "job.invalid_input")
     job.max_attempts = job.attempt + 3
-    job.error_code = None
-    job.error_message = None
+    requeue_job(job)
     job.cancel_requested_at = None
     audit(db, user.id, "job.retry", "job", job.id)
     db.commit()
@@ -1249,6 +1715,7 @@ async def job_events(job_id: str, db: Db, user: UserDep, last_event_id: str = Qu
 
     async def stream():
         nonlocal cursor
+        batch_size = 100
         while True:
             events = []
             terminal = False
@@ -1262,7 +1729,7 @@ async def job_events(job_id: str, db: Db, user: UserDep, last_event_id: str = Qu
                             (JobStage.created_at == cursor[0]) & (JobStage.id > cursor[1]),
                         )
                     )
-                rows = session.scalars(query.order_by(JobStage.created_at, JobStage.id)).all()
+                rows = session.scalars(query.order_by(JobStage.created_at, JobStage.id).limit(batch_size)).all()
                 for row in rows:
                     cursor = (row.created_at, row.id)
                     data = {
@@ -1273,7 +1740,7 @@ async def job_events(job_id: str, db: Db, user: UserDep, last_event_id: str = Qu
                         "metrics": row.metrics,
                     }
                     events.append(f"id: {row.id}\nevent: stage\ndata: {json.dumps(data, ensure_ascii=False)}\n\n")
-                if current and current.status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+                if len(rows) < batch_size and current and current.status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
                     reconstruction_id = session.scalar(select(Reconstruction.id).where(Reconstruction.job_id == job_id))
                     events.append(
                         f"event: final\ndata: {json.dumps(job_view(current, reconstruction_id), default=str)}\n\n"
@@ -1283,6 +1750,8 @@ async def job_events(job_id: str, db: Db, user: UserDep, last_event_id: str = Qu
                 yield event
             if terminal:
                 return
+            if len(rows) == batch_size:
+                continue
             yield ": heartbeat\n\n"
             await asyncio.sleep(2)
 
@@ -1302,50 +1771,143 @@ def asset_referenced(db: Session, asset: Asset) -> bool:
     return any(asset.id in queued_asset_ids(db, job_id) for job_id in job_ids)
 
 
-def expire_stale_uploads(db: Session, project: Project) -> None:
-    """Drop uploads that were registered but never completed, so rows cannot leak."""
+STALE_UPLOAD_BATCH = 20
+
+
+def expire_stale_uploads(db: Session, project: Project) -> int:
+    """Queue one bounded batch of abandoned uploads for the cleanup reaper.
+
+    The row lock (and the re-check under it) is the same fence completion uses,
+    so an upload that turns READY before this transaction locks it is skipped.
+    No storage call happens here; the reaper owns deletion and its retries.
+    """
     cutoff = now() - timedelta(seconds=settings().stale_upload_seconds)
-    stale = db.scalars(
-        select(Asset).where(Asset.project_id == project.id, Asset.status == "UPLOADING", Asset.created_at < cutoff)
+    eligible = (Asset.project_id == project.id, Asset.status == "UPLOADING", Asset.created_at < cutoff)
+    candidates = db.scalars(
+        select(Asset.id).where(*eligible).order_by(Asset.created_at, Asset.id).limit(STALE_UPLOAD_BATCH)
     ).all()
-    if not stale:
-        return
-    try:
-        store = storage()
-    except HTTPException:
-        store = None
-    for asset in stale:
-        asset_id = asset.id
-        if store is not None:
-            # The object was never written, or OSS rejects a missing key.
-            with suppress(Exception):
-                store.delete(asset.object_key)
+    expired = 0
+    for asset_id in candidates:
+        asset = db.scalar(
+            select(Asset)
+            .where(Asset.id == asset_id, *eligible)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
+        )
+        if asset is None:
+            continue
+        existing = db.scalar(select(AssetCleanup).where(AssetCleanup.object_key == asset.object_key))
+        if existing is None:
+            db.add(AssetCleanup(object_key=asset.object_key, reason="asset.expire"))
+        else:
+            existing.reason = "asset.expire"
         audit(db, None, "asset.expire", "asset", asset_id, project_id=project.id)
         db.delete(asset)
-    db.commit()
+        expired += 1
+    if expired:
+        db.commit()
+    else:
+        db.rollback()
+    return expired
 
 
-@app.post("/v1/worker/lease")
-def lease_job(db: Db, worker_id: WorkerDep, gpu_name: Annotated[str | None, Header(alias="X-GPU-Name")] = None):
+def recover_expired_leases(db: Session, current_time: datetime) -> None:
     if db.get_bind().dialect.name == "postgresql":
         db.execute(text("SELECT pg_advisory_xact_lock(52492371)"))
-    current_time = now()
     expired = db.scalars(
         select(ReconstructionJob)
         .where(
             ReconstructionJob.status.in_(["LEASED", "RUNNING"]),
-            ReconstructionJob.lease_expires_at < current_time,
+            ReconstructionJob.lease_expires_at <= current_time,
         )
         .with_for_update()
     ).all()
     for job in expired:
-        job.status = (
-            "CANCELLED" if job.cancel_requested_at else "QUEUED" if job.attempt < job.max_attempts else "FAILED"
-        )
-        job.error_code = "WORKER_LEASE_EXPIRED"
-        job.error_message = "Worker heartbeat expired"
+        if job.cancel_requested_at:
+            job.status = "CANCELLED"
+        elif job.attempt < job.max_attempts:
+            requeue_job(job, at=current_time)
+        else:
+            job.status = "FAILED"
+        if job.status != "QUEUED":
+            job.error_code = "WORKER_LEASE_EXPIRED"
+            job.error_message = "Worker heartbeat expired"
         job.leased_by = None
         job.lease_expires_at = None
+        job.updated_at = current_time
+
+
+CLEANUP_BATCH = 50
+CLEANUP_MAX_BACKOFF = 3600
+CLEANUP_MAX_ATTEMPTS = 10
+
+
+def reap_asset_cleanups(limit: int = CLEANUP_BATCH) -> int:
+    """Delete queued objects in their own transaction and return how many finished.
+
+    The asset row is already committed as removed, so a failure here only delays
+    the bytes; a missing object means an earlier attempt succeeded. Records that
+    keep failing stop being retried and stay visible for operators.
+    """
+    removed = 0
+    with SessionLocal() as db:
+        due = db.scalars(
+            select(AssetCleanup)
+            .where(AssetCleanup.next_attempt_at <= now(), AssetCleanup.attempts < CLEANUP_MAX_ATTEMPTS)
+            .order_by(AssetCleanup.next_attempt_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        ).all()
+        for record in due:
+            try:
+                with suppress(oss2.exceptions.NotFound, oss2.exceptions.NoSuchKey):
+                    storage().delete(record.object_key)
+            except (HTTPException, ClientException, ServerException, oss2.exceptions.OssError) as error:
+                record.attempts += 1
+                record.next_attempt_at = now() + timedelta(seconds=min(CLEANUP_MAX_BACKOFF, 60 * 2**record.attempts))
+                record.last_error = f"{type(error).__name__}: {error}"[:500]
+                if record.attempts >= CLEANUP_MAX_ATTEMPTS:
+                    logger.error(
+                        "Giving up deleting %s after %s attempts (%s)",
+                        record.object_key,
+                        record.attempts,
+                        type(error).__name__,
+                    )
+                else:
+                    logger.warning("Could not delete %s yet (%s)", record.object_key, type(error).__name__)
+                continue
+            db.delete(record)
+            removed += 1
+        stuck = db.scalar(
+            select(func.count()).select_from(AssetCleanup).where(AssetCleanup.attempts >= CLEANUP_MAX_ATTEMPTS)
+        )
+        db.commit()
+    if removed:
+        logger.info("Removed %s queued objects", removed)
+    if stuck:
+        logger.error("%s object deletions are stuck after %s attempts", stuck, CLEANUP_MAX_ATTEMPTS)
+    return removed
+
+
+def reap_once() -> None:
+    with SessionLocal.begin() as db:
+        recover_expired_leases(db, now())
+    reap_asset_cleanups()
+
+
+async def reap_expired_leases() -> None:
+    while True:
+        await asyncio.sleep(30)
+        try:
+            await asyncio.to_thread(reap_once)
+        except Exception:
+            logger.exception("Could not recover expired reconstruction leases")
+
+
+@app.post("/v1/worker/lease")
+def lease_job(db: Db, worker_id: WorkerDep, gpu_name: Annotated[str | None, Header(alias="X-GPU-Name")] = None):
+    current_time = now()
+    recover_expired_leases(db, current_time)
     worker = db.get(WorkerNode, worker_id)
     if not worker:
         worker = WorkerNode(id=worker_id)
@@ -1360,8 +1922,9 @@ def lease_job(db: Db, worker_id: WorkerDep, gpu_name: Annotated[str | None, Head
     job = db.scalar(
         select(ReconstructionJob)
         .where(ReconstructionJob.status == "QUEUED")
-        .order_by(ReconstructionJob.priority.desc(), ReconstructionJob.created_at)
+        .order_by(ReconstructionJob.priority.desc(), ReconstructionJob.created_at, ReconstructionJob.id)
         .with_for_update(skip_locked=True)
+        .limit(1)
     )
     if not job:
         db.commit()
@@ -1504,9 +2067,11 @@ def append_job_logs(job_id: str, payload: WorkerLogsRequest, db: Db, worker_id: 
     db.flush()
     keep = settings().job_log_limit
     if keep > 0:
-        kept = db.scalars(select(JobLog.id).where(JobLog.job_id == job_id).order_by(JobLog.id.desc()).limit(keep)).all()
-        if len(kept) == keep:
-            db.execute(delete(JobLog).where(JobLog.job_id == job_id, JobLog.id < kept[-1]))
+        cutoff = db.scalar(
+            select(JobLog.id).where(JobLog.job_id == job_id).order_by(JobLog.id.desc()).offset(keep - 1).limit(1)
+        )
+        if cutoff is not None:
+            db.execute(delete(JobLog).where(JobLog.job_id == job_id, JobLog.id < cutoff))
     db.commit()
     return {"accepted": len(payload.lines)}
 
@@ -1572,9 +2137,15 @@ def fail_job(
 ) -> dict[str, object]:
     job = leased_job(db, job_id, worker_id, attempt)
     retry = payload.retryable and job.attempt < job.max_attempts and job.cancel_requested_at is None
-    job.status = "CANCELLED" if job.cancel_requested_at else "QUEUED" if retry else "FAILED"
-    job.error_code = payload.error_code
-    job.error_message = payload.error_message
+    if job.cancel_requested_at:
+        job.status = "CANCELLED"
+    elif retry:
+        requeue_job(job)
+    else:
+        job.status = "FAILED"
+    if job.status != "QUEUED":
+        job.error_code = payload.error_code
+        job.error_message = payload.error_message
     job.leased_by = None
     job.lease_expires_at = None
     audit(db, None, "job.fail", "job", job.id, project_id=job.project_id, code=payload.error_code)
@@ -1722,4 +2293,11 @@ def share_qr(token: str, db: Db) -> Response:
 
 
 def run() -> None:
-    uvicorn.run("rescene_api.main:app", host="0.0.0.0", port=8000, workers=2)
+    uvicorn.run(
+        "rescene_api.main:app",
+        host="0.0.0.0",
+        port=8000,
+        workers=2,
+        proxy_headers=False,
+        log_config=LOGGING_CONFIG,
+    )

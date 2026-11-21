@@ -2,7 +2,7 @@
   "expo": {
     "name": "ReScene",
     "slug": "rescene",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "scheme": "rescene",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
@@ -14,7 +14,7 @@
     },
     "android": {
       "package": "app.rescene.mobile",
-      "versionCode": 5,
+      "versionCode": 7,
       "allowBackup": false,
       "blockedPermissions": [
         "android.permission.SYSTEM_ALERT_WINDOW",
@@ -24,7 +24,7 @@
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#111318"
+        "backgroundColor": "#101827"
       }
     },
     "plugins": [
@@ -34,7 +34,7 @@
           "image": "./assets/splash-icon.png",
           "imageWidth": 220,
           "resizeMode": "contain",
-          "backgroundColor": "#111318"
+          "backgroundColor": "#101827"
         }
       ],
       "./withAndroidReleaseSigning"

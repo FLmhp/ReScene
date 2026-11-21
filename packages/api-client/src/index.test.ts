@@ -57,6 +57,21 @@ describe("request handling", () => {
     });
   });
 
+  it("sends the retry key only when the caller supplies one", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse(String(input).endsWith("/jobs") ? job : project),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ResceneClient("https://api.example", "token-1");
+
+    await client.createProject("Kitchen", "retry-1");
+    await client.createProject("Kitchen");
+    await client.createJob("p1", "balanced", ["a"], "retry-2");
+
+    const headers = fetchMock.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    expect(headers).toEqual(["retry-1", null, "retry-2"]);
+  });
+
   it("rejects a payload that drifts from the contract", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ id: "p1" })));
 
@@ -65,6 +80,34 @@ describe("request handling", () => {
 });
 
 describe("account, project and share contracts", () => {
+  it("reads the current production workspace through its full project response", async () => {
+    const cover = { id: "image", filename: "cover.PNG", size: 12, status: "READY" };
+    const assets = [cover, { id: "video", filename: "clip.mp4", size: 15, status: "READY" }];
+    const runningJob = { ...job, status: "RUNNING" };
+    const transport = vi.fn(async (_input: RequestInfo | URL) => jsonResponse({ ...project, assets, jobs: [runningJob] }));
+    const client = new ResceneClient("https://api.example", "t", transport);
+
+    await expect(client.getWorkspace("p1")).resolves.toMatchObject({
+      assets: assets.slice().reverse(), jobs: [runningJob], nextAssetCursor: null, nextJobCursor: null,
+    });
+    await expect(client.getProjectSummary("p1")).resolves.toMatchObject({
+      asset_count: 2, job_count: 1, has_active_jobs: true, cover, latest_job: runningJob,
+    });
+    expect(transport.mock.calls.map(([url]) => url)).toEqual(Array(2).fill("https://api.example/v1/projects/p1?view=summary"));
+  });
+
+  it("keeps native pagination when the server supports project summaries", async () => {
+    const summary = { ...project, asset_count: 0, job_count: 1, has_active_jobs: false, cover: null, latest_job: job };
+    const transport = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("?view=summary")) return jsonResponse(summary);
+      if (String(input).endsWith("/assets?cursor=old")) return jsonResponse({ items: [], next_cursor: null });
+      if (String(input).endsWith("/jobs?cursor=")) return jsonResponse({ items: [job], next_cursor: "next" });
+      return jsonResponse({ detail: "Not Found" }, 404);
+    });
+    await expect(new ResceneClient("https://api.example", "t", transport).getWorkspace("p1", "old"))
+      .resolves.toMatchObject({ ...summary, assets: [], jobs: [job], nextAssetCursor: null, nextJobCursor: "next" });
+  });
+
   it("registers an account and adopts the returned token", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse({ access_token: "token-2", token_type: "bearer" }, 201),
@@ -199,6 +242,57 @@ describe("subscription recovery and disposal", () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe("https://api.example/v1/jobs/j1/events?lastEventId=stage-uuid%251");
     expect(events[1]).toMatchObject({ status: "SUCCEEDED", reconstruction_id: "r1" });
     stop();
+  });
+
+  it("refreshes the job immediately when a reconnect cursor is rejected", async () => {
+    const stage = JSON.stringify({ stage: "training", status: "running", progress: 0.4, message: null, metrics: {} });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(`id: expired-stage\nevent: stage\ndata: ${stage}\n\n`, {
+        headers: { "Content-Type": "text/event-stream" },
+      }))
+      .mockResolvedValueOnce(new Response(null, { status: 422 }))
+      .mockResolvedValueOnce(jsonResponse(job));
+    vi.stubGlobal("fetch", fetchMock);
+    const events: JobEvent[] = [];
+    const onError = vi.fn();
+    const stop = new ResceneClient("https://api.example", "token").subscribeJob("j1", (event) => events.push(event), onError);
+    await vi.waitFor(() => expect(events).toHaveLength(2), { timeout: 3000 });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://api.example/v1/jobs/j1/events",
+      "https://api.example/v1/jobs/j1/events?lastEventId=expired-stage",
+      "https://api.example/v1/jobs/j1",
+    ]);
+    expect(events[1]).toMatchObject({ status: "SUCCEEDED", reconstruction_id: "r1" });
+    expect(onError).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("falls back to polling when the event stream stops sending heartbeats", async () => {
+    vi.useFakeTimers();
+    try {
+      const stage = JSON.stringify({ stage: "training", status: "running", progress: 0.4, message: null, metrics: {} });
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (!String(input).endsWith("/events")) return jsonResponse(job);
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`id: 7\nevent: stage\ndata: ${stage}\n\n`));
+            init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+          },
+        });
+        return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const events: JobEvent[] = [];
+      const stop = new ResceneClient("https://api.example", "token").subscribeJob(
+        "j1", (event) => events.push(event), undefined, { idleTimeoutMs: 20 },
+      );
+      await vi.runAllTimersAsync();
+      expect(events.map((event) => event.status)).toContain("SUCCEEDED");
+      expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/v1/jobs/j1"))).toBe(true);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("polls immediately without streaming dependencies and delivers terminal identity", async () => {
@@ -387,6 +481,26 @@ describe("asset, stage, notification and admin contracts", () => {
     expect(
       await new ResceneClient("https://api.example", "t").addMember("p1", "member@example.com", "member"),
     ).toEqual({ status: "member", user_id: "u2", role: "member" });
+  });
+
+  it("keeps the issued code and accepts it in an authenticated request body", async () => {
+    const invitation = {
+      status: "invited", email: "guest@example.com", role: "viewer",
+      claim_code: "issued-invitation", expires_at: "2026-11-27T00:00:00Z",
+    };
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
+      .mockResolvedValueOnce(jsonResponse(invitation, 201))
+      .mockResolvedValueOnce(jsonResponse({ project_id: "p1", role: "viewer" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ResceneClient("https://api.example", "token");
+    expect(await client.addMember("p1", "guest@example.com", "viewer")).toEqual(invitation);
+    expect(await client.acceptInvitation(" issued-invitation ")).toEqual({ project_id: "p1", role: "viewer" });
+    const [url, init] = fetchMock.mock.calls[1];
+    expect(String(url)).toBe("https://api.example/v1/project-invitations/accept");
+    expect(init?.method).toBe("POST");
+    expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer token");
+    expect(JSON.parse(String(init?.body))).toEqual({ code: "issued-invitation" });
   });
 });
 

@@ -10,7 +10,33 @@ from xml.etree import ElementTree
 import numpy as np
 
 from rescene.coordinate_frames import artifact_to_colmap
-from rescene.metrics import _photometric_metrics, collect_metrics, final_ply_path, sha256_file, write_report
+from rescene.metrics import (
+    EVALUATION_FIELDS,
+    _photometric_metrics,
+    collect_metrics,
+    evaluation_artifacts,
+    final_ply_path,
+    sha256_file,
+    write_report,
+)
+
+SPATIAL_RANK_TOLERANCE = 1e-9
+
+
+def _require_spatial_span(centered: np.ndarray, side: str) -> None:
+    """Reject layouts that cannot define a rotation.
+
+    Two independent directions keep planar captures valid; a line, a point, or
+    non-finite coordinates cannot.
+    """
+    if not np.all(np.isfinite(centered)):
+        raise ValueError(f"{side} camera positions must be finite")
+    largest = float(np.abs(centered).max()) if centered.size else 0.0
+    if largest <= np.finfo(float).eps:
+        raise ValueError(f"{side} camera positions are degenerate")
+    singular = np.linalg.svd(centered, compute_uv=False)
+    if int(np.count_nonzero(singular > largest * SPATIAL_RANK_TOLERANCE)) < 2:
+        raise ValueError(f"{side} camera positions do not span two independent directions")
 
 
 def similarity_alignment(source: np.ndarray, target: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
@@ -21,6 +47,8 @@ def similarity_alignment(source: np.ndarray, target: np.ndarray) -> tuple[float,
     target_mean = target.mean(axis=0)
     source_centered = source - source_mean
     target_centered = target - target_mean
+    _require_spatial_span(source_centered, "Predicted")
+    _require_spatial_span(target_centered, "Reference")
     covariance = target_centered.T @ source_centered / len(source)
     left, singular, right = np.linalg.svd(covariance)
     signs = np.ones(3)
@@ -28,8 +56,10 @@ def similarity_alignment(source: np.ndarray, target: np.ndarray) -> tuple[float,
     rotation = left @ np.diag(signs) @ right
     variance = np.sum(source_centered**2) / len(source)
     if variance <= np.finfo(float).eps:
-        raise ValueError("Reference camera positions are degenerate")
+        raise ValueError("Predicted camera positions are degenerate")
     scale = float(np.sum(singular * signs) / variance)
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError("Similarity scale must be positive and finite")
     translation = target_mean - scale * (rotation @ source_mean)
     return scale, rotation, translation
 
@@ -211,6 +241,9 @@ def evaluate_run(
     ground_truth_cloud: Path | None = None,
     threshold: float = 0.02,
     official_evaluator: Path | None = None,
+    *,
+    reference_image_prefix: str = "",
+    persist: bool = True,
 ) -> dict[str, object]:
     metrics_path = run_dir / "metrics.json"
     metrics = (
@@ -247,9 +280,9 @@ def evaluate_run(
         target = pycolmap.Reconstruction(ground_truth_sparse)
         target_images = {image.name: image for image in target.images.values()}
         pairs = [
-            (image, target_images[source_names[image.name]])
+            (image, target_images[reference_image_prefix + source_names[image.name]])
             for image in predicted.images.values()
-            if image.name in source_names and source_names[image.name] in target_images
+            if image.name in source_names and reference_image_prefix + source_names[image.name] in target_images
         ]
         if len(pairs) < 3:
             raise ValueError(f"Only {len(pairs)} camera poses match the reference model")
@@ -321,6 +354,14 @@ def evaluate_run(
                     "official_evaluator_sha256": sha256_file(official_evaluator),
                 }
             )
-    metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
-    write_report(run_dir, metrics)
+    fields = {name: metrics[name] for name in EVALUATION_FIELDS if name in metrics}
+    if fields:
+        metrics["evaluation_evidence"] = {
+            "schema_version": 1,
+            "artifacts": evaluation_artifacts(run_dir),
+            "fields": fields,
+        }
+    if persist:
+        metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_report(run_dir, metrics)
     return metrics

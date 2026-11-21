@@ -1,0 +1,15 @@
+{
+  "asset_id": "33333333-3333-4333-8333-333333333333",
+  "mode": "sts",
+  "object_key": "projects/22222222-2222-4222-8222-222222222222/assets/33333333-3333-4333-8333-333333333333/original/clip.mp4",
+  "oss": {
+    "access_key_id": "STS.contract-access-key-id",
+    "access_key_secret": "contract-access-key-secret",
+    "bucket": "rescene-contracts",
+    "endpoint": "https://oss.example.test",
+    "expiration": "2026-01-02T04:04:05Z",
+    "issued_at": "2026-01-02T03:04:05+00:00",
+    "region": "oss-cn-beijing",
+    "security_token": "contract-security-token"
+  }
+}

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Build API/Web images locally, ship them to the production host, and update only
-# those two services. Every step records enough state to restore the prior images.
+# those two services. Each step records its phase, and a failure either restores
+# just the services this run changed or stops and reports the exact state.
 set -euo pipefail
 
-VERSION=${1:?usage: deploy_targeted.sh <version> <ssh-host> <remote-root> [api-base-url]}
-REMOTE=${2:?usage: deploy_targeted.sh <version> <ssh-host> <remote-root> [api-base-url]}
-REMOTE_ROOT=${3:?usage: deploy_targeted.sh <version> <ssh-host> <remote-root> [api-base-url]}
+VERSION=${1:?usage: deploy_targeted.sh <version> <ssh-host> <remote-root> [api-base-url] [web-base-url]}
+REMOTE=${2:?usage: deploy_targeted.sh <version> <ssh-host> <remote-root> [api-base-url] [web-base-url]}
+REMOTE_ROOT=${3:?usage: deploy_targeted.sh <version> <ssh-host> <remote-root> [api-base-url] [web-base-url]}
 API_URL=${4:-https://api.rescene.xyz}
 WEB_URL=${5:-https://app.rescene.xyz}
 
@@ -15,6 +16,98 @@ SSH=(ssh -o BatchMode=yes "$REMOTE")
 COMPOSE="docker compose --env-file infra/.env -f infra/compose.yaml"
 mkdir -p "$STAGE"
 
+PHASE=prepare
+CHANGED_API=0
+CHANGED_WEB=0
+PHASES="$STAGE/phases.log"
+: >"$PHASES"
+
+phase() {
+  PHASE=$1
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PHASE" | tee -a "$PHASES" >&2
+}
+
+# Best-effort note next to the release evidence; a broken SSH link must not hide
+# the phase this run reached.
+record() {
+  "${SSH[@]}" "set -eu; cd '$REMOTE_ROOT'; printf '%s\n' '$1' >> 'releases/$VERSION/status.txt'" >/dev/null 2>&1 || true
+}
+
+restore() {
+  local service=$1
+  "${SSH[@]}" "set -eu; cd '$REMOTE_ROOT'
+    while read -r name image; do
+      case \"\$name\" in
+        /rescene-$service|rescene-$service) docker tag \"\$image\" rescene-$service:latest ;;
+      esac
+    done < 'releases/$VERSION/before-images.txt'
+    $COMPOSE up -d --no-deps --no-build $service
+    docker inspect --format '{{.Name}} {{.Image}} {{.State.Status}}' rescene-$service"
+}
+
+rollback() {
+  local status=$?
+  trap - ERR
+  set +e
+  echo "Deployment failed during phase '$PHASE' (status $status)" >&2
+  echo "Services changed by this run: api=$CHANGED_API web=$CHANGED_WEB" >&2
+  record "failed phase=$PHASE api=$CHANGED_API web=$CHANGED_WEB"
+  if [[ "$CHANGED_API" == 0 && "$CHANGED_WEB" == 0 ]]; then
+    echo "The host still runs its previous services; nothing to restore." >&2
+    exit "$status"
+  fi
+  if [[ "${RESCENE_COMPAT_VERIFIED:-0}" != 1 ]]; then
+    echo "The previous images are not verified against the migrated schema, so nothing is restored." >&2
+    echo "Inspect '$REMOTE_ROOT/releases/$VERSION/before-images.txt' before changing the host again." >&2
+    exit "$status"
+  fi
+  # Reverse order: web was replaced last, so it is restored first.
+  if [[ "$CHANGED_WEB" == 1 ]] && ! restore web; then
+    echo "Restoring web failed; the host may run mixed versions." >&2
+    exit "$status"
+  fi
+  if [[ "$CHANGED_API" == 1 ]] && ! restore api; then
+    echo "Restoring api failed; the host may run mixed versions." >&2
+    exit "$status"
+  fi
+  record "restored api=$CHANGED_API web=$CHANGED_WEB"
+  echo "Restored the images this run replaced." >&2
+  exit "$status"
+}
+
+wait_healthy() {
+  local service=$1 id status
+  id=$("${SSH[@]}" "cd '$REMOTE_ROOT'; docker compose --env-file infra/.env -f infra/compose.yaml ps -q $service")
+  [[ -n "$id" ]] || return 1
+  for _ in $(seq 1 40); do
+    status=$("${SSH[@]}" "docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $id" 2>/dev/null || true)
+    [[ "$status" == healthy || "$status" == running ]] && return 0
+    sleep 3
+  done
+  return 1
+}
+
+# These headers are added by Caddy, not by the images. Assert the deployed edge
+# so a repo-only Caddyfile change cannot pass as a successful deploy.
+assert_header() {
+  local url=$1 name=$2 expected=$3 value
+  value=$(curl --fail --silent --show-error --max-time 20 --head "$url" |
+    tr -d '\r' | sed -n "s/^$name:[[:space:]]*//Ip") || {
+    echo "Could not read response headers from $url" >&2
+    return 1
+  }
+  if [[ "$value" != *"$expected"* ]]; then
+    printf 'Security header %s on %s is %q, expected to contain %q\n' \
+      "$name" "$url" "$value" "$expected" >&2
+    return 1
+  fi
+}
+
+# Installed before the first command that could change the host, so every
+# failure reports its phase; rollback() only restores services this run changed.
+trap rollback ERR
+
+phase prepare
 grep -qx "$VERSION" "$ROOT/VERSION" || {
   echo "VERSION is $(cat "$ROOT/VERSION"), not $VERSION" >&2
   exit 2
@@ -31,62 +124,74 @@ web_digest=$(docker image inspect --format '{{.Id}}' "rescene-web:$VERSION")
 echo "Exporting images for transfer"
 docker save "rescene-api:$VERSION" "rescene-web:$VERSION" | gzip -1 >"$STAGE/images.tar.gz"
 
-"${SSH[@]}" "set -eu; cd '$REMOTE_ROOT'; mkdir -p 'releases/$VERSION' infra/backups
+"${SSH[@]}" "set -eu; cd '$REMOTE_ROOT'; mkdir -p 'releases/$VERSION'
+  install -d -m 750 -o root -g 65532 infra/backups
   free=\$(df --output=avail -B1 . | tail -n1); need=\$(( $(stat -c %s "$STAGE/images.tar.gz") * 3 ))
   [ \"\$free\" -ge \"\$need\" ] || { echo \"Insufficient remote disk: free=\$free need=\$need\" >&2; exit 3; }
-  $COMPOSE exec -T db pg_dump -U rescene -Fc rescene > 'infra/backups/pre-deploy-$VERSION.dump'
-  test -s 'infra/backups/pre-deploy-$VERSION.dump'
+  # Publish atomically after verification. The rescene-*.dump name also enters
+  # the daily backup's 14-day retention; 640/65532 matches infra/deploy/backup.sh
+  # so the weekly upload container can read the snapshot.
+  stamp=\$(date -u +%Y%m%dT%H%M%SZ)
+  dump=\"infra/backups/rescene-pre-deploy-$VERSION-\$stamp.dump\"
+  [ ! -e \"\$dump\" ] || { echo \"Pre-deploy dump already exists: \$dump\" >&2; exit 4; }
+  umask 077
+  partial=\$(mktemp 'infra/backups/.rescene-pre-deploy-XXXXXXXX.dump')
+  trap 'rm -f -- \"\$partial\"' 0
+  $COMPOSE exec -T db pg_dump -U rescene -Fc rescene > \"\$partial\"
+  test -s \"\$partial\"
+  $COMPOSE exec -T db pg_restore --list < \"\$partial\" > /dev/null
+  chgrp 65532 \"\$partial\"
+  chmod 640 \"\$partial\"
+  [ \"\$(stat -c %a \"\$partial\")\" = 640 ] || { echo 'Pre-deploy dump mode is not 640' >&2; exit 4; }
+  mv \"\$partial\" \"\$dump\"
+  trap - 0
+  umask 022
+  printf '%s\n' \"\$dump\" > 'releases/$VERSION/pre-deploy-dump.txt'
+  echo \"Pre-deploy snapshot: \$dump (mode \$(stat -c %a \"\$dump\"), \$(stat -c %s \"\$dump\") bytes)\"
   cp -a infra/compose.yaml 'releases/$VERSION/compose.yaml'
   { docker inspect --format '{{.Name}} {{.Image}}' rescene-api rescene-web rescene-db; } > 'releases/$VERSION/before-images.txt'
   cat 'releases/$VERSION/before-images.txt'"
 
+phase transfer
 echo "Transferring $VERSION images"
 scp -o BatchMode=yes "$STAGE/images.tar.gz" "$REMOTE:$REMOTE_ROOT/releases/$VERSION/images.tar.gz"
+
+phase load
 "${SSH[@]}" "set -eu; cd '$REMOTE_ROOT'
   gzip -dc 'releases/$VERSION/images.tar.gz' | docker load | tee 'releases/$VERSION/load.txt'"
 
-# Tag as latest only after the archive is present so a failed transfer changes nothing.
+phase api
+# Tag and start in one call, and assume the tag landed if the call fails.
+CHANGED_API=1
 "${SSH[@]}" "set -eu; cd '$REMOTE_ROOT'
   docker tag 'rescene-api:$VERSION' rescene-api:latest
-  docker tag 'rescene-web:$VERSION' rescene-web:latest
   $COMPOSE up -d --no-deps --no-build api"
-
-rollback() {
-  echo "Deployment failed; restoring previous API/Web images" >&2
-  "${SSH[@]}" "set -eu; cd '$REMOTE_ROOT'
-    while read -r name image; do
-      case \"\$name\" in
-        /rescene-api|rescene-api) docker tag \"\$image\" rescene-api:latest ;;
-        /rescene-web|rescene-web) docker tag \"\$image\" rescene-web:latest ;;
-      esac
-    done < 'releases/$VERSION/before-images.txt'
-    $COMPOSE up -d --no-deps --no-build api web
-    docker inspect --format '{{.Name}} {{.Image}} {{.State.Status}}' rescene-api rescene-web" || true
-  exit 1
-}
-
-wait_healthy() {
-  local service=$1 id
-  id=$("${SSH[@]}" "cd '$REMOTE_ROOT'; docker compose --env-file infra/.env -f infra/compose.yaml ps -q $service")
-  [[ -n "$id" ]] || return 1
-  for _ in $(seq 1 40); do
-    status=$("${SSH[@]}" "docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $id" 2>/dev/null || true)
-    [[ "$status" == healthy || "$status" == running ]] && return 0
-    sleep 3
-  done
-  return 1
-}
-
-trap rollback ERR
 wait_healthy api || { echo "API did not become healthy" >&2; false; }
 
-"${SSH[@]}" "set -eu; cd '$REMOTE_ROOT'; $COMPOSE up -d --no-deps --no-build web"
+phase web
+CHANGED_WEB=1
+"${SSH[@]}" "set -eu; cd '$REMOTE_ROOT'
+  docker tag 'rescene-web:$VERSION' rescene-web:latest
+  $COMPOSE up -d --no-deps --no-build web"
 wait_healthy web || { echo "Web did not become healthy" >&2; false; }
 
+phase verify
 curl --fail --silent --max-time 20 "$API_URL/health/ready" >/dev/null
 curl --fail --silent --max-time 20 -o /dev/null "$WEB_URL/"
+
+assert_header "$API_URL/health/ready" X-Content-Type-Options nosniff
+assert_header "$API_URL/health/ready" X-Frame-Options DENY
+assert_header "$API_URL/health/ready" Strict-Transport-Security "max-age="
+assert_header "$WEB_URL/" X-Content-Type-Options nosniff
+assert_header "$WEB_URL/" X-Frame-Options DENY
+assert_header "$WEB_URL/" Referrer-Policy strict-origin-when-cross-origin
+assert_header "$WEB_URL/" Strict-Transport-Security "max-age="
+assert_header "$WEB_URL/" Content-Security-Policy "frame-ancestors 'none'"
+assert_header "$WEB_URL/" Content-Security-Policy "connect-src 'self' https://api.rescene.xyz"
+assert_header "$WEB_URL/" Content-Security-Policy "worker-src 'self' blob:"
 trap - ERR
 
+record "ok phase=verify api=$CHANGED_API web=$CHANGED_WEB"
 "${SSH[@]}" "set -eu; cd '$REMOTE_ROOT'
   docker inspect --format '{{.Name}} {{.Image}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' rescene-api rescene-web rescene-db \
     | tee 'releases/$VERSION/after-images.txt'"

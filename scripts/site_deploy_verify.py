@@ -111,7 +111,7 @@ def check_site():
     require(connect == [["'none'"]], "Homepage CSP must specify connect-src 'none'")
     page = SiteHTML()
     page.feed(body.decode("utf-8"))
-    require("".join(page.heading).strip() == "把影像，重建成可漫游的空间。", "Homepage H1 differs from expected text")
+    require("".join(page.heading).strip() == "照片与视频三维重建", "Homepage H1 differs from expected text")
     require(page.stylesheets and page.scripts, "Homepage must reference both CSS and JavaScript assets")
     for references, content_types in (
         (page.stylesheets, {"text/css"}),
@@ -137,6 +137,7 @@ def check_site():
         ("/social-card.svg", "image/svg+xml"),
         ("/media/admin-console.webp", "image/webp"),
         ("/media/mobile-drawer.webp", "image/webp"),
+        ("/media/viewer-reconstruction.webp", "image/webp"),
         ("/robots.txt", "text/plain"),
         ("/sitemap.xml", "application/xml"),
     ):

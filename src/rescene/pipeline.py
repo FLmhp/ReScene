@@ -25,7 +25,13 @@ from rescene.backends import (
     vggt_command,
 )
 from rescene.config import ProfileConfig, profile_config
-from rescene.metrics import collect_metrics, final_ply_path, sha256_file, write_report
+from rescene.metrics import (
+    collect_metrics,
+    final_ply_path,
+    load_and_merge_metrics,
+    sha256_file,
+    write_report,
+)
 from rescene.preprocess import classify_input, preprocess_input, relocate_selected_images
 from rescene.stages import StageStore
 
@@ -38,6 +44,12 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
 
+def _write_json_atomic(path: Path, value: object) -> None:
+    staging = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    staging.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    os.replace(staging, path)
+
+
 @contextmanager
 def _timed(timings: dict[str, float], name: str):
     """Accumulate wall-clock seconds per pipeline stage, including fallbacks."""
@@ -48,7 +60,53 @@ def _timed(timings: dict[str, float], name: str):
         timings[name] = round(timings.get(name, 0.0) + time.perf_counter() - start, 3)
 
 
-def _source_tree_sha256(directory: Path) -> str | None:
+ENVIRONMENT_HASH_CACHE = Path(".cache") / "environment-hashes.json"
+
+
+def _load_environment_hash_cache(path: Path) -> dict[str, dict[str, object]]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    hashes = value.get("hashes") if isinstance(value, dict) else None
+    return hashes if isinstance(hashes, dict) else {}
+
+
+def _cached_sha256(path: Path, cache: dict[str, dict[str, object]], *, rehash: bool) -> str:
+    """Hash a file unless the recorded size and mtime still identify its bytes."""
+    key = str(path.resolve())
+    stat = path.stat()
+    entry = cache.get(key)
+    if (
+        not rehash
+        and isinstance(entry, dict)
+        and entry.get("size") == stat.st_size
+        and entry.get("mtime_ns") == stat.st_mtime_ns
+        and isinstance(entry.get("sha256"), str)
+    ):
+        return str(entry["sha256"])
+    digest = sha256_file(path)
+    cache[key] = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "sha256": digest}
+    return digest
+
+
+def _store_environment_hash_cache(path: Path, cache: dict[str, dict[str, object]], *, existed: bool) -> None:
+    if not cache and not existed:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(path, {"schema_version": 1, "hashes": cache})
+    except OSError:
+        # A read-only checkout still produces auditable digests; only the cache is lost.
+        pass
+
+
+def _source_tree_sha256(
+    directory: Path,
+    cache: dict[str, dict[str, object]] | None = None,
+    *,
+    rehash: bool = False,
+) -> str | None:
     """Hash source contents and relative names, including uncommitted edits."""
     if not directory.is_dir():
         return None
@@ -65,33 +123,32 @@ def _source_tree_sha256(directory: Path) -> str | None:
     )
     digest = hashlib.sha256()
     for path in files:
-        digest.update(f"{path.relative_to(directory).as_posix()}\0{sha256_file(path)}\n".encode())
+        file_digest = sha256_file(path) if cache is None else _cached_sha256(path, cache, rehash=rehash)
+        digest.update(f"{path.relative_to(directory).as_posix()}\0{file_digest}\n".encode())
     return digest.hexdigest()
 
 
-def _environment(root: Path) -> dict[str, object]:
-    revisions: dict[str, str | None] = {}
-    for name in ("vggt", "gsplat", "spz", "dinov2"):
-        path = root / "third_party" / name
-        revision_file = path / ".revision"
-        if revision_file.exists():
-            revisions[name] = revision_file.read_text(encoding="utf-8").strip()
-        else:
-            result = subprocess.run(
-                ["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True, check=False
-            )
-            revisions[name] = result.stdout.strip() or None
-    return {
-        "python": sys.version,
-        "platform": platform.platform(),
-        "git_revisions": revisions,
-        "source_tree_sha256": _source_tree_sha256(root / "src" / "rescene"),
-        "vendor_source_tree_sha256": {
-            name: _source_tree_sha256(root / "third_party" / name) for name in ("vggt", "gsplat", "spz", "dinov2")
-        },
-        "vggt_checkpoint_sha256": next(
+def _environment(root: Path, *, rehash: bool | None = None) -> dict[str, object]:
+    cache_path = root / ENVIRONMENT_HASH_CACHE
+    existed = cache_path.is_file()
+    cache = _load_environment_hash_cache(cache_path) if existed else {}
+    if rehash is None:
+        rehash = os.environ.get("RESCENE_REHASH_ENVIRONMENT", "").strip().lower() in {"1", "true", "yes"}
+    try:
+        revisions: dict[str, str | None] = {}
+        for name in ("vggt", "gsplat", "spz", "dinov2"):
+            path = root / "third_party" / name
+            revision_file = path / ".revision"
+            if revision_file.exists():
+                revisions[name] = revision_file.read_text(encoding="utf-8").strip()
+            else:
+                result = subprocess.run(
+                    ["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+                )
+                revisions[name] = result.stdout.strip() or None
+        checkpoint = next(
             (
-                sha256_file(path)
+                path
                 for path in (
                     root / ".cache/models/VGGT-1B/model.safetensors",
                     root / ".cache/models/VGGT-1B/model.pt",
@@ -99,35 +156,98 @@ def _environment(root: Path) -> dict[str, object]:
                 if path.exists()
             ),
             None,
-        ),
-        "vggsfm_tracker_sha256": (
-            sha256_file(root / ".cache/models/VGGSfM/vggsfm_v2_tracker.pt")
-            if (root / ".cache/models/VGGSfM/vggsfm_v2_tracker.pt").exists()
-            else None
-        ),
-        "dinov2_checkpoint_sha256": (
-            sha256_file(root / ".cache/torch/hub/checkpoints/dinov2_vitb14_reg4_pretrain.pth")
-            if (root / ".cache/torch/hub/checkpoints/dinov2_vitb14_reg4_pretrain.pth").exists()
-            else None
-        ),
-    }
+        )
+        tracker = root / ".cache/models/VGGSfM/vggsfm_v2_tracker.pt"
+        dinov2 = root / ".cache/torch/hub/checkpoints/dinov2_vitb14_reg4_pretrain.pth"
+        return {
+            "python": sys.version,
+            "platform": platform.platform(),
+            "git_revisions": revisions,
+            "source_tree_sha256": _source_tree_sha256(root / "src" / "rescene", cache, rehash=rehash),
+            "vendor_source_tree_sha256": {
+                name: _source_tree_sha256(root / "third_party" / name, cache, rehash=rehash)
+                for name in ("vggt", "gsplat", "spz", "dinov2")
+            },
+            "vggt_checkpoint_sha256": _cached_sha256(checkpoint, cache, rehash=rehash) if checkpoint else None,
+            "vggsfm_tracker_sha256": _cached_sha256(tracker, cache, rehash=rehash) if tracker.exists() else None,
+            "dinov2_checkpoint_sha256": _cached_sha256(dinov2, cache, rehash=rehash) if dinov2.exists() else None,
+        }
+    finally:
+        _store_environment_hash_cache(cache_path, cache, existed=existed)
 
 
 def _find_ply(run_dir: Path) -> Path:
     return final_ply_path(run_dir)
 
 
-def _ensure_downsampled_images(scene_dir: Path, factor: int) -> None:
-    if factor == 1:
-        return
+def _downsample_manifest_path(scene_dir: Path, factor: int) -> Path:
+    return scene_dir / f"images_{factor}.json"
+
+
+def _downsample_cache_is_complete(scene_dir: Path, destination: Path, factor: int) -> bool:
+    """Check the cache against the current inputs, factor and recorded digests."""
+    manifest_path = _downsample_manifest_path(scene_dir, factor)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if manifest.get("schema_version") != 1 or manifest.get("factor") != factor:
+        return False
+    sources = manifest.get("sources")
+    outputs = manifest.get("outputs")
+    if not isinstance(sources, dict) or not isinstance(outputs, dict):
+        return False
+    current = {path.name: path for path in sorted((scene_dir / "images").glob("*.jpg"))}
+    if set(current) != set(sources) or set(sources) != set(outputs):
+        return False
+    for name, source in current.items():
+        expected = sources[name]
+        if not isinstance(expected, dict):
+            return False
+        stat = source.stat()
+        if expected.get("size") != stat.st_size or expected.get("mtime_ns") != stat.st_mtime_ns:
+            return False
+        output = outputs[name]
+        if not isinstance(output, dict):
+            return False
+        path = destination / name
+        if not path.is_file() or path.stat().st_size != output.get("size"):
+            return False
+        if output.get("sha256") != sha256_file(path):
+            return False
+    return True
+
+
+def _publish_downsampled_images(scene_dir: Path, factor: int) -> None:
     destination = scene_dir / f"images_{factor}"
-    if destination.exists() and any(destination.iterdir()):
-        return
-    destination.mkdir(parents=True, exist_ok=True)
+    staging = scene_dir / f"images_{factor}.partial-{os.getpid()}"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+    sources: dict[str, dict[str, int]] = {}
+    outputs: dict[str, dict[str, object]] = {}
     for source in sorted((scene_dir / "images").glob("*.jpg")):
         with Image.open(source) as image:
             size = (max(1, image.width // factor), max(1, image.height // factor))
-            image.resize(size, Image.Resampling.LANCZOS).save(destination / source.name, quality=95)
+            image.resize(size, Image.Resampling.LANCZOS).save(staging / source.name, quality=95)
+        stat = source.stat()
+        sources[source.name] = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+        target = staging / source.name
+        outputs[source.name] = {"size": target.stat().st_size, "sha256": sha256_file(target)}
+    manifest = {"schema_version": 1, "factor": factor, "sources": sources, "outputs": outputs}
+    if destination.exists():
+        shutil.rmtree(destination)
+    os.replace(staging, destination)
+    _write_json_atomic(_downsample_manifest_path(scene_dir, factor), manifest)
+
+
+def _ensure_downsampled_images(scene_dir: Path, factor: int) -> None:
+    """Publish a complete downsample cache, replacing interrupted or stale directories."""
+    if factor == 1:
+        return
+    destination = scene_dir / f"images_{factor}"
+    if _downsample_cache_is_complete(scene_dir, destination, factor):
+        return
+    _publish_downsampled_images(scene_dir, factor)
 
 
 def _run_dir_has_results(run_dir: Path) -> bool:
@@ -137,6 +257,40 @@ def _run_dir_has_results(run_dir: Path) -> bool:
 def _sparse_has_points(run_dir: Path) -> bool:
     # shortcut: all current backends emit binary COLMAP models; add text parsing if that changes.
     return any(path.stat().st_size > 8 for path in (run_dir / "sparse").rglob("points3D.bin"))
+
+
+def _sparse_model_present(run_dir: Path) -> bool:
+    """COLMAP writes the sparse model only after matching and mapping succeed."""
+    return any(path.is_file() for path in (run_dir / "sparse").rglob("*"))
+
+
+def _recorded_training_fallback(config: ProfileConfig, degradation: dict[str, object] | None) -> ProfileConfig | None:
+    """Return the training config recorded before an interrupted attempt.
+
+    Training always degrades along ``max_frames``/``gsplat_data_factor`` and packs
+    the rasterizer, so a repeated failure may record a config that was already
+    degraded once. Accept only records that reconstruct from this profile and
+    never increase memory use; anything else falls back to the original config.
+    """
+    if not isinstance(degradation, dict) or degradation.get("stage") != "training":
+        return None
+    recorded = degradation.get("config")
+    if not isinstance(recorded, dict):
+        return None
+    try:
+        fallback = replace(
+            config,
+            max_frames=int(recorded["max_frames"]),
+            gsplat_data_factor=int(recorded["gsplat_data_factor"]),
+            gsplat_packed=bool(recorded["gsplat_packed"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if recorded != fallback.to_dict() or fallback == config:
+        return None
+    if fallback.max_frames > config.max_frames or fallback.gsplat_data_factor < config.gsplat_data_factor:
+        return None
+    return fallback
 
 
 def _clear_colmap_outputs(run_dir: Path) -> None:
@@ -286,13 +440,18 @@ def _run_reuse_comparison(
         if copied != manifest["files"]:
             raise ValueError("Copied reuse artifact SHA-256 mismatch")
         relocate_selected_images(run_dir)
-    provenance = {
+    provenance: dict[str, object] = {
         "mode": "single_stage_reuse",
         "stage": stage,
         "source_run": str(source_run),
         "bundle": str(bundle_dir),
         "manifest_sha256": bundle_sha256,
     }
+    training_seed = 42
+    if stage == "training":
+        settings = json.loads((run_dir / "input_manifest.json").read_text(encoding="utf-8")).get("settings", {})
+        training_seed = int(settings.get("seed", 42))
+        provenance["training_seed"] = training_seed
     _write_json(run_dir / "reuse_provenance.json", provenance)
     _write_json(run_dir / "config.json", config.to_dict())
     _write_json(run_dir / "environment.json", _environment(root))
@@ -301,7 +460,11 @@ def _run_reuse_comparison(
     with _timed(timings, stage), stages.running(stage, stage=stage, reuse_manifest_sha256=bundle_sha256):
         if stage == "training":
             _ensure_downsampled_images(run_dir, config.gsplat_data_factor)
-            run_command(gsplat_command(root, run_dir, run_dir / "gsplat", config), logs / "training.log", cwd=root)
+            run_command(
+                gsplat_command(root, run_dir, run_dir / "gsplat", config, seed=training_seed),
+                logs / "training.log",
+                cwd=root,
+            )
         else:
             run_command(
                 [
@@ -315,6 +478,11 @@ def _run_reuse_comparison(
                     str(config.colmap_mvs_max_image_size),
                     "--poisson-depth",
                     str(config.colmap_poisson_depth),
+                    *(
+                        ["--mvs-iterations", str(config.colmap_mvs_iterations)]
+                        if config.colmap_mvs_iterations is not None
+                        else []
+                    ),
                 ],
                 logs / "dense.log",
                 cwd=root,
@@ -323,7 +491,7 @@ def _run_reuse_comparison(
     metrics["total_seconds"] = None
     metrics["reuse"] = provenance
     metrics["timings"] = timings
-    _write_json(run_dir / "metrics.json", metrics)
+    _write_json_atomic(run_dir / "metrics.json", metrics)
     write_report(run_dir, metrics)
     return run_dir
 
@@ -344,6 +512,10 @@ def run_pipeline(
     reuse_bundle: Path | None = None,
     reuse_sha256: str | None = None,
     reuse_stage: str | None = None,
+    random_seed: int | None = None,
+    matching_db: Path | None = None,
+    selected_sources: set[str] | None = None,
+    retain_frozen_sources: bool = False,
 ) -> Path:
     root = project_root()
     run_dir = (output_dir if output_dir else root / "runs" / run_id).resolve()
@@ -353,7 +525,9 @@ def run_pipeline(
         config = config_override or profile_config(profile)
         if config.name.value != profile:
             raise ValueError(f"Profile override is for {config.name.value}, not {profile}")
-        if frame_limit is not None or validation_sources is not None:
+        if retain_frozen_sources or any(
+            value is not None for value in (frame_limit, validation_sources, random_seed, matching_db, selected_sources)
+        ):
             raise ValueError("Reuse comparisons use the bundle's fixed image selection")
         return _run_reuse_comparison(root, run_dir, config, reuse_bundle, reuse_sha256, reuse_stage)
     if _run_dir_has_results(run_dir) and not resume:
@@ -398,10 +572,20 @@ def run_pipeline(
                 max_side=config.preprocess_max_side,
                 record_hashes=record_hashes,
                 validation_sources=validation_sources,
+                retain_frozen_sources=retain_frozen_sources,
+                seed=42 if random_seed is None else random_seed,
             )
     seed = 42
     if manifest_path.is_file():
         seed = int(json.loads(manifest_path.read_text(encoding="utf-8")).get("settings", {}).get("seed", 42))
+    if random_seed is not None and seed != random_seed:
+        raise ValueError("Cannot resume with a different random seed")
+    if selected_sources is not None:
+        selection = json.loads((run_dir / "photometric_selection.json").read_text(encoding="utf-8"))
+        if set(selection["train_source_ids"] + selection["validation_source_ids"]) != selected_sources:
+            raise ValueError("Actual selected sources differ from the frozen selection")
+    if matching_db is not None and config.geometry_backend != "colmap":
+        raise ValueError("A matching database requires the COLMAP route")
 
     sparse_outputs = [run_dir / "sparse"]
     degradation_path = run_dir / "degradation.json"
@@ -423,12 +607,35 @@ def run_pipeline(
                     camera_model=config.colmap_camera_model,
                     mvs_max_image_size=config.colmap_mvs_max_image_size,
                     poisson_depth=config.colmap_poisson_depth,
+                    mapper=config.colmap_mapper,
+                    matching_db=matching_db,
+                    seed=random_seed,
+                    shared_camera=config.colmap_shared_camera,
+                    mvs_iterations=config.colmap_mvs_iterations,
+                    sparse_threads=config.colmap_sparse_threads,
                 )
             )
             try:
                 run_command(command, geometry_log, cwd=root)
             except Exception as error:
+                if (
+                    config.colmap_mapper != "incremental"
+                    or matching_db is not None
+                    or config.colmap_shared_camera
+                    or config.colmap_mvs_iterations is not None
+                ):
+                    raise
                 if config.geometry_backend == "colmap":
+                    if _sparse_model_present(run_dir):
+                        # The sparse model already survived; matcher swaps cannot fix
+                        # registration, MVS, fusion, or meshing failures.
+                        degraded = {
+                            "stage": "geometry",
+                            "reason": "geometry_dense_failed",
+                            "config": config.to_dict(),
+                        }
+                        _write_json(run_dir / "degradation.json", degraded)
+                        raise
                     fallback = {**config.to_dict(), "matcher": "sequential" if not sequential else "exhaustive"}
                     degraded = {"stage": "geometry", "reason": "matcher_retry", "config": fallback}
                     _write_json(run_dir / "degradation.json", degraded)
@@ -442,6 +649,8 @@ def run_pipeline(
                                 camera_model=config.colmap_camera_model,
                                 mvs_max_image_size=config.colmap_mvs_max_image_size,
                                 poisson_depth=config.colmap_poisson_depth,
+                                seed=random_seed,
+                                sparse_threads=config.colmap_sparse_threads,
                             ),
                             geometry_log,
                             cwd=root,
@@ -452,18 +661,24 @@ def run_pipeline(
                         vggt_query_frames=min(16, config.max_frames),
                         vggt_max_query_points=max(2_048, config.vggt_max_query_points),
                     )
-                    degraded = {"stage": "geometry", "reason": "ba_failed", "config": fallback.to_dict()}
-                    _write_json(run_dir / "degradation.json", degraded)
                     shutil.rmtree(run_dir / "sparse", ignore_errors=True)
-                    try:
-                        run_command(
-                            vggt_command(root, run_dir, fallback, seed=seed, diagnostics=diagnostics),
-                            geometry_log,
-                            cwd=root,
-                        )
-                    except Exception as fallback_error:
-                        if not is_vggt_ba_failure(fallback_error, geometry_log):
-                            raise
+                    recovered = False
+                    if fallback != config:
+                        degraded = {"stage": "geometry", "reason": "ba_failed", "config": fallback.to_dict()}
+                        _write_json(run_dir / "degradation.json", degraded)
+                        retry_log = logs / "geometry-retry.log"
+                        retry_log.unlink(missing_ok=True)
+                        try:
+                            run_command(
+                                vggt_command(root, run_dir, fallback, seed=seed, diagnostics=diagnostics),
+                                retry_log,
+                                cwd=root,
+                            )
+                            recovered = True
+                        except Exception as fallback_error:
+                            if not is_vggt_ba_failure(fallback_error, retry_log):
+                                raise
+                    if not recovered:
                         degraded = {
                             "stage": "geometry",
                             "reason": "ba_failed+colmap_sparse",
@@ -570,20 +785,30 @@ def run_pipeline(
         raise ValueError("Cannot resume: successful training lacks required provenance; start a new run")
     if not (resume and stages.complete("training", training_outputs)):
         training_log = logs / "training.log"
-        with _timed(timings, "training"), stages.running("training", stage="training", steps=config.gsplat_steps):
-            _ensure_downsampled_images(run_dir, config.gsplat_data_factor)
+        recorded_fallback = _recorded_training_fallback(config, degraded) if resume else None
+        training_config = recorded_fallback or config
+        if recorded_fallback is not None:
+            degraded = {**(degraded or {}), "effective": True}
+            _write_json(run_dir / "degradation.json", degraded)
+        with (
+            _timed(timings, "training"),
+            stages.running("training", stage="training", steps=training_config.gsplat_steps),
+        ):
+            _ensure_downsampled_images(run_dir, training_config.gsplat_data_factor)
             try:
-                run_command(gsplat_command(root, run_dir, gsplat_dir, config), training_log, cwd=root)
+                run_command(
+                    gsplat_command(root, run_dir, gsplat_dir, training_config, seed=seed), training_log, cwd=root
+                )
             except Exception as error:
                 if not is_cuda_oom(error, training_log):
                     raise
-                fallback = config.degraded()
+                fallback = training_config.degraded()
                 degraded = {"stage": "training", "reason": "cuda_oom", "config": fallback.to_dict()}
                 _write_json(run_dir / "degradation.json", degraded)
                 shutil.rmtree(gsplat_dir, ignore_errors=True)
                 _ensure_downsampled_images(run_dir, fallback.gsplat_data_factor)
                 with _timed(timings, "fallback_training"):
-                    run_command(gsplat_command(root, run_dir, gsplat_dir, fallback), training_log, cwd=root)
+                    run_command(gsplat_command(root, run_dir, gsplat_dir, fallback, seed=seed), training_log, cwd=root)
 
     spz_path = run_dir / "scene.spz"
     if not (resume and stages.complete("export", [spz_path])):
@@ -597,7 +822,8 @@ def run_pipeline(
     with _timed(timings, "evaluation"):
         metrics = collect_metrics(run_dir, degraded)
     metrics["timings"] = dict(timings)
-    _write_json(run_dir / "metrics.json", metrics)
+    metrics = load_and_merge_metrics(run_dir, metrics)
+    _write_json_atomic(run_dir / "metrics.json", metrics)
     write_report(run_dir, metrics)
     return run_dir
 
@@ -609,17 +835,10 @@ def report_run(run_id: str) -> Path:
     degradation_path = run_dir / "degradation.json"
     degradation = json.loads(degradation_path.read_text(encoding="utf-8")) if degradation_path.exists() else None
     metrics = collect_metrics(run_dir, degradation)
-    metrics_path = run_dir / "metrics.json"
-    if metrics_path.is_file():
-        try:
-            previous_timings = json.loads(metrics_path.read_text(encoding="utf-8")).get("timings")
-        except json.JSONDecodeError:
-            previous_timings = None
-        if isinstance(previous_timings, dict):
-            metrics["timings"] = previous_timings
+    metrics = load_and_merge_metrics(run_dir, metrics)
     reuse_path = run_dir / "reuse_provenance.json"
     if reuse_path.is_file():
         metrics["reuse"] = json.loads(reuse_path.read_text(encoding="utf-8"))
         metrics["total_seconds"] = None
-    _write_json(metrics_path, metrics)
+    _write_json_atomic(run_dir / "metrics.json", metrics)
     return write_report(run_dir, metrics)

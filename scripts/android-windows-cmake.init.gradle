@@ -1,5 +1,11 @@
 // AGP configures CMake before Ninja; avoid Expo's Windows regeneration loop.
 gradle.beforeProject { project ->
+    project.plugins.withId("com.android.application") {
+        project.extensions.getByName("androidComponents").finalizeDsl { android ->
+            // Hash deep pnpm source paths before the SDK's Windows Ninja hits MAX_PATH.
+            android.defaultConfig.externalNativeBuild.cmake.arguments.add("-DCMAKE_OBJECT_PATH_MAX=220")
+        }
+    }
     if (project.name == "expo-modules-core") {
         project.plugins.withId("com.android.library") {
             project.extensions.getByName("androidComponents").finalizeDsl { android ->

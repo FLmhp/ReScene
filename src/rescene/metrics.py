@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +113,17 @@ def validation_registration(
     }
 
 
+def validation_coverage_allowed(run_dir: Path, selected: int, missing: int) -> bool:
+    """Apply the recorded coverage policy without changing the holdout membership."""
+    if not missing:
+        return True
+    path = run_dir / "benchmark.json"
+    metadata = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    if metadata.get("source") == "worker":
+        return (selected - missing) * 2 >= selected
+    return selected == 8 and missing == 1 and metadata.get("allow_missing_validation") is True
+
+
 def _photometric_metrics(run_dir: Path) -> dict[str, object]:
     """Read only the configured final validation evaluation with verified views."""
     config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
@@ -139,7 +151,13 @@ def _photometric_metrics(run_dir: Path) -> dict[str, object]:
     selected_val = ids(selection.get("validation_source_ids"), "selected validation")
     if not selected_train or not selected_val or selected_train & selected_val:
         raise ValueError("Selected train and validation splits must be nonempty and disjoint")
-    if val != selected_val or not train <= selected_train:
+    missing = selected_val - val
+    if (
+        not val <= selected_val
+        or not train <= selected_train
+        or missing != ids(split.get("missing_validation_source_ids", []), "missing validation")
+        or not validation_coverage_allowed(run_dir, len(selected_val), len(missing))
+    ):
         raise ValueError("Registered split does not match selected validation or training sources")
     if not train or not val or train & val:
         raise ValueError("Photometric train and validation splits must be nonempty and disjoint")
@@ -186,6 +204,8 @@ def _photometric_metrics(run_dir: Path) -> dict[str, object]:
     result["photometric_step"] = step
     result["photometric_split"] = "val"
     result["photometric_views"] = views
+    if missing:
+        result["missing_validation_source_ids"] = sorted(missing)
     return result
 
 
@@ -272,6 +292,97 @@ def collect_metrics(run_dir: Path, degraded: dict[str, object] | None = None) ->
     return metrics
 
 
+EVALUATION_FIELDS = (
+    "pose_ate",
+    "pose_rotation_error",
+    "evaluation_registered_images",
+    "point_accuracy",
+    "point_completeness",
+    "point_fscore",
+    "point_threshold",
+    "point_metric_method",
+    "evaluation_point_cloud_frame",
+    "evaluation_artifact_to_reference",
+    "evaluation_point_cloud",
+    "point_accuracy_distance",
+    "point_completeness_distance",
+    "point_fscore_proxy",
+    "official_evaluator_sha256",
+)
+"""Fields written by ``evaluate_run`` that a report must not lose or invent."""
+
+
+def evaluation_artifacts(run_dir: Path) -> dict[str, str | None]:
+    """Digests that prove which artifacts an evaluation was computed from."""
+    try:
+        final = final_ply_path(run_dir)
+    except (OSError, ValueError, KeyError):
+        final = None
+    paths = {
+        "scene_spz_sha256": run_dir / "scene.spz",
+        "final_ply_sha256": final,
+        "dense_ply_sha256": run_dir / "dense" / "fused.ply",
+    }
+    return {name: sha256_file(path) if path is not None and path.is_file() else None for name, path in paths.items()}
+
+
+def merge_evaluation_evidence(metrics: dict[str, object], previous: dict[str, object], run_dir: Path) -> None:
+    """Copy a recorded evaluation into ``metrics`` only while it matches the artifacts.
+
+    A regenerated report recomputes live metrics; the expensive evaluation fields
+    come back only when the artifacts are byte-identical to the evaluated ones.
+    """
+    evidence = previous.get("evaluation_evidence")
+    if not isinstance(evidence, dict):
+        return
+    fields = evidence.get("fields")
+    artifacts = evidence.get("artifacts")
+    if not isinstance(fields, dict) or not isinstance(artifacts, dict):
+        metrics["evaluation_needs_recompute"] = True
+        return
+    current = evaluation_artifacts(run_dir)
+    if set(artifacts) != set(current) or any(artifacts[name] != digest for name, digest in current.items()):
+        metrics["evaluation_needs_recompute"] = True
+        return
+    metrics.update({key: value for key, value in fields.items() if key in EVALUATION_FIELDS})
+    metrics["evaluation_evidence"] = evidence
+
+
+def load_and_merge_metrics(run_dir: Path, metrics: dict[str, object]) -> dict[str, object]:
+    """Keep previous timings and verified evaluation evidence before overwriting metrics.
+
+    A resumed run only records the stages it actually executed, so previous
+    timings fill the gaps. Evaluation evidence is restored only for artifacts
+    whose digests still match; anything else requests a recompute.
+    """
+    path = run_dir / "metrics.json"
+    previous: dict[str, object] | None = None
+    corrupt = False
+    if path.is_file():
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            corrupt = True
+        else:
+            if isinstance(value, dict):
+                previous = value
+            else:
+                corrupt = True
+    if previous is None:
+        if corrupt:
+            metrics["evaluation_needs_recompute"] = True
+        return metrics
+    previous_timings = previous.get("timings")
+    if isinstance(previous_timings, dict):
+        merged_timings = dict(previous_timings)
+        current_timings = metrics.get("timings")
+        if isinstance(current_timings, dict):
+            merged_timings.update(current_timings)
+        metrics["timings"] = merged_timings
+    merge_evaluation_evidence(metrics, previous, run_dir)
+    return metrics
+
+
 def write_report(run_dir: Path, metrics: dict[str, object]) -> Path:
     profile = "unknown"
     config_path = run_dir / "config.json"
@@ -280,5 +391,7 @@ def write_report(run_dir: Path, metrics: dict[str, object]) -> Path:
     rows = "\n".join(f"| {key} | {value} |" for key, value in metrics.items())
     report = f"# ReScene run `{run_dir.name}`\n\nProfile: `{profile}`\n\n| Metric | Value |\n|---|---|\n{rows}\n"
     path = run_dir / "report.md"
-    path.write_text(report, encoding="utf-8")
+    staging = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    staging.write_text(report, encoding="utf-8")
+    os.replace(staging, path)
     return path

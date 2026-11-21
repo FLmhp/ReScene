@@ -1,80 +1,110 @@
 import type { ResceneClient } from "@rescene/api-client";
-import { parseQueue, type QueuedEntry, type QueuedUpload, replayQueue, serializeQueue } from "@rescene/uploader";
+import { accountQueueKey, createNativeQueue, parseQueue, QueuedMediaMissing, serializeQueue, type QueuedEntry, type QueuedUpload, type QueueOwner } from "@rescene/uploader";
 import * as FileSystem from "expo-file-system/legacy";
 
-import { uploadFile } from "./upload";
+import { isQueueOwnerCurrent, queueClient } from "./api";
+import { clearOrphanUploadBodies, managedMediaExists, persistPickedFile, removeManagedMedia, requireQueuedMedia, uploadFile } from "./upload";
 
-const QUEUE_FILE = `${FileSystem.documentDirectory}rescene-queue.json`;
+// Cache sweeps run before any upload this launch, so a killed process cannot
+// leave whole-file bodies behind across sessions.
+clearOrphanUploadBodies();
 
-export type ReplaySummary = { created: number; uploaded: number; dropped: number };
+const LEGACY_QUEUE_FILE = `${FileSystem.documentDirectory}rescene-queue.json`;
 
-/** A missing or unreadable queue file is an empty queue, never a launch failure. */
-export async function loadQueue(): Promise<QueuedEntry[]> {
+function queueFile(owner: QueueOwner): string {
+  return FileSystem.documentDirectory + accountQueueKey("rescene-queue", owner) + ".json";
+}
+
+export async function hasLegacyQueue(): Promise<boolean> {
+  return (await FileSystem.getInfoAsync(LEGACY_QUEUE_FILE)).exists;
+}
+
+async function writeQueue(owner: QueueOwner, entries: QueuedEntry[]): Promise<void> {
+  const file = queueFile(owner);
+  const temporary = file + ".tmp";
   try {
-    return parseQueue(await FileSystem.readAsStringAsync(QUEUE_FILE));
-  } catch {
-    return [];
+    await FileSystem.writeAsStringAsync(temporary, serializeQueue(entries));
+    await FileSystem.moveAsync({ from: temporary, to: file });
+  } catch (reason) {
+    await FileSystem.deleteAsync(temporary, { idempotent: true }).catch(() => undefined);
+    throw reason;
   }
 }
 
-export async function saveQueue(entries: QueuedEntry[]): Promise<void> {
-  await FileSystem.writeAsStringAsync(QUEUE_FILE, serializeQueue(entries));
+/** Entries queued before managed copies existed still point at picker temporaries. */
+async function adoptLegacyMedia(owner: QueueOwner, entries: QueuedEntry[]): Promise<QueuedEntry[]> {
+  let changed = false;
+  const adopted: QueuedEntry[] = [];
+  for (const entry of entries) {
+    if (entry.kind !== "upload" || entry.managed === true) {
+      adopted.push(entry);
+      continue;
+    }
+    if (!(await managedMediaExists(entry.uri))) {
+      adopted.push(entry);
+      continue;
+    }
+    try {
+      const stored = await persistPickedFile(owner, entry.id, {
+        uri: entry.uri,
+        name: entry.name,
+        mimeType: entry.mimeType,
+        size: entry.size,
+      });
+      adopted.push({ ...entry, uri: stored.uri, size: stored.size, managed: true });
+      changed = true;
+    } catch {
+      adopted.push(entry);
+    }
+  }
+  if (changed) await writeQueue(owner, adopted);
+  return adopted;
 }
 
-export async function enqueue(entry: QueuedEntry): Promise<void> {
-  const entries = await loadQueue();
-  entries.push(entry);
-  await saveQueue(entries);
+const queue = createNativeQueue({
+  async read(owner) {
+    const file = queueFile(owner);
+    if (!(await FileSystem.getInfoAsync(file)).exists) return [];
+    return adoptLegacyMedia(owner, parseQueue(await FileSystem.readAsStringAsync(file)));
+  },
+  write: writeQueue,
+  isCurrent: isQueueOwnerCurrent,
+});
+
+export const enqueue = queue.enqueue;
+export const discard = queue.discard;
+
+export async function discardQueued(owner: QueueOwner, id: string): Promise<void> {
+  const entry = (await queue.load(owner)).find((row) => row.id === id);
+  await queue.discard(owner, id);
+  if (entry?.kind === "upload" && entry.managed) await removeManagedMedia(entry.uri);
 }
 
-async function rememberAsset(id: string, assetId: string): Promise<void> {
-  const entries = await loadQueue();
-  await saveQueue(entries.map((entry) => (entry.kind === "upload" && entry.id === id ? { ...entry, assetId } : entry)));
+function transfer(owner: QueueOwner, client: ResceneClient, onProgress: (entry: QueuedUpload, percent: number) => void) {
+  return async (entry: QueuedUpload, onAsset: (assetId: string) => Promise<void>) => {
+    await requireQueuedMedia(entry.uri);
+    await uploadFile(
+      owner,
+      client,
+      entry.projectId,
+      { uri: entry.uri, name: entry.name, mimeType: entry.mimeType, size: entry.size },
+      (percent) => onProgress(entry, percent),
+      { assetId: entry.assetId, onAsset },
+    );
+    if (entry.managed) await removeManagedMedia(entry.uri);
+  };
 }
 
-/** Retried uploads reuse their asset id, so a dropped connection cannot create a second asset. */
-async function replayOnce(
-  client: ResceneClient,
-  onProgress: (entry: QueuedUpload, percent: number) => void,
-): Promise<ReplaySummary> {
-  const result = await replayQueue(await loadQueue(), {
-    createProject: async (name) => {
-      await client.createProject(name);
-    },
-    upload: async (entry, progress) => {
-      await uploadFile(
-        client,
-        entry.projectId,
-        { uri: entry.uri, name: entry.name, mimeType: entry.mimeType, size: entry.size },
-        (percent) => {
-          progress?.(percent);
-          onProgress(entry, percent);
-        },
-        {
-          assetId: entry.assetId,
-          onAsset: async (assetId) => {
-            entry.assetId = assetId;
-            await rememberAsset(entry.id, assetId);
-          },
-        },
-      );
-    },
+export async function uploadQueued(owner: QueueOwner, id: string, onProgress: (percent: number) => void): Promise<void> {
+  await queue.upload(owner, id, transfer(owner, queueClient(owner), (_, percent) => onProgress(percent)));
+}
+
+export { QueuedMediaMissing };
+
+export function replayQueued(owner: QueueOwner, onProgress: (entry: QueuedUpload, percent: number) => void) {
+  const client = queueClient(owner);
+  return queue.replay(owner, {
+    createProject: async (name, idempotencyKey) => { await client.createProject(name, idempotencyKey); },
+    upload: transfer(owner, client, onProgress),
   });
-  await saveQueue(result.remaining);
-  return { created: result.created, uploaded: result.uploaded, dropped: result.dropped };
-}
-
-let inFlightReplay: Promise<ReplaySummary> | null = null;
-
-/** Single-flight so a mount and a foreground event cannot upload the same entry twice. */
-export function replayQueued(
-  client: ResceneClient,
-  onProgress: (entry: QueuedUpload, percent: number) => void,
-): Promise<ReplaySummary> {
-  if (!inFlightReplay) {
-    inFlightReplay = replayOnce(client, onProgress).finally(() => {
-      inFlightReplay = null;
-    });
-  }
-  return inFlightReplay;
 }

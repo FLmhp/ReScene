@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="packages/design-tokens/assets/rescene-mark.svg" width="80" alt="ReScene 标志">
+  <img src="packages/design-tokens/assets/rescene-icon.svg" width="80" alt="ReScene RS 字标">
 </p>
 
 <h1 align="center">ReScene</h1>
@@ -26,13 +26,13 @@ ReScene 把团队工作台、GPU 重建引擎和 SPZ 查看器放在同一个仓
 - 多端访问：响应式 Web、Tauri 桌面、Expo Android 和 Taro 微信小程序；共享类型、API 客户端与上传逻辑。
 
 <details>
-<summary>界面预览：管理控制台</summary>
+<summary>历史界面截图</summary>
 
-![Web 管理控制台：用户筛选与账号管理，本地验收截图](artifacts/screenshots/web-admin-console.png)
+[Web 管理控制台历史验收截图](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/screenshots/web-admin-console.png)（需要仓库权限）
 
 截图来自本地验收，不代表生产环境的实时状态。其他客户端与 Viewer 截图见 [验收证据](artifacts/README.md)。
 
-0.4.0 四端改版与安装验证见 [验收报告](artifacts/test-runs/2026-11-18-ui-v040/report.md)。当前 5090 已关机，任务在 Worker 上线后执行。
+0.4.1 候选版的 Windows 结果页采用独立下载列表，SHA-256 和分享撤销记录按需展开。 [Windows 真机截图](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-release-041/screenshots/windows-native-result-layout.png)
 
 </details>
 
@@ -40,19 +40,23 @@ ReScene 把团队工作台、GPU 重建引擎和 SPZ 查看器放在同一个仓
 
 直接使用 [在线工作台](https://app.rescene.xyz)，通过邮箱注册或登录，创建项目、上传素材，再选择路线开始重建。具体操作见 [用户手册](docs/用户手册.md)。Worker 离线时任务会排队，网页可用不等于 GPU 可执行任务。
 
-| 入口 | 当前交付状态 |
-|---|---|
-| Web / API | 0.4.0 双主题工作台与素材预览接口，数据库迁移版本沿用 0006 |
-| Windows / Linux / macOS | 安装包与 SHA-256 以 [0.4.0 Release](https://github.com/FLmhp/ReScene/releases/tag/v0.4.0) 为准 |
-| Android | 签名 APK，版本码 5；已在 SLT_API35 完成安装和主题验证 |
-| 微信小程序 | 真实 AppID 的 0.4.0 双主题构建，支持复制场景链接到浏览器 |
+0.5.0 正在准备，发布资产及生产切换尚待核验；最新已核实线上工作台与 API 为 **0.4.1**，数据库为 `0010`。最新已发布安装包为 **0.4.0**。历史证据链接需要仓库权限。 [0.5.0 发布说明](docs/0.5.0发布说明.md) · [0.4.0 Release](https://github.com/FLmhp/ReScene/releases/tag/v0.4.0) · [上线记录](plans/README.md#041-审计集成补验)
 
-此前小程序与 Android 核心流程已由用户确认真机通过。0.4.0 的实际构建、上传、上线与待验收状态见 [本轮报告](artifacts/test-runs/2026-11-18-ui-v040/report.md)。
+| 入口 | 0.4.1 线上与验收 |
+|---|---|
+| Web / API | 2026-11-21 停写迁移后上线，API `0.4.1`；数据库 `0010`（上线时为 `0009`，后续审计部署升级），公网入口与管理员读取验证通过 |
+| Windows | 候选已实测从 0.4.0 覆盖安装、结果页布局、SPZ 渲染、五种产物下载和分享撤销；正式包仍为 0.4.0 |
+| Android | 0.4.1 真机 HUAWEI BKY-W10 / Android 12 验证登录、冷启动会话、真实 OSS 上传、生产重建、日志轮询和 Viewer 首载渲染；Android 35 模拟器另覆盖 403 续签、503 重试、离线重放与换号隔离。正式签名包仍为 0.4.0。 [真机报告](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-21-android-device/report.md) |
+| 微信小程序 | 开发者工具验证登录页渲染和编译构建；真机日志追踪与分享切换待验收，正式版以平台审核为准 |
+
+生产 API 与 Web 已运行 0.4.1；生产 GPU Worker 已切换到 0.4.1 并恢复领取队列（PID 22691，drain=no）。首个生产任务 `f8201574-991a-4f88-bc8a-9b1c86f370d8` 已成功交付重建 `3814d608-dc1d-4c81-9604-6300d50d652c`（质量 16.34，manifest、metrics、report、19.7 MB SPZ 与 185 MB PLY）。仍使用 0.4.0 的 Android/微信安装包新增成员时不会显示一次性领取码，应先在 Web 工作台签发，待原生正式包验收后再更新。此前候选的六条 GPU 路线、checkpoint 恢复、取消与上传边界已在隔离候选栈复验。 [0.4.1 品牌与真机验收](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-brand-refresh/report.md)
+
+0.4.1 候选采用青色 R 与蓝紫色 S 组成的新标志。技术设计和中期报告的现状附录见 [Word 文档索引](docs/reference/README.md)。 [项目官网](https://rescene.xyz/)
 
 > [!IMPORTANT]
-> 仓库和 GitHub Release 为私有，仅授权协作者可访问。桌面安装包未签名，macOS 未公证；构建成功不等于各平台安装验收完成。限制与已发布文件以 [0.4.0 发布说明](docs/0.4.0发布说明.md) 为准。
+> 仓库和 GitHub Release 为私有，仅授权协作者可访问。桌面安装包未签名，macOS 未公证；构建成功不等于各平台安装验收完成。已发布文件以 [0.4.0 发布说明](docs/0.4.0发布说明.md) 为准；0.5.0 准备状态见 [0.5.0 发布说明](docs/0.5.0发布说明.md)。
 
-界面提供跟随系统、浅色和深色设置，偏好保存在当前设备。Web/桌面在外观菜单中切换，Android/小程序在页面右上角切换。开发者入口见 [AGENTS.md](AGENTS.md)。
+界面提供跟随系统、浅色和深色设置，另有青瓷、群青、墨染三套配色，两项偏好分别保存在当前设备。Web/桌面在外观菜单中切换，Android/小程序在页面右上角切换。半透明面板只在平台支持时启用，其余环境使用实色。开发者入口见 [AGENTS.md](AGENTS.md)。
 
 ## 系统架构
 
@@ -152,6 +156,10 @@ pnpm -r test
 
 日常按改动范围运行最小验证。完整质量命令、五个 CI 门禁、契约修改顺序和发布检查表见 [开发与发布指南](CONTRIBUTING.md)。`pnpm quality` 不包含原生安装包、四端构建或 Docker 镜像构建；CI 通过也不代表 GPU 质量回归通过。
 
+### 5. Android 调试（可选）
+
+Android 的 API 与 Web 地址在打包时内联。未设置 `EXPO_PUBLIC_API_URL` 和 `EXPO_PUBLIC_WEB_URL` 时会回退到生产地址，开发构建也一样。复制 `apps/mobile/.env.example` 为 `apps/mobile/.env.local`：模拟器用 `http://10.0.2.2:8000` 和 `http://10.0.2.2:3000`，真机改用主机的局域网 IP 和同样端口，然后运行 `pnpm --filter @rescene/mobile start`。账号页会显示当前服务器地址；详细配置、端口绑定和确认方法见[开发指南](CONTRIBUTING.md#android-开发环境)。
+
 ## 重建路线
 
 | Profile | 几何路线 | 默认 Gaussian 优化步数 | 最大输入帧数 |
@@ -172,6 +180,10 @@ python -m rescene report --run-id my-scene
 
 引擎环境与 Worker 操作见 [部署与运维](docs/单5090系统部署与运维.md)；质量结论见 [5090 v3 优化报告](docs/RESCENE_5090_DELIVERY_OPTIMIZATION.md)。历史标定存在冻结帧、渲染分割和坐标变换口径问题，不能直接作为新候选的晋级基线。
 
+5090 已完成图片与视频各三条路线的交付回归。六条任务的 checkpoint、PLY 和 SPZ 均可重载，隔离断联测试验证了 OSS 阶段恢复。ETH3D 四个 DSLR 场景的 FAST 分网格采点都达到 8/8 张验证图稀疏支持，该策略继续通过实验规格启用。BALANCED 候选跳过参数相同的 BA 重试，QUALITY 仍使用 5 次 PatchMatch。 [0.4.1 GPU 验收](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-release-041/report.md#5090-路线) · [ETH3D 独立场景实验](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-19-5090-independent-optimization/report.md)
+
+后续 5090 实验将归档保存在 `/root/autodl-fs`，每次在实例本地数据盘展开一个场景，按相同冻结输入比较端到端耗时、质量和完整进程树显存。 [5090 大数据集训练运行手册](docs/5090大数据集训练运行手册.md)
+
 ### 后续 A100 优化
 
 1. 在独立 `/home/loch/ReScene` 环境固定数据 SHA-256、选帧清单、验证集和依赖。先用 Golden Kitchen 和 ETH3D 复测三条现有路线，各重复三次，记录运行波动。
@@ -185,7 +197,9 @@ python -m rescene report --run-id my-scene
 | 使用工作台、查看场景或管理账号 | [用户手册](docs/用户手册.md) |
 | 理解 API、数据模型和各端实现 | [项目说明](docs/项目说明.md) |
 | 修改代码、提交 PR、验证或发布 | [开发与发布指南](CONTRIBUTING.md) |
-| 下载并核对当前安装包 | [0.3.0 发布说明](docs/0.3.0发布说明.md) |
+| 查看 0.5.0 准备状态与下载占位 | [0.5.0 发布说明](docs/0.5.0发布说明.md) |
+| 下载并核对当前安装包 | [0.4.0 发布说明](docs/0.4.0发布说明.md) |
+| 了解候选版与上线门槛 | [0.4.1 验收报告](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-release-041/report.md) |
 | 部署、升级、备份或回滚 | [单 5090 系统部署与运维](docs/单5090系统部署与运维.md) |
 | 查看截图、样例指标和发布哈希 | [验收与发布证据](artifacts/README.md) |
 | 复核算法实验 | [5090 v3](docs/RESCENE_5090_DELIVERY_OPTIMIZATION.md) · [质量标定](docs/5090_QUALITY_CALIBRATION.md) · [A100 历史报告](docs/A100_OPTIMIZATION_REPORT.md) |

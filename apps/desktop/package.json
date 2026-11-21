@@ -1,13 +1,14 @@
 {
   "name": "@rescene/desktop",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "node scripts/check-csp.mjs --mode=dev && vite",
+    "build": "node scripts/check-csp.mjs --mode=build && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "check:csp": "node scripts/check-csp.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -1,10 +1,12 @@
 import { explainError, isOfflineError } from "@rescene/api-client";
-import type { AppNotification, Project, User } from "@rescene/schemas";
+import { LEGACY_QUEUE_NOTICE, QUEUE_PAUSED, newIdempotencyKey } from "@rescene/uploader";
+import { JOB_STATUS_LABELS } from "@rescene/schemas";
+import type { AppNotification, ProjectSummary, User } from "@rescene/schemas";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Pressable, Text, View } from "react-native";
 
-import { client, persistSession } from "../api";
-import { enqueue, replayQueued } from "../queue";
+import { changeSessionPassword, client, currentQueueOwner, isQueueOwnerCurrent, queueClient } from "../api";
+import { enqueue, hasLegacyQueue, replayQueued } from "../queue";
 import { useAppearance } from "../appearance";
 import { Button, Card, ErrorText, Field, Screen, useTextStyles } from "../ui";
 
@@ -17,20 +19,25 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
   const { theme } = useAppearance();
   const textStyles = useTextStyles();
   const [panel, setPanel] = useState<"notifications" | "account" | null>(null);
-  const [projects, setProjects] = useState<Project[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [listError, setListError] = useState("");
   const [me, setMe] = useState<User | null>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [unread, setUnread] = useState(0);
   const [name, setName] = useState("");
   const [search, setSearch] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const flight = useRef(false);
+  const attemptKey = useRef<{ name: string; key: string } | null>(null);
   const replayed = useRef(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [legacyQueue, setLegacyQueue] = useState(false);
 
   const loadNotifications = useCallback(async () => {
     try {
@@ -43,50 +50,80 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
   }, []);
 
   const load = useCallback(async () => {
-    setError("");
+    setLoading(true);
+    setListError("");
     try {
-      const [nextProjects, user] = await Promise.all([client.listProjects(), client.getMe()]);
+      const [nextProjects, user] = await Promise.all([client.listProjectSummaries(), client.getMe()]);
       setProjects(nextProjects);
       setMe(user);
     } catch (reason) {
-      setError(explainError(reason, "加载项目失败"));
+      setListError(explainError(reason, "加载项目失败"));
+    } finally {
+      setLoading(false);
     }
   }, []);
 
   useEffect(() => { void load(); void loadNotifications(); }, [load, loadNotifications]);
 
+  const replay = useCallback(() => {
+    const owner = currentQueueOwner();
+    if (!owner) return;
+    void replayQueued(owner, () => undefined).then(({ created, uploaded }) => {
+      if (isQueueOwnerCurrent(owner) && (created || uploaded)) void load();
+    }).catch(() => undefined);
+  }, [load]);
+
   useEffect(() => {
     if (replayed.current) return;
     replayed.current = true;
-    void replayQueued(client, () => undefined).then(({ created, uploaded }) => { if (created || uploaded) void load(); }).catch(() => undefined);
-  }, [load]);
+    void hasLegacyQueue().then(setLegacyQueue).catch(() => undefined);
+    replay();
+  }, [replay]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
       if (state !== "active") return;
-      void replayQueued(client, () => undefined).then(({ created, uploaded }) => { if (created || uploaded) void load(); }).catch(() => undefined);
+      replay();
       void loadNotifications();
     });
     return () => subscription.remove();
-  }, [load, loadNotifications]);
+  }, [loadNotifications, replay]);
 
   async function create() {
-    if (!name.trim() || flight.current) return;
+    const trimmed = name.trim();
+    if (!trimmed || flight.current) return;
+    const owner = currentQueueOwner();
+    if (!owner) { setError(QUEUE_PAUSED); return; }
+    const scopedClient = queueClient(owner);
+    // Retry with the same key; a different name starts a new operation.
+    const attempt = attemptKey.current?.name === trimmed ? attemptKey.current : { name: trimmed, key: newIdempotencyKey() };
+    attemptKey.current = attempt;
     flight.current = true;
     setBusy(true);
     setError("");
     try {
-      const project = await client.createProject(name.trim());
+      const project = await scopedClient.createProject(trimmed, attempt.key);
+      attemptKey.current = null;
+      if (!isQueueOwnerCurrent(owner)) return;
       setName("");
       onOpen(project);
     } catch (reason) {
+      if (!isQueueOwnerCurrent(owner)) return;
       if (isOfflineError(reason)) {
         try {
-          await enqueue({ kind: "project", id: `project-${Date.now()}`, name: name.trim(), createdAt: Date.now() });
+          await enqueue(owner, {
+            kind: "project",
+            id: `project-${Date.now()}`,
+            name: trimmed,
+            createdAt: Date.now(),
+            idempotencyKey: attempt.key,
+          });
+          attemptKey.current = null;
+          if (!isQueueOwnerCurrent(owner)) return;
           setName("");
           setNotice("已离线保存，联网后自动创建。");
         } catch {
-          setError("保存到本地队列失败。");
+          if (isQueueOwnerCurrent(owner)) setError("保存到本地队列失败。");
         }
       } else {
         setError(explainError(reason, "创建项目失败"));
@@ -105,14 +142,34 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
     setError("");
     setNotice("");
     try {
-      const result = await client.changePassword(currentPassword, newPassword);
-      await persistSession(result.access_token);
+      if (!await changeSessionPassword(currentPassword, newPassword)) return;
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
       setNotice("密码已更新，其他设备已退出登录。");
     } catch (reason) {
       setError(explainError(reason, "更新密码失败。"));
+    } finally {
+      flight.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function acceptInvitation() {
+    const code = inviteCode.trim();
+    if (!code || flight.current) return;
+    flight.current = true;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      await client.acceptInvitation(code);
+      setInviteCode("");
+      setSearch("");
+      setNotice("已领取邀请。");
+      await load();
+    } catch (reason) {
+      setError(explainError(reason, "领取邀请失败"));
     } finally {
       flight.current = false;
       setBusy(false);
@@ -145,7 +202,27 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
   const visible = projects.filter((project) => project.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   return (
     <Screen scroll title="我的项目">
-      <Text style={textStyles.muted}>把拍摄素材整理成项目，重建并分享三维场景。</Text>
+      <Field label="搜索项目" value={search} onChangeText={setSearch} placeholder="按名称筛选" />
+      {loading ? <Text accessibilityLiveRegion="polite" style={textStyles.muted}>正在加载项目…</Text> : null}
+      {listError ? <Card>
+        <ErrorText>{listError}</ErrorText>
+        <Button label="重新加载" onPress={() => void load()} tone="ghost" />
+      </Card> : null}
+      {!loading && !listError && visible.length === 0 ? <Text style={textStyles.muted}>{search.trim() ? "没有匹配的项目。" : "还没有项目。创建第一个项目开始上传素材。"}</Text> : null}
+      {visible.map((item) => (
+        <Pressable
+          accessibilityHint="打开项目"
+          accessibilityRole="button"
+          key={item.id}
+          onPress={() => onOpen(item)}
+          style={{ padding: 18, gap: 8, borderRadius: 12, backgroundColor: theme.panel, borderWidth: 1, borderColor: theme.borderSoft, minHeight: 112 }}
+        >
+          <Text style={textStyles.heading}>{item.name}</Text>
+          <Text style={textStyles.muted}>{{ owner: "所有者", admin: "管理员", member: "成员", viewer: "只读" }[item.effective_role]} · {item.asset_count} 个素材 · {item.job_count} 个任务</Text>
+          <Text style={textStyles.muted}>{item.latest_job ? `最近任务：${JOB_STATUS_LABELS[item.latest_job.status]}` : "暂无任务"}</Text>
+          <Text style={{ color: theme.accent, fontWeight: "600" }}>打开项目</Text>
+        </Pressable>
+      ))}
       <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
         <Button tone="ghost" label={`通知（${unread}）`} onPress={() => setPanel(panel === "notifications" ? null : "notifications")} />
         <Button tone="ghost" label="账户设置" onPress={() => setPanel(panel === "account" ? null : "account")} />
@@ -168,28 +245,19 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
       </Card> : null}
       <Card>
         <Text style={textStyles.body}>{me ? `${me.email} · ${me.is_admin ? "管理员" : "成员"}` : "正在加载账户…"}</Text>
-        <Field label="搜索项目" value={search} onChangeText={setSearch} placeholder="按名称筛选" />
         <Field label="新项目" value={name} onChangeText={setName} placeholder="项目名称" />
         <Button disabled={busy || !name.trim()} label="创建项目" onPress={create} />
+      </Card>
+      <Card>
+        <Field label="领取码" value={inviteCode} onChangeText={setInviteCode} autoComplete="off" />
+        <Button disabled={busy || !inviteCode.trim()} label="领取邀请" onPress={acceptInvitation} />
       </Card>
       {error ? <Card>
         <ErrorText>{error}</ErrorText>
         <Button label="重新加载" onPress={() => void load()} tone="ghost" />
       </Card> : null}
+      {legacyQueue ? <Text style={textStyles.muted}>{LEGACY_QUEUE_NOTICE}</Text> : null}
       {notice ? <Text accessibilityLiveRegion="polite" style={textStyles.muted}>{notice}</Text> : null}
-      {visible.length === 0 ? <Text style={textStyles.muted}>{search.trim() ? "没有匹配的项目。" : "还没有项目。"}</Text> : null}
-      {visible.map((item) => (
-        <Pressable
-          accessibilityHint="打开项目"
-          accessibilityRole="button"
-          key={item.id}
-          onPress={() => onOpen(item)}
-          style={{ padding: 22, gap: 14, borderRadius: 16, backgroundColor: theme.panel, borderWidth: 1, borderColor: theme.borderSoft, minHeight: 128 }}
-        >
-          <Text style={textStyles.heading}>{item.name}</Text>
-          <Text style={textStyles.muted}>{{ owner: "所有者", admin: "管理员", member: "成员", viewer: "只读" }[item.effective_role]} · 打开项目 ↗</Text>
-        </Pressable>
-      ))}
       {me?.is_admin ? <View><Button label="管理控制台" onPress={onAdmin} /></View> : null}
       {panel === "account" ? <Card>
         <Text style={textStyles.heading}>账户安全</Text>

@@ -14,18 +14,6 @@ type RequestInitLike = {
   body?: string;
 };
 
-type UnauthorizedNotice = {
-  url: string;
-  authorization: string;
-};
-
-let unauthorizedHandler: ((notice: UnauthorizedNotice) => void) | undefined;
-
-/** Registered once by api.ts so any screen's 401 reaches one session handler. */
-export function setUnauthorizedHandler(handler: (notice: UnauthorizedNotice) => void): void {
-  unauthorizedHandler = handler;
-}
-
 function headerRecord(headers: unknown): Record<string, string> {
   const result: Record<string, string> = {};
   if (!headers || typeof headers !== "object") return result;
@@ -66,9 +54,6 @@ export const miniappFetch: typeof fetch = async (input: RequestInfo | URL, init?
     header,
     data: request.body,
   });
-  if (response.statusCode === 401) {
-    unauthorizedHandler?.({ url: String(input), authorization: headerValue(header, "authorization") });
-  }
   const payload = normalizePayload(response.data);
   const text = typeof response.data === "string" ? response.data : (JSON.stringify(response.data) ?? "");
   const responseHeaders = response.header ?? {};

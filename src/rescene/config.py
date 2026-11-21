@@ -36,8 +36,18 @@ class ProfileConfig:
     vggt_max_reprojection_error: float = 8.0
     vggt_fine_tracking: bool = False
     colmap_camera_model: str = "SIMPLE_RADIAL"
+    colmap_mapper: str = "incremental"
     colmap_mvs_max_image_size: int = 0
     colmap_poisson_depth: int = 10
+    vggt_depth_confidence: float | None = None
+    vggt_track_observation_limit: int | None = None
+    gsplat_cache_images: bool = False
+    vggt_grid_sampling: bool = False
+    vggt_query_coverage: bool = False
+    colmap_shared_camera: bool = False
+    colmap_mvs_iterations: int | None = None
+    colmap_sparse_threads: int | None = None
+    gsplat_train_workers: int | None = None
 
     def degraded(self) -> ProfileConfig:
         """Return the single bounded CUDA OOM fallback configuration."""
@@ -50,7 +60,20 @@ class ProfileConfig:
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
-        return asdict(self)
+        config = asdict(self)
+        for name in (
+            "vggt_depth_confidence",
+            "vggt_track_observation_limit",
+            "colmap_mvs_iterations",
+            "colmap_sparse_threads",
+            "gsplat_train_workers",
+        ):
+            if config[name] is None:
+                del config[name]
+        for name in ("gsplat_cache_images", "vggt_grid_sampling", "vggt_query_coverage", "colmap_shared_camera"):
+            if not config[name]:
+                del config[name]
+        return config
 
     def with_overrides(self, overrides: dict[str, Any]) -> ProfileConfig:
         """Return a validated calibration candidate without changing route identity."""
@@ -63,13 +86,23 @@ class ProfileConfig:
             "gsplat_app_opt",
             "gsplat_depth_loss",
             "gsplat_init_points",
+            "gsplat_cache_images",
+            "gsplat_train_workers",
             "vggt_query_frames",
             "vggt_max_query_points",
             "vggt_max_reprojection_error",
             "vggt_fine_tracking",
             "colmap_camera_model",
+            "colmap_mapper",
             "colmap_mvs_max_image_size",
             "colmap_poisson_depth",
+            "vggt_depth_confidence",
+            "vggt_track_observation_limit",
+            "vggt_grid_sampling",
+            "vggt_query_coverage",
+            "colmap_shared_camera",
+            "colmap_mvs_iterations",
+            "colmap_sparse_threads",
         }
         unknown = set(overrides) - allowed
         if unknown:
@@ -79,18 +112,57 @@ class ProfileConfig:
             "vggt_max_query_points",
             "vggt_max_reprojection_error",
             "vggt_fine_tracking",
+            "vggt_query_coverage",
         }
         if vggt_overrides and (self.geometry_backend != "vggt" or not self.use_bundle_adjustment):
             raise ValueError(
                 "VGGT bundle adjustment overrides are not applicable to "
                 f"{self.name}: {', '.join(sorted(vggt_overrides))}"
             )
-        colmap_overrides = set(overrides) & {"colmap_camera_model", "colmap_mvs_max_image_size", "colmap_poisson_depth"}
+        colmap_overrides = set(overrides) & {
+            "colmap_camera_model",
+            "colmap_mapper",
+            "colmap_mvs_max_image_size",
+            "colmap_poisson_depth",
+            "colmap_shared_camera",
+            "colmap_mvs_iterations",
+            "colmap_sparse_threads",
+        }
         if colmap_overrides and self.geometry_backend != "colmap":
             raise ValueError(
                 f"COLMAP overrides are not applicable to {self.name}: {', '.join(sorted(colmap_overrides))}"
             )
         updated = replace(self, **overrides)
+        if updated.vggt_grid_sampling and (
+            self.geometry_backend != "vggt" or self.use_bundle_adjustment or updated.vggt_depth_confidence is not None
+        ):
+            raise ValueError("Grid sampling requires non-BA VGGT and the default depth threshold")
+        if updated.colmap_shared_camera and (
+            updated.colmap_camera_model != "PINHOLE" or updated.colmap_mapper != "incremental"
+        ):
+            raise ValueError("Shared camera requires incremental mapping with PINHOLE intrinsics")
+        iterations = updated.colmap_mvs_iterations
+        if iterations is not None and (type(iterations) is not int or not 1 <= iterations <= 5):
+            raise ValueError("colmap_mvs_iterations must be an integer between 1 and 5")
+        threads = updated.colmap_sparse_threads
+        if threads is not None and (
+            type(threads) is not int or not 1 <= threads <= 12 or updated.colmap_mapper != "incremental"
+        ):
+            raise ValueError("colmap_sparse_threads requires incremental mapping and an integer between 1 and 12")
+        confidence = updated.vggt_depth_confidence
+        if confidence is not None and (
+            self.geometry_backend != "vggt"
+            or self.use_bundle_adjustment
+            or isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not 1 <= confidence <= 5
+        ):
+            raise ValueError("vggt_depth_confidence must be between 1 and 5 on the non-BA VGGT route")
+        track_limit = updated.vggt_track_observation_limit
+        if track_limit is not None and (
+            self.geometry_backend != "vggt" or type(track_limit) is not int or not 4096 <= track_limit <= 163840
+        ):
+            raise ValueError("vggt_track_observation_limit must be between 4096 and 163840 on a VGGT route")
         if updated.gsplat_app_opt is True:
             raise ValueError(
                 "gsplat_app_opt requires a deployable appearance protocol; "
@@ -121,13 +193,29 @@ class ProfileConfig:
             raise ValueError("gsplat_init_points must be sparse or dense")
         if updated.gsplat_init_points == "dense" and not updated.dense_reconstruction:
             raise ValueError("gsplat_init_points=dense requires a dense-capable route")
-        for name in ("gsplat_packed", "gsplat_app_opt", "gsplat_depth_loss", "vggt_fine_tracking"):
+        for name in (
+            "gsplat_packed",
+            "gsplat_app_opt",
+            "gsplat_depth_loss",
+            "gsplat_cache_images",
+            "vggt_fine_tracking",
+            "vggt_grid_sampling",
+            "vggt_query_coverage",
+            "colmap_shared_camera",
+        ):
             if not isinstance(getattr(updated, name), bool):
                 raise ValueError(f"{name} must be true or false")
+        if updated.gsplat_cache_images and updated.max_frames * updated.preprocess_max_side**2 * 3 > 2 * 1024**3:
+            raise ValueError("gsplat_cache_images exceeds the 2 GiB decoded RGB budget")
+        workers = updated.gsplat_train_workers
+        if workers is not None and (type(workers) is not int or not 1 <= workers <= 12):
+            raise ValueError("gsplat_train_workers must be an integer between 1 and 12")
         if updated.vggt_query_frames > updated.max_frames:
             raise ValueError("vggt_query_frames cannot exceed max_frames")
         if updated.colmap_camera_model not in {"SIMPLE_RADIAL", "OPENCV", "PINHOLE", "SIMPLE_PINHOLE"}:
             raise ValueError("colmap_camera_model must be SIMPLE_RADIAL, OPENCV, PINHOLE, or SIMPLE_PINHOLE")
+        if updated.colmap_mapper not in ("incremental", "global"):
+            raise ValueError("colmap_mapper must be incremental or global")
         if (
             not isinstance(updated.colmap_mvs_max_image_size, int)
             or isinstance(updated.colmap_mvs_max_image_size, bool)

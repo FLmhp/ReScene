@@ -1,3 +1,5 @@
+import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -5,7 +7,7 @@ import pytest
 from PIL import Image
 
 from rescene.pipeline import _ensure_downsampled_images
-from rescene.preprocess import classify_input, preprocess_input
+from rescene.preprocess import InvalidInputManifest, classify_input, preprocess_input, relocate_selected_images
 
 
 def _pattern(path: Path, offset: int = 0, size: tuple[int, int] = (32, 24)) -> None:
@@ -90,6 +92,69 @@ def test_downsampled_images_for_gsplat_fallback(tmp_path: Path) -> None:
 
     with Image.open(tmp_path / "images_2" / "frame.jpg") as image:
         assert image.size == (20, 10)
+
+
+def test_downsample_cache_fills_an_interrupted_directory(tmp_path: Path) -> None:
+    images = tmp_path / "images"
+    images.mkdir()
+    _pattern(images / "first.jpg", offset=1)
+    _pattern(images / "second.jpg", offset=2)
+    interrupted = tmp_path / "images_2"
+    interrupted.mkdir()
+    _pattern(interrupted / "first.jpg", size=(16, 12))
+
+    _ensure_downsampled_images(tmp_path, 2)
+
+    for name in ("first.jpg", "second.jpg"):
+        with Image.open(tmp_path / "images_2" / name) as image:
+            assert image.size == (16, 12)
+    manifest = json.loads((tmp_path / "images_2.json").read_text(encoding="utf-8"))
+    assert set(manifest["sources"]) == {"first.jpg", "second.jpg"}
+    assert not (tmp_path / f"images_2.partial-{os.getpid()}").exists()
+
+
+def test_downsample_cache_is_reused_and_rebuilt_when_inputs_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rescene.pipeline as pipeline
+
+    images = tmp_path / "images"
+    images.mkdir()
+    _pattern(images / "frame.jpg", offset=3)
+    _ensure_downsampled_images(tmp_path, 2)
+    cached = (tmp_path / "images_2" / "frame.jpg").read_bytes()
+
+    monkeypatch.setattr(pipeline.Image, "open", lambda *args, **kwargs: pytest.fail("cache was not reused"))
+    _ensure_downsampled_images(tmp_path, 2)
+    monkeypatch.undo()
+
+    _pattern(images / "frame.jpg", offset=4)
+    _ensure_downsampled_images(tmp_path, 2)
+    assert (tmp_path / "images_2" / "frame.jpg").read_bytes() != cached
+
+
+def test_downsample_cache_rebuilds_a_truncated_output(tmp_path: Path) -> None:
+    images = tmp_path / "images"
+    images.mkdir()
+    _pattern(images / "frame.jpg", offset=5)
+    _ensure_downsampled_images(tmp_path, 2)
+    intact = (tmp_path / "images_2" / "frame.jpg").read_bytes()
+    (tmp_path / "images_2" / "frame.jpg").write_bytes(intact[:40])
+
+    _ensure_downsampled_images(tmp_path, 2)
+
+    assert (tmp_path / "images_2" / "frame.jpg").read_bytes() == intact
+
+
+def test_downsample_factor_one_writes_nothing(tmp_path: Path) -> None:
+    images = tmp_path / "images"
+    images.mkdir()
+    _pattern(images / "frame.jpg")
+
+    _ensure_downsampled_images(tmp_path, 1)
+
+    assert not (tmp_path / "images_1").exists()
+    assert not (tmp_path / "images_1.json").exists()
 
 
 def test_global_duplicates_and_coverage_selection_are_deterministic(tmp_path: Path) -> None:
@@ -274,6 +339,27 @@ def test_registered_photometric_split_rejects_mismatches() -> None:
         registered_split(manifest, ["000000.jpg", "000001.jpg"], Path("."))
 
 
+def test_worker_split_accepts_documented_missing_views_without_leakage(tmp_path: Path) -> None:
+    from rescene.gsplat_runner import registered_split
+
+    manifest = {
+        "frames": [
+            {"selected": True, "validation": i > 0, "file": str(tmp_path / "images" / f"{i}.jpg"), "source_id": str(i)}
+            for i in range(5)
+        ]
+    }
+    registered = ["0.jpg", "1.jpg", "4.jpg"]
+    with pytest.raises(ValueError, match="missing"):
+        registered_split(manifest, registered, tmp_path)
+    (tmp_path / "benchmark.json").write_text('{"source": "worker"}', encoding="utf-8")
+    split = registered_split(manifest, registered, tmp_path)
+    assert split["train_source_ids"] == ["0"]
+    assert split["validation_source_ids"] == ["1", "4"]
+    assert split["missing_validation_source_ids"] == ["2", "3"]
+    with pytest.raises(ValueError, match="missing"):
+        registered_split(manifest, registered[:2], tmp_path)
+
+
 def test_frozen_validation_survives_duplicate_filtering(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -294,3 +380,43 @@ def test_frozen_validation_survives_duplicate_filtering(tmp_path: Path) -> None:
     assert captured[0]["selected"] is True and captured[0]["validation"] is True
     assert captured[0]["duplicate"] is True
     assert sum(frame["selected"] for frame in manifest["frames"]) == 6
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        b'{"frames":',
+        bytes([255]),
+        b"[]",
+        b"{}",
+        b'{"frames": {}}',
+        b'{"frames": [null]}',
+        b'{"frames": [{"selected": true}]}',
+        b'{"frames": [{"selected": true, "file": 42}]}',
+        b'{"frames": [{"selected": true, "file": ""}]}',
+    ],
+)
+def test_relocate_selected_images_rejects_invalid_manifest(tmp_path: Path, manifest: bytes) -> None:
+    manifest_path = tmp_path / "input_manifest.json"
+    manifest_path.write_bytes(manifest)
+
+    with pytest.raises(InvalidInputManifest):
+        relocate_selected_images(tmp_path)
+
+    assert manifest_path.read_bytes() == manifest
+
+
+def test_relocate_selected_images_preserves_legacy_fields(tmp_path: Path) -> None:
+    import json
+
+    image = tmp_path / "images" / "view.jpg"
+    image.parent.mkdir()
+    image.touch()
+    manifest_path = tmp_path / "input_manifest.json"
+    manifest = {"frames": [{"selected": True, "file": "/previous/images/view.jpg"}, {"selected": False}], "fixture": 1}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    relocate_selected_images(tmp_path)
+
+    manifest["frames"][0]["file"] = str(image)
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == manifest

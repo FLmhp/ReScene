@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
+import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -14,7 +15,9 @@ import time
 from pathlib import Path
 
 ROOT = Path("/root/ReScene")
+SOURCE = Path(os.environ.get("RESCENE_EXPERIMENT_SOURCE", ROOT))
 DATA = Path("/root/autodl-tmp/rescene")
+SHARED = Path("/root/autodl-fs")
 RUNS = Path(os.environ.get("RESCENE_DELIVERY_ROOT", DATA / "delivery-v4"))
 GPU_BOUNDS = {"fast": 2400, "balanced": 5400, "quality": 9000}
 STALL_BOUNDS = {"fast": 900, "balanced": 1800, "quality": 3600}
@@ -78,7 +81,7 @@ def environment() -> dict[str, str]:
     env = os.environ.copy()
     env.update(
         {
-            "RESCENE_ROOT": str(ROOT),
+            "RESCENE_ROOT": str(SOURCE),
             "CUDA_VISIBLE_DEVICES": "0",
             "OMP_NUM_THREADS": "12",
             "MKL_NUM_THREADS": "12",
@@ -89,6 +92,8 @@ def environment() -> dict[str, str]:
             "HF_HUB_OFFLINE": "1",
         }
     )
+    if SOURCE != ROOT:
+        env["PYTHONPATH"] = str(SOURCE / "src")
     env["LD_LIBRARY_PATH"] = (
         f"{DATA}/runtime/system-libs/usr/lib/x86_64-linux-gnu:"
         f"{ROOT}/.venv/lib/python3.11/site-packages/nvidia/cuda_runtime/lib:"
@@ -114,6 +119,20 @@ def free_bytes() -> int:
     return shutil.disk_usage(DATA).free
 
 
+def gpu_utilization() -> int | None:
+    """Read GPU activity as telemetry without using it to determine ownership."""
+    try:
+        output = subprocess.check_output(
+            ["nvidia-smi", "--id=0", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return int(output) if output.isdecimal() else None
+
+
 def require_free(threshold: int, context: str) -> None:
     available = free_bytes()
     if available < threshold:
@@ -131,35 +150,119 @@ def running_stage(run: Path) -> str | None:
     return None
 
 
-def require_idle_worker() -> None:
+def worker_state() -> tuple[bool, bool]:
     completed = subprocess.run(
         [str(ROOT / "workerctl"), "status"], capture_output=True, text=True, timeout=30, check=False
     )
-    output = f"{completed.stdout}{completed.stderr}".strip()
-    if completed.returncode != 0 or "running" not in output or "drain=no" not in output:
-        raise RuntimeError(f"workerctl status is not 'running drain=no': {output!r}")
+    output = completed.stdout.splitlines()
+    first = output[0].strip() if output else ""
+    if completed.returncode != 0:
+        raise RuntimeError(f"workerctl status failed: {completed.stderr}")
+    if first == "stopped":
+        return False, (DATA / "state" / "drain").exists()
+    match = re.fullmatch(r"running pid=([1-9][0-9]*) drain=(yes|no)", first)
+    if not match:
+        raise RuntimeError(f"Cannot determine worker ownership: {first!r}")
+    return True, match.group(2) == "yes"
+
+
+def require_idle_worker() -> None:
     processes = gpu_processes()
     if processes:
         raise RuntimeError(f"external GPU compute PIDs present before start: {sorted(processes)}")
 
 
-def monitor(trial: dict[str, object]) -> dict[str, object]:
+def trial_requirement(trial: dict, deadline: float | None, free: int, now: float) -> str | None:
+    expected = trial.get("expected_write_bytes", 0)
+    if free < max(10 * 1024**3, (expected * 13 + 9) // 10):
+        return "insufficient_disk"
+    estimate = trial.get("wall_estimate_seconds", GPU_BOUNDS[trial["profile"]])
+    if deadline is not None and now + estimate >= deadline:
+        return "insufficient_time"
+    return None
+
+
+def sha256_spec(trial: dict) -> str:
+    return hashlib.sha256(Path(trial["spec"]).read_bytes()).hexdigest()
+
+
+def require_archive_mount() -> None:
+    if archive := os.environ.get("RESCENE_EXPERIMENT_ARCHIVE"):
+        shared = SHARED.resolve()
+        target = Path(archive).resolve()
+        if not target.is_relative_to(shared) or not shared.is_mount():
+            raise RuntimeError("Experiment archive requires the mounted /root/autodl-fs volume")
+
+
+def trial_command(trial: dict) -> list[str]:
+    return [
+        sys.executable,
+        "-u",
+        str(SOURCE / "scripts" / "route_experiments_v3.py"),
+        str(trial["spec"]),
+        str(RUNS / "runs" / trial["name"]),
+        "--repeat",
+        str(trial["repeat"]),
+    ]
+
+
+def stop_trial(process: subprocess.Popen, pgid: int | None) -> None:
+    """Stop only the session started for this trial and confirm it is gone."""
+    if os.name == "nt":
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        return
+    if pgid is None or pgid != process.pid or pgid <= 1:
+        raise RuntimeError("Cannot confirm trial process group ownership")
+
+    def exists() -> bool:
+        try:
+            os.killpg(pgid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except OSError as error:
+            raise RuntimeError(f"Cannot confirm trial process group {pgid} exit") from error
+
+    def wait_gone(seconds: float) -> bool:
+        deadline = time.monotonic() + seconds
+        while exists():
+            process.poll()  # Reap the leader, which otherwise keeps the group alive.
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.1)
+        return True
+
+    if not exists():
+        return
+    for sig, timeout in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        except OSError as error:
+            raise RuntimeError(f"Cannot signal trial process group {pgid}") from error
+        if wait_gone(timeout):
+            return
+    raise RuntimeError(f"Trial process group {pgid} did not exit; refusing next trial")
+
+
+def monitor(trial: dict[str, object], deadline: float | None = None) -> dict[str, object]:
     name = str(trial["name"])
     run = RUNS / "runs" / name
     log_path = RUNS / "logs" / f"{name}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    if log_path.exists():
+    if log_path.exists() and not trial.get("resume"):
         raise FileExistsError(log_path)
-    command = [
-        str(ROOT / ".venv/bin/python"),
-        "-u",
-        str(ROOT / "scripts" / "route_experiments_v3.py"),
-        str(trial["spec"]),
-        str(run),
-        "--repeat",
-        str(trial["repeat"]),
-    ]
-    with log_path.open("xb") as log:
+    command = trial_command(trial)
+    if trial.get("resume"):
+        command.append("--resume")
+    with log_path.open("ab" if trial.get("resume") else "xb") as log:
         process = subprocess.Popen(
             command, cwd=ROOT, env=environment(), stdout=log, stderr=subprocess.STDOUT, start_new_session=True
         )
@@ -169,7 +272,9 @@ def monitor(trial: dict[str, object]) -> dict[str, object]:
         warning = False
         peak = 0
         samples = 0
+        phase_samples: dict[str, dict[str, int]] = {}
         reason = None
+        failure = None
         foreign_seen: dict[int, int] = {}
         try:
             while process.poll() is None:
@@ -197,8 +302,21 @@ def monitor(trial: dict[str, object]) -> dict[str, object]:
                     del foreign_seen[pid]
                 peak = max(peak, used)
                 samples += 1
+                stage = running_stage(run)
+                if stage:
+                    phase = phase_samples.setdefault(stage, {"samples": 0, "peak_mib": 0, "utilization_sum": 0})
+                    phase["peak_mib"] = max(phase["peak_mib"], used)
+                    if samples % 10 == 1:
+                        utilization = gpu_utilization() if used and not foreign else 0
+                        if utilization is not None:
+                            phase["samples"] += 1
+                            phase["utilization_sum"] += utilization
                 if foreign:
                     reason = f"external GPU compute PIDs appeared: {foreign}"
+                if reason is None and deadline is not None and time.time() >= deadline:
+                    reason = "batch deadline reached"
+                if reason is None and free_bytes() < STOP_FREE_BYTES:
+                    reason = "data volume below emergency free-space threshold"
                 if samples % 30 == 1:
                     stages = {}
                     for path in (run / "stages").glob("*.json"):
@@ -225,65 +343,74 @@ def monitor(trial: dict[str, object]) -> dict[str, object]:
                     warning = True
                 if reason is None and now - start >= GPU_BOUNDS[str(trial["profile"])]:
                     reason = f"stage runtime bound {GPU_BOUNDS[str(trial['profile'])]}s exceeded"
+                    failure = "trial_timeout"
                 if reason is None and now - progress >= STALL_BOUNDS[str(trial["profile"])] and used == 0:
                     reason = (
                         f"no stage/log progress for {STALL_BOUNDS[str(trial['profile'])]}s with no owned GPU memory"
                     )
-                if (
-                    reason is None
-                    and now - progress >= STALL_SECONDS
-                    and used == 0
-                    and running_stage(run) in GPU_STALL_STAGES
-                ):
+                if reason is None and now - progress >= STALL_SECONDS and used == 0 and stage in GPU_STALL_STAGES:
                     reason = f"{STALL_SECONDS}s without progress in a GPU stage and no owned GPU memory"
                 if reason:
                     emit(f"ABORT [{name}]: {reason}")
-                    os.killpg(process.pid, signal.SIGTERM)
-                    try:
-                        process.wait(timeout=90)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
                     break
                 time.sleep(0.5)
         finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    process.wait(timeout=90)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait(timeout=10)
+            stop_trial(process, process.pid)
         result = {
             "trial": name,
             "profile": trial["profile"],
             "sample_interval_seconds": 0.5,
             "peak_owned_gpu_mib_sampled": peak,
             "gpu_samples": samples,
+            "phase_gpu": {
+                stage: {
+                    "samples": phase["samples"],
+                    "peak_owned_mib": phase["peak_mib"],
+                    "mean_utilization_percent": (
+                        round(phase["utilization_sum"] / phase["samples"], 2) if phase["samples"] else None
+                    ),
+                }
+                for stage, phase in phase_samples.items()
+            },
             "wall_seconds": round(time.monotonic() - start, 3),
             "returncode": process.wait(),
             "abort_reason": reason,
             "valid": reason is None and process.returncode == 0,
+            "spec_sha256": sha256_spec(trial),
         }
+        failure_path = run / "trial_failure.json"
+        if reason is None and process.returncode and failure_path.is_file():
+            failure = json.loads(failure_path.read_text(encoding="utf-8"))["reason"]
+        result["trial_failure"] = failure
         atomic_json(RUNS / "resources" / f"{name}.json", result)
         emit(json.dumps(result, sort_keys=True))
         return result
 
 
-def locked(plan: list[dict[str, object]]) -> int:
+def locked(plan: list[dict[str, object]], deadline: float | None = None) -> int:
     status: dict[str, object] = {"trials": {}, "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     code = 0
     for trial in plan:
         name = str(trial["name"])
         existing = RUNS / "resources" / f"{name}.json"
-        if existing.exists() and json.loads(existing.read_text()).get("valid") is True:
+        if existing.exists() and (previous := json.loads(existing.read_text())).get("valid") is True:
+            if previous.get("spec_sha256") != sha256_spec(trial):
+                raise ValueError(f"Existing valid result has a different or missing specification hash: {name}")
+            subprocess.run([*trial_command(trial), "--verify-completed"], check=True, cwd=ROOT)
             status["trials"][name] = "already-valid"
             continue
-        if free_bytes() < STOP_FREE_BYTES:
-            status["stopped"] = f"free space below {STOP_FREE_BYTES} bytes before {name}"
+        requirement = trial_requirement(trial, deadline, free_bytes(), time.time())
+        if requirement == "insufficient_time":
+            status["trials"][name] = requirement
+            code = code or 2
+            continue
+        if requirement is not None:
+            status["stopped"] = f"{requirement} before {name}"
             code = code or 2
             break
         try:
-            result = monitor(trial)
+            require_archive_mount()
+            result = monitor(trial, deadline)
         except Exception as error:
             status["trials"][name] = f"supervisor-error: {type(error).__name__}: {error}"
             code = code or 1
@@ -296,7 +423,8 @@ def locked(plan: list[dict[str, object]]) -> int:
             break
         if not result["valid"]:
             code = code or 1
-            break
+            if not result.get("trial_failure"):
+                break
     atomic_json(RUNS / "plan-status" / f"{Path(str(plan[0]['spec'])).parent.name}-{plan[0]['name']}.json", status)
     return code
 
@@ -305,24 +433,53 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("plan", type=Path)
     parser.add_argument("--locked", action="store_true")
+    parser.add_argument("--deadline-epoch", type=int)
     args = parser.parse_args()
     plan = json.loads(args.plan.read_text(encoding="utf-8"))
     if not plan:
         raise ValueError("Empty trial plan")
+    names = set()
     for trial in plan:
+        name = trial["name"]
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or name in names:
+            raise ValueError(f"Invalid or duplicate trial name: {name}")
+        names.add(name)
         if not Path(str(trial["spec"])).is_file():
             raise FileNotFoundError(trial["spec"])
+        if trial["profile"] not in GPU_BOUNDS or type(trial["repeat"]) is not int or trial["repeat"] < 1:
+            raise ValueError(f"Invalid trial profile or repeat: {name}")
+        for field in ("expected_write_bytes", "wall_estimate_seconds"):
+            if (args.deadline_epoch is not None or field in trial) and (
+                type(trial.get(field)) is not int or trial[field] <= 0
+            ):
+                raise ValueError(f"{name} requires positive {field}")
+    if args.deadline_epoch is not None and time.time() >= args.deadline_epoch:
+        return 2
+    require_archive_mount()
     (RUNS / "resources").mkdir(parents=True, exist_ok=True)
     (RUNS / "plan-status").mkdir(parents=True, exist_ok=True)
     (RUNS / "runs").mkdir(parents=True, exist_ok=True)
     if args.locked:
-        return locked(plan)
+        return locked(plan, args.deadline_epoch)
     require_free(MIN_FREE_BYTES, "start")
+    was_running, was_drained = worker_state()
     require_idle_worker()
-    subprocess.run([str(ROOT / "workerctl"), "drain"], check=True, timeout=20)
-    subprocess.run([str(ROOT / "workerctl"), "stop"], check=True, timeout=60)
     child = None
+    drain_owned = False
+    stop_started = False
+    stopped = False
+
+    def interrupted(signum: int, _frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    previous_handlers = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGTERM, signal.SIGHUP)}
     try:
+        if not was_drained:
+            drain_owned = True
+            subprocess.run([str(ROOT / "workerctl"), "drain"], check=True, timeout=20)
+        stop_started = True
+        subprocess.run([str(ROOT / "workerctl"), "stop"], check=True, timeout=60)
+        stopped = True
         child = subprocess.Popen(
             [
                 "flock",
@@ -335,30 +492,37 @@ def main() -> int:
                 __file__,
                 str(args.plan),
                 "--locked",
+                *(["--deadline-epoch", str(args.deadline_epoch)] if args.deadline_epoch is not None else []),
             ],
             cwd=ROOT,
             start_new_session=True,
         )
 
-        def interrupted(signum: int, _frame: object) -> None:
-            raise SystemExit(128 + signum)
-
-        signal.signal(signal.SIGTERM, interrupted)
-        signal.signal(signal.SIGHUP, interrupted)
         return child.wait()
     finally:
-        if child is not None and child.poll() is None:
-            children_file = Path(f"/proc/{child.pid}/task/{child.pid}/children")
-            children = children_file.read_text().split() if children_file.exists() else []
-            for pid in children or [str(child.pid)]:
-                with contextlib.suppress(ProcessLookupError):
-                    os.kill(int(pid), signal.SIGTERM)
-            try:
-                child.wait(timeout=120)
-            except subprocess.TimeoutExpired as error:
-                raise RuntimeError("Owned trials did not stop; refusing unsafe worker restart") from error
-        subprocess.run([str(ROOT / "workerctl"), "start"], check=True, timeout=60)
-        subprocess.run([str(ROOT / "workerctl"), "status"], check=True, timeout=30)
+        try:
+            if child is not None:
+                stop_trial(child, child.pid)
+            if stop_started and not stopped:
+                raise RuntimeError("Worker stop did not complete; leaving drain in place")
+            require_idle_worker()
+            running, _ = worker_state()
+            if stopped and running:
+                raise RuntimeError("Worker state changed externally; leaving drain in place")
+            for lock in (ROOT / ".gpu.lock", DATA / "state" / "worker.lock"):
+                probe = subprocess.run(["flock", "-n", str(lock), "true"], check=False, timeout=10)
+                if probe.returncode:
+                    raise RuntimeError(f"Lock is occupied: {lock}; leaving drain in place")
+            if was_running and stopped:
+                if was_drained:
+                    emit("restore=skipped reason=pre-existing-drain")
+                    raise RuntimeError("Cannot restart manually drained worker safely; leaving it stopped")
+                subprocess.run([str(ROOT / "workerctl"), "start"], check=True, timeout=60)
+            elif drain_owned:
+                (DATA / "state" / "drain").unlink(missing_ok=True)
+        finally:
+            for sig, handler in previous_handlers.items():
+                signal.signal(sig, handler)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,10 @@
 
 import { z } from "zod";
 
-export { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, stageLabel } from "./reconstruction-labels";
+export {
+  ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, jobErrorHint,
+  canRetryJob, queuedJobHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel,
+} from "./reconstruction-labels";
 
 export const ProfileSchema = z.enum(["fast", "balanced", "quality"]);
 export const JobStatusSchema = z.enum(["QUEUED", "LEASED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -72,6 +75,25 @@ export const ProjectDetailSchema = z.object({
   assets: z.array(AssetSchema),
   jobs: z.array(JobSchema),
 });
+
+export const ProjectSummarySchema = ProjectSchema.extend({
+  asset_count: z.number().int().nonnegative(),
+  job_count: z.number().int().nonnegative(),
+  has_active_jobs: z.boolean(),
+  cover: AssetSchema.nullable(),
+  latest_job: JobSchema.nullable(),
+});
+
+export const AssetPageSchema = z.object({ items: z.array(AssetSchema), next_cursor: z.string().nullable() });
+export const JobPageSchema = z.object({ items: z.array(JobSchema), next_cursor: z.string().nullable() });
+
+export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
+export type ProjectWorkspace = ProjectSummary & {
+  assets: Asset[];
+  jobs: Job[];
+  nextAssetCursor: string | null;
+  nextJobCursor: string | null;
+};
 
 export const StageEventSchema = z.object({
   stage: z.string(),
@@ -202,8 +224,16 @@ export const InvitationSchema = z.object({
 
 export const AddMemberResultSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("member"), user_id: z.string(), role: MemberRoleSchema }),
-  z.object({ status: z.literal("invited"), email: z.string(), role: MemberRoleSchema }),
+  z.object({
+    status: z.literal("invited"),
+    email: z.string(),
+    role: MemberRoleSchema,
+    claim_code: z.string().min(1).optional(),
+    expires_at: z.string().optional(),
+  }),
 ]);
+
+export const AcceptInvitationResultSchema = z.object({ project_id: z.string(), role: MemberRoleSchema });
 
 export const AdminUserSchema = z.object({
   id: z.string(),
@@ -291,6 +321,7 @@ export type JobStage = z.infer<typeof JobStageSchema>;
 export type AppNotification = z.infer<typeof NotificationSchema>;
 export type ProjectInvitation = z.infer<typeof InvitationSchema>;
 export type AddMemberResult = z.infer<typeof AddMemberResultSchema>;
+export type AcceptInvitationResult = z.infer<typeof AcceptInvitationResultSchema>;
 export type AdminUser = z.infer<typeof AdminUserSchema>;
 export type AuditEntry = z.infer<typeof AuditEntrySchema>;
 export type AdminUserPage = z.infer<typeof AdminUserPageSchema>;

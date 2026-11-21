@@ -1,46 +1,45 @@
 import { explainError, isOfflineError } from "@rescene/api-client";
-import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, stageLabel } from "@rescene/schemas";
-import type { Asset, MemberRole, Profile, ProjectDetail, ProjectMember } from "@rescene/schemas";
+import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
+import type { Asset, MemberRole, Profile, ProjectWorkspace, ProjectMember } from "@rescene/schemas";
 import * as DocumentPicker from "expo-document-picker";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 
-import { client } from "../api";
+import { assertQueueOwner, client, currentQueueOwner, isQueueOwnerCurrent } from "../api";
 import { AssetThumbnail } from "../AssetThumbnail";
-import { enqueue, loadQueue, replayQueued, saveQueue } from "../queue";
+import { discardQueued, enqueue, replayQueued, uploadQueued } from "../queue";
 import { useAppearance } from "../appearance";
 import type { Palette } from "@rescene/design-tokens";
-import { type PickedFile, uploadFile } from "../upload";
+import { isQueuedMediaMissing, MediaPreflightError, mediaType, newIdempotencyKey, QUEUE_PAUSED, summarizeMediaWarnings, uploadErrorCode, type QueueOwner } from "@rescene/uploader";
+import { inspectPickedFiles, isStorageShortage, persistPickedFile, removeManagedMedia, type PickedFile } from "../upload";
 import { Button, Card, ErrorText, Field, Screen, useTextStyles } from "../ui";
 
 const PROFILES: Profile[] = ["fast", "balanced", "quality"];
 const ROLE_LABEL = { owner: "所有者", admin: "管理员", member: "成员", viewer: "只读" };
-type Upload = { id: string; file: PickedFile; progress: number; status: "uploading" | "failed" | "done"; error?: string };
+type Upload = { owner: QueueOwner; id: string; file: PickedFile; progress: number; status: "uploading" | "failed" | "done"; error?: string };
 type TimelineRow = { key: string; stage: string; status: string; progress: number; message?: string | null; metrics: Record<string, unknown> };
 
-// Asset responses contain filenames but not MIME types.
-function mediaType(asset: Asset): "image" | "video" | null {
-  const extension = asset.filename.split(".").pop()?.toLowerCase();
-  if (extension && ["jpg", "jpeg", "png"].includes(extension)) return "image";
-  if (extension && ["mp4", "mov", "mkv", "avi", "webm", "m4v"].includes(extension)) return "video";
-  return null;
-}
+export type ProjectDraft = { assets: Asset[]; profile: Profile };
 
-export function ProjectScreen({ project, onJob, onBack }: {
+export function ProjectScreen({ project, draft, onJob, onBack }: {
   project: { id: string; name: string };
-  onJob: (jobId: string) => void;
+  draft?: ProjectDraft;
+  onJob: (jobId: string, draft: ProjectDraft) => void;
   onBack: () => void;
 }) {
   const { theme } = useAppearance();
   const textStyles = useTextStyles();
   const styles = makeStyles(theme);
   const [showManagement, setShowManagement] = useState(false);
-  const [visibleAssets, setVisibleAssets] = useState(24);
+  const [assetPages, setAssetPages] = useState([""]);
+  const [jobPages, setJobPages] = useState([""]);
+  const [pageLoading, setPageLoading] = useState(false);
+  const requestId = useRef(0);
   const [workerOnline, setWorkerOnline] = useState<boolean | null>(null);
-  const [detail, setDetail] = useState<ProjectDetail | null>(null);
+  const [detail, setDetail] = useState<ProjectWorkspace | null>(null);
   const [members, setMembers] = useState<ProjectMember[]>([]);
-  const [selected, setSelected] = useState<string[]>([]);
-  const [profile, setProfile] = useState<Profile>("balanced");
+  const [selected, setSelected] = useState<Asset[]>(draft?.assets ?? []);
+  const [profile, setProfile] = useState<Profile>(draft?.profile ?? "balanced");
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [name, setName] = useState(project.name);
   const [email, setEmail] = useState("");
@@ -49,24 +48,48 @@ export function ProjectScreen({ project, onJob, onBack }: {
   const [creating, setCreating] = useState(false);
   const mutationFlight = useRef(false);
   const jobFlight = useRef(false);
-  const uploadFlights = useRef(new Set<string>());
+  const jobAttempt = useRef<{ signature: string; key: string } | null>(null);
   const uploadSequence = useRef(0);
+  const picking = useRef(false);
+  const uploadLock = useRef(false);
+  const [checkingMedia, setCheckingMedia] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const replayed = useRef(false);
   const [timeline, setTimeline] = useState<TimelineRow[]>([]);
   const [inviteNotice, setInviteNotice] = useState("");
+  const [issuedInvitation, setIssuedInvitation] = useState<{ email: string; code: string } | null>(null);
+  const invitationContext = useRef(0);
   const [error, setError] = useState("");
 
+  useEffect(() => {
+    setIssuedInvitation(null);
+    return () => { invitationContext.current += 1; };
+  }, [project.id, showManagement]);
+  useEffect(() => {
+    if (!issuedInvitation) return;
+    const timer = setTimeout(() => setIssuedInvitation(null), 120_000);
+    return () => clearTimeout(timer);
+  }, [issuedInvitation]);
+
   const load = useCallback(async () => {
+    const request = ++requestId.current;
+    setPageLoading(true);
     try {
-      const [next, nextMembers] = await Promise.all([client.getProject(project.id), client.listMembers(project.id)]);
+      const [next, nextMembers] = await Promise.all([
+        client.getWorkspace(project.id, assetPages[assetPages.length - 1], jobPages[jobPages.length - 1]),
+        client.listMembers(project.id),
+      ]);
+      if (request !== requestId.current) return;
       setDetail(next);
       setName(next.name);
       setMembers(nextMembers);
-      setSelected((current) => current.filter((id) => next.assets.some((asset) => asset.id === id && asset.status === "READY")));
+      setSelected((current) => reconcileWorkspaceSelection(current, next.assets));
     } catch (reason) {
-      setError(explainError(reason, "加载失败"));
+      if (request === requestId.current) setError(explainError(reason, "加载失败"));
+    } finally {
+      if (request === requestId.current) setPageLoading(false);
     }
-  }, [project.id]);
+  }, [assetPages, jobPages, project.id]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     let active = true;
@@ -82,10 +105,14 @@ export function ProjectScreen({ project, onJob, onBack }: {
   useEffect(() => {
     if (replayed.current) return;
     replayed.current = true;
-    void replayQueued(client, () => undefined).then(({ uploaded }) => { if (uploaded) void load(); }).catch(() => undefined);
+    const owner = currentQueueOwner();
+    if (!owner) return;
+    void replayQueued(owner, () => undefined).then(({ uploaded }) => {
+      if (isQueueOwnerCurrent(owner) && uploaded) void load();
+    }).catch(() => undefined);
   }, [load]);
 
-  const latestJobId = detail?.jobs[0]?.id;
+  const latestJobId = detail?.latest_job?.id;
   useEffect(() => {
     if (!latestJobId) { setTimeline([]); return; }
     let active = true;
@@ -107,83 +134,148 @@ export function ProjectScreen({ project, onJob, onBack }: {
     finally { mutationFlight.current = false; setBusy(false); }
   }
 
-  async function runUpload(id: string, file: PickedFile) {
-    if (uploadFlights.current.has(id)) return;
-    uploadFlights.current.add(id);
+  async function runUpload(owner: QueueOwner, id: string) {
+    if (!isQueueOwnerCurrent(owner)) return;
     setUploads((current) => current.map((item) => item.id === id ? { ...item, status: "uploading", progress: 0, error: undefined } : item));
-    const queued = (await loadQueue()).find((item) => item.kind === "upload" && item.id === id);
     try {
-      await uploadFile(client, project.id, file, (progress) => setUploads((current) => current.map((item) => item.id === id ? { ...item, progress } : item)), {
-        assetId: queued?.kind === "upload" ? queued.assetId : undefined,
-        onAsset: async (assetId) => {
-          const entries = await loadQueue();
-          await saveQueue(entries.map((item) => (item.kind === "upload" && item.id === id ? { ...item, assetId } : item)));
-        },
-      });
-      const rest = (await loadQueue()).filter((item) => item.id !== id);
-      await saveQueue(rest);
+      await uploadQueued(owner, id, (progress) => setUploads((current) => current.map((item) => item.id === id ? { ...item, progress } : item)));
+      if (!isQueueOwnerCurrent(owner)) return;
       setUploads((current) => current.map((item) => item.id === id ? { ...item, status: "done", progress: 100 } : item));
       await load();
     } catch (reason) {
-      setUploads((current) => current.map((item) => item.id === id ? { ...item, status: "failed", error: isOfflineError(reason) ? "已保存，联网后自动重试。" : explainError(reason, "上传失败") } : item));
-    } finally { uploadFlights.current.delete(id); }
+      if (!isQueueOwnerCurrent(owner)) return;
+      const error = isQueuedMediaMissing(reason)
+        ? "本地素材副本已丢失，请移除后重新选择。"
+        : isStorageShortage(reason) ? "设备存储不足，请清理空间后重试。"
+        : uploadErrorCode(reason) === "asset.upload_hash_mismatch"
+          ? "本地文件与已上传内容不一致，请移除后重新选择该文件。"
+          : isOfflineError(reason) ? "已保存，联网后自动重试。" : explainError(reason, "上传失败");
+      setUploads((current) => current.map((item) => item.id === id ? { ...item, status: "failed", error } : item));
+    }
+  }
+
+  /**
+   * One whole-file body is built per upload, so a batch must not start them
+   * together: 50 selected videos would need 50x the file size in cache.
+   */
+  async function runUploads(owner: QueueOwner, ids: string[]) {
+    if (uploadLock.current || !isQueueOwnerCurrent(owner)) return;
+    uploadLock.current = true;
+    setUploading(true);
+    try {
+      for (const id of ids) {
+        if (!isQueueOwnerCurrent(owner)) return;
+        await runUpload(owner, id);
+      }
+    } finally {
+      uploadLock.current = false;
+      setUploading(false);
+    }
+  }
+
+  async function abandonUpload(item: Upload) {
+    try {
+      await discardQueued(item.owner, item.id);
+      setUploads((current) => current.filter((row) => row.id !== item.id));
+    } catch (reason) { setError(explainError(reason, "移除失败")); }
   }
 
   async function pickAndUpload() {
+    if (picking.current || uploadLock.current || !canWrite) return;
+    const owner = currentQueueOwner();
+    if (!owner) { setError(QUEUE_PAUSED); return; }
+    picking.current = true;
+    setCheckingMedia(true);
+    const queuedIds: string[] = [];
     try {
+      setError("");
       const result = await DocumentPicker.getDocumentAsync({ multiple: true, type: ["image/*", "video/*"], copyToCacheDirectory: true });
       if (result.canceled) return;
-      for (const asset of result.assets) {
-        if (!asset.size) { setError(`${asset.name} 无法读取文件大小，请重新选择`); continue; }
-        const file: PickedFile = { uri: asset.uri, name: asset.name, mimeType: asset.mimeType ?? "application/octet-stream", size: asset.size };
-        const id = `${Date.now()}-${++uploadSequence.current}`;
-        await enqueue({ kind: "upload", id, projectId: project.id, uri: file.uri, name: file.name, mimeType: file.mimeType, size: file.size, createdAt: Date.now() });
-        setUploads((current) => [...current, { id, file, progress: 0, status: "uploading" }]);
-        void runUpload(id, file);
+      const files = result.assets.map((asset): PickedFile => ({
+        uri: asset.uri, name: asset.name, mimeType: mediaType(asset.name) ?? "application/octet-stream", size: asset.size ?? 0,
+      }));
+      const warnings = await inspectPickedFiles(files);
+      assertQueueOwner(owner);
+      if (warnings.length) {
+        const confirmed = await new Promise<boolean>((resolve) => Alert.alert("素材检查提示", summarizeMediaWarnings(warnings), [
+          { text: "重新选择", style: "cancel", onPress: () => resolve(false) },
+          { text: "仍然上传", onPress: () => resolve(true) },
+        ], { cancelable: true, onDismiss: () => resolve(false) }));
+        if (!confirmed) return;
       }
-    } catch (reason) { setError(explainError(reason, "选择文件失败")); }
+      for (const file of files) {
+        const id = `${Date.now()}-${++uploadSequence.current}`;
+        let stored: { uri: string; size: number };
+        try {
+          stored = await persistPickedFile(owner, id, file);
+        } catch (reason) {
+          if (isQueueOwnerCurrent(owner)) setError(explainError(reason, `无法保存 ${file.name}，请检查设备存储后重新选择。`));
+          continue;
+        }
+        try {
+          await enqueue(owner, { kind: "upload", id, projectId: project.id, uri: stored.uri, name: file.name, mimeType: file.mimeType, size: stored.size, managed: true, createdAt: Date.now() });
+        } catch (reason) {
+          await removeManagedMedia(stored.uri);
+          throw reason;
+        }
+        if (!isQueueOwnerCurrent(owner)) return;
+        setUploads((current) => [...current, { owner, id, file: { ...file, uri: stored.uri, size: stored.size }, progress: 0, status: "uploading" }]);
+        queuedIds.push(id);
+      }
+      if (queuedIds.length) {
+        setCheckingMedia(false);
+        await runUploads(owner, queuedIds);
+      }
+    } catch (reason) { if (isQueueOwnerCurrent(owner)) setError(reason instanceof MediaPreflightError ? reason.message : explainError(reason, "选择文件失败")); }
+    finally { picking.current = false; setCheckingMedia(false); }
   }
 
   async function createJob() {
     if (jobFlight.current || !canWrite || !detail || !selected.length) return;
-    const assets = selected.map((id) => detail.assets.find((asset) => asset.id === id));
-    const types = assets.map((asset) => asset && mediaType(asset));
-    const singleVideo = types.length === 1 && types[0] === "video";
-    const imagesOnly = types.every((type) => type === "image");
-    if (assets.some((asset) => !asset || asset.status !== "READY") || !(singleVideo || imagesOnly)) {
-      setError("请选择一组已就绪的图片，或一个视频。");
-      return;
-    }
     jobFlight.current = true;
     setCreating(true);
     setError("");
-    try { const job = await client.createJob(project.id, profile, selected); onJob(job.id); }
-    catch (reason) { setError(explainError(reason, "创建任务失败")); }
+    const ids = selected.map((asset) => asset.id);
+    const signature = JSON.stringify([profile, [...ids].sort()]);
+    const attempt = jobAttempt.current?.signature === signature ? jobAttempt.current : { signature, key: newIdempotencyKey() };
+    jobAttempt.current = attempt;
+    try {
+      const job = await client.createJob(project.id, profile, ids, attempt.key);
+      jobAttempt.current = null;
+      onJob(job.id, { assets: selected, profile });
+    } catch (reason) { setError(explainError(reason, "创建任务失败")); }
     finally { jobFlight.current = false; setCreating(false); }
   }
 
-  function toggleAsset(asset: Asset) {
-    if (asset.status !== "READY") return;
-    if (selected.includes(asset.id)) { setSelected((current) => current.filter((id) => id !== asset.id)); return; }
-    const type = mediaType(asset);
-    const first = detail?.assets.find((item) => item.id === selected[0]);
-    const currentType = first ? mediaType(first) : null;
-    if (!type || (selected.length > 0 && (type === "video" || currentType === "video" || currentType !== type))) {
-      setError("请选择一组图片，或一个视频。");
-      return;
-    }
-    setError("");
-    setSelected((current) => [...current, asset.id]);
+  function choose(assets: Asset[], imagesOnly = false) {
+    try { setSelected(selectWorkspaceAssets(selected, assets, imagesOnly)); setError(""); }
+    catch (reason) { Alert.alert("无法选择素材", explainError(reason, "请检查已选素材")); }
+  }
+
+  function pageControls(label: string, pages: string[], next: string | null, setPages: (pages: string[]) => void) {
+    if (pages.length === 1 && !next) return null;
+    const move = (cursor?: string) => { setPageLoading(true); setPages(cursor ? [...pages, cursor] : pages.slice(0, -1)); };
+    return <View style={styles.rowHeader}>
+      <Button tone="ghost" label={`${label}上一页`} disabled={pageLoading || pages.length === 1} onPress={() => move()} />
+      <Text style={textStyles.muted}>第 {pages.length} 页</Text>
+      <Button tone="ghost" label={`${label}下一页`} disabled={pageLoading || !next} onPress={() => { if (next) move(next); }} />
+    </View>;
   }
 
   return (
-    <Screen scroll title={detail?.name ?? project.name}>
+    <Screen scroll contentPaddingBottom={110} title={detail?.name ?? project.name} footer={canWrite ? <View style={styles.selectionBar}>
+      <View style={styles.selectionText}>
+        <Text accessibilityLiveRegion="polite" style={textStyles.body}>已选 {selected.length} 个 · {(selectionBytes(selected) / 1024 ** 2).toFixed(1)} MiB</Text>
+        <Text style={textStyles.muted}>{RECONSTRUCTION_PROFILES[profile].title}{workerOnline === false ? " · 离线排队" : ""}</Text>
+      </View>
+      <Button disabled={creating || !selected.length} label={creating ? "正在创建…" : "开始重建"} onPress={createJob} />
+    </View> : null}>
       {error ? <Card>
         <ErrorText>{error}</ErrorText>
         <Button label="刷新项目" onPress={() => void load()} tone="ghost" />
       </Card> : null}
         {detail ? <View style={styles.projectHeader}>
-          <Text style={textStyles.muted}>{ROLE_LABEL[detail.effective_role]} · {detail.assets.length} 个素材 · {detail.jobs.length} 个任务</Text>
+          <Text style={textStyles.muted}>{ROLE_LABEL[detail.effective_role]} · {detail.asset_count} 个素材 · {detail.job_count} 个任务</Text>
           <Pressable accessibilityRole="button" accessibilityState={{ expanded: showManagement }} style={styles.action} onPress={() => setShowManagement((value) => !value)}>
             <Text style={styles.link}>{showManagement ? "收起管理" : canManage ? "项目管理" : "查看成员"}</Text>
           </Pressable>
@@ -210,15 +302,23 @@ export function ProjectScreen({ project, onJob, onBack }: {
           </View>)}
           {canManage ? <>
             <Field label="成员邮箱" value={email} onChangeText={setEmail} />
-            <Pressable onPress={() => setRole(role === "member" ? "viewer" : "member")}><Text style={textStyles.body}>角色：{role}（点击切换）</Text></Pressable>
-            <Button disabled={busy || !email.trim()} label="添加成员" onPress={() => void mutate(async () => {
-              const added = await client.addMember(project.id, email.trim(), role);
-              setEmail("");
-              if (added.status === "invited") { setInviteNotice(`已邀请 ${added.email}，对方注册后自动加入。`); return; }
+            <Pressable accessibilityRole="button" style={styles.roleChoice} onPress={() => setRole(role === "member" ? "viewer" : "member")}><Text style={textStyles.body}>角色：{ROLE_LABEL[role]}（点击切换）</Text></Pressable>
+            <Button disabled={busy || !email.trim()} label="签发邀请" onPress={() => void mutate(async () => {
+              const context = invitationContext.current;
+              setIssuedInvitation(null);
               setInviteNotice("");
-              await load();
-            })} />
+              const added = await client.addMember(project.id, email.trim(), role);
+              if (context !== invitationContext.current) return;
+              setEmail("");
+              if (added.status === "member") setInviteNotice("该账号已是项目成员，可在成员列表调整角色。");
+              else if (added.claim_code) setIssuedInvitation({ email: added.email, code: added.claim_code });
+              else setInviteNotice("当前服务端版本无法提供领取码。请在升级后重新签发邀请。");
+            }, "签发邀请失败")} />
             {inviteNotice ? <Text accessibilityLiveRegion="polite" style={textStyles.muted}>{inviteNotice}</Text> : null}
+            {issuedInvitation ? <View>
+              <Text accessibilityLiveRegion="polite" style={textStyles.body}>请将领取码交给 {issuedInvitation.email}。领取码 7 天内有效，仅可使用一次。</Text>
+              <Text selectable style={textStyles.body}>{issuedInvitation.code}</Text>
+            </View> : null}
           </> : null}
         </Card> : null}
         {detail ? <Card>
@@ -226,45 +326,48 @@ export function ProjectScreen({ project, onJob, onBack }: {
             <Text accessibilityRole="header" style={textStyles.heading}>素材</Text>
             {canWrite ? <Text style={styles.link}>已选 {selected.length} 个</Text> : null}
           </View>
-          {canWrite && detail.assets.length > 0 ? <View style={styles.rowHeader}>
-            <Button tone="ghost" label="全选图片" onPress={() => setSelected(detail.assets.filter((asset) => asset.status === "READY" && mediaType(asset) === "image").map((asset) => asset.id))} />
-            <Button tone="ghost" disabled={!selected.length} label="清空选择" onPress={() => setSelected([])} />
-          </View> : null}
           {canWrite ? <>
-            <Button label="选择图片或视频上传" onPress={pickAndUpload} />
+            <Button tone="ghost" disabled={checkingMedia || uploading} label={checkingMedia ? "正在检查素材…" : uploading ? "正在上传…" : "选择图片或视频上传"} onPress={pickAndUpload} />
             <Text style={textStyles.muted}>一组 JPG / PNG 图片或一个视频。单文件 ≤ 5 GiB，单任务 ≤ 8 GiB。</Text>
           </> : null}
+          {canWrite && detail.assets.length > 0 ? <View style={styles.rowHeader}>
+            <Button tone="ghost" label="全选本页图片" onPress={() => choose(detail.assets, true)} />
+            <Button tone="ghost" disabled={!selected.length} label="清空选择" onPress={() => setSelected([])} />
+          </View> : null}
           {uploads.map((item) => <View key={item.id}>
             <Text style={textStyles.muted}>{item.file.name} · {item.progress}% · {item.status === "failed" ? "失败" : item.status === "done" ? "完成" : "上传中"}</Text>
             {item.error ? <Text style={textStyles.error}>{item.error}</Text> : null}
-            {item.status === "failed" ? <Button label="重试上传" onPress={() => void runUpload(item.id, item.file)} tone="ghost" /> : null}
+            {item.status === "failed" ? <Button disabled={uploading} label="重试上传" onPress={() => void runUploads(item.owner, [item.id])} tone="ghost" /> : null}
+            {item.status === "failed" ? <Button label="移除此项" onPress={() => void abandonUpload(item)} tone="ghost" /> : null}
           </View>)}
           {!detail.assets.length && !uploads.length ? <Text style={textStyles.muted}>暂无素材</Text> : null}
-          {detail.assets.slice(0, visibleAssets).map((asset) => <View key={asset.id} style={[styles.asset, selected.includes(asset.id) && styles.selected]}>
+          <View style={styles.assetGrid}>
+          {detail.assets.map((asset) => <View key={asset.id} style={[styles.asset, selected.some((item) => item.id === asset.id) && styles.selected]}>
             <AssetThumbnail asset={asset} />
             <Pressable
               accessibilityRole={canWrite ? "checkbox" : undefined}
-              accessibilityState={canWrite ? { checked: selected.includes(asset.id), disabled: asset.status !== "READY" } : undefined}
+              accessibilityState={canWrite ? { checked: selected.some((item) => item.id === asset.id), disabled: asset.status !== "READY" } : undefined}
               disabled={!canWrite || asset.status !== "READY"}
-              onPress={() => toggleAsset(asset)}
+              onPress={() => choose([asset])}
               style={styles.assetChoice}
             >
-              <Text style={textStyles.body}>{asset.filename}</Text>
-              <Text style={textStyles.muted}>{selected.includes(asset.id) ? "已选" : ASSET_STATUS_LABELS[asset.status]}{!mediaType(asset) ? " · 未知媒体类型" : ""}</Text>
+              <Text numberOfLines={2} style={textStyles.body}>{asset.filename}</Text>
+              <Text style={textStyles.muted}>{selected.some((item) => item.id === asset.id) ? "已选" : ASSET_STATUS_LABELS[asset.status]}</Text>
             </Pressable>
             {canWrite ? <Pressable
               accessibilityRole="button"
               accessibilityLabel={`删除 ${asset.filename}`}
               onPress={() => Alert.alert("删除素材", `确定删除「${asset.filename}」？`, [
                 { text: "取消", style: "cancel" },
-                { text: "删除", style: "destructive", onPress: () => void mutate(async () => { await client.deleteAsset(asset.id); await load(); }, "删除失败，请稍后重试。") },
+                { text: "删除", style: "destructive", onPress: () => void mutate(async () => { await client.deleteAsset(asset.id); setSelected((items) => items.filter((item) => item.id !== asset.id)); await load(); }, "删除失败，请稍后重试。") },
               ])}
               style={styles.action}
             >
               <Text style={textStyles.error}>删除</Text>
             </Pressable> : null}
           </View>)}
-          {detail.assets.length > visibleAssets ? <Button tone="ghost" label={`加载更多素材（${visibleAssets}/${detail.assets.length}）`} onPress={() => setVisibleAssets((count) => count + 24)} /> : null}
+          </View>
+          {pageControls("素材", assetPages, detail.nextAssetCursor, setAssetPages)}
         </Card> : null}
         {canWrite ? <Card>
           <Text accessibilityRole="header" style={textStyles.heading}>重建路线</Text>
@@ -277,10 +380,9 @@ export function ProjectScreen({ project, onJob, onBack }: {
               </Pressable>
             );
           })}
-          {workerOnline != null ? <Text style={workerOnline ? styles.online : textStyles.muted}>
-            {workerOnline ? "计算节点在线" : "计算节点离线，提交后排队"}
-          </Text> : null}
-          <Button disabled={creating || !selected.length} label={creating ? "正在创建…" : selected.length ? `开始重建（${selected.length}）` : "开始重建"} onPress={createJob} />
+          <Text style={workerOnline ? styles.online : textStyles.muted}>
+            {workerOnline === true ? "计算节点在线" : workerOnline === false ? "计算节点离线，提交后排队" : "计算节点状态未知"}
+          </Text>
           {!selected.length ? <Text style={textStyles.muted}>请先从素材列表选择要重建的文件</Text> : null}
         </Card> : null}
         <Card>
@@ -293,14 +395,15 @@ export function ProjectScreen({ project, onJob, onBack }: {
               {Object.keys(row.metrics).length > 0 ? <Text style={textStyles.muted}>{JSON.stringify(row.metrics)}</Text> : null}
             </View>)}
           </> : null}
-          {!detail?.jobs.length ? <Text style={textStyles.muted}>暂无任务。</Text> : null}
-          {detail?.jobs.map((job) => <Pressable accessibilityRole="button" key={job.id} onPress={() => onJob(job.id)} style={styles.route}>
+          {detail && !detail.jobs.length ? <Text style={textStyles.muted}>还没有任务。选择素材和路线后开始重建。</Text> : null}
+          {detail?.jobs.map((job) => <Pressable accessibilityRole="button" key={job.id} onPress={() => onJob(job.id, { assets: selected, profile })} style={styles.route}>
             <View style={styles.rowHeader}>
               <Text style={textStyles.body}>{RECONSTRUCTION_PROFILES[job.profile].title}</Text>
               <Text style={job.status === "FAILED" ? textStyles.error : styles.link}>{JOB_STATUS_LABELS[job.status]}</Text>
             </View>
             <Text style={textStyles.muted}>{new Date(job.created_at).toLocaleString()} · {job.id.slice(0, 8)}</Text>
           </Pressable>)}
+          {detail ? pageControls("任务", jobPages, detail.nextJobCursor, setJobPages) : null}
         </Card>
         <Button label="返回项目列表" onPress={onBack} tone="ghost" />
     </Screen>
@@ -311,10 +414,14 @@ const makeStyles = (theme: Palette) => StyleSheet.create({
   projectHeader: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, justifyContent: "space-between" },
   rowHeader: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, justifyContent: "space-between" },
   action: { minHeight: 44, minWidth: 44, justifyContent: "center", alignItems: "center", paddingHorizontal: 8 },
+  roleChoice: { minHeight: 44, justifyContent: "center" },
   link: { color: theme.accent, fontWeight: "600" },
   online: { color: theme.success },
-  asset: { flexDirection: "row", alignItems: "center", borderWidth: 1, borderColor: theme.divider, borderRadius: 12 },
+  assetGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", rowGap: 10 },
+  asset: { width: "48.5%", overflow: "hidden", borderWidth: 1, borderColor: theme.borderSoft, borderRadius: 12 },
   assetChoice: { flex: 1, minHeight: 48, padding: 10, gap: 4 },
+  selectionBar: { gap: 8, padding: 12 },
+  selectionText: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 4 },
   selected: { borderColor: theme.accent, backgroundColor: theme.surfaceStrong },
   route: { gap: 5, minHeight: 48, padding: 12, borderWidth: 1, borderColor: theme.borderSoft, borderRadius: 12 },
 });

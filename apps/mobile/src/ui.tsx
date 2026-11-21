@@ -1,9 +1,10 @@
-import { useState, type ReactNode } from "react";
-import type { Palette } from "@rescene/design-tokens";
-import { THEME_OPTIONS } from "@rescene/design-tokens";
-import { useAppearance } from "./appearance";
+import { COLORWAY_OPTIONS, THEME_OPTIONS, type Palette } from "@rescene/design-tokens";
+import { BlurTargetView as ExpoBlurTargetView, BlurView as ExpoBlurView, type BlurTargetViewProps, type BlurViewProps } from "expo-blur";
+import { LinearGradient } from "expo-linear-gradient";
+import { useRef, useState, type ComponentRef, type ComponentType, type ReactNode, type RefAttributes, type RefObject } from "react";
 import {
   ActivityIndicator,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,42 +14,97 @@ import {
   type TextInputProps,
 } from "react-native";
 
+import { useAppearance } from "./appearance";
 import { fontSize, radii, spacing } from "./theme";
+
+type TargetView = ComponentRef<typeof View>;
+type AcrylicTarget = RefObject<TargetView | null>;
+// Expo Blur's declarations resolve their React Native ref to never with React 19.3.
+const BlurTargetView = ExpoBlurTargetView as unknown as ComponentType<Omit<BlurTargetViewProps, "ref"> & RefAttributes<TargetView>>;
+const BlurView = ExpoBlurView as unknown as ComponentType<Omit<BlurViewProps, "blurTarget"> & { blurTarget: AcrylicTarget }>;
 
 export function Screen({
   children,
   title,
   scroll = false,
+  footer,
+  contentPaddingBottom,
 }: {
   children: ReactNode;
   title: string;
   scroll?: boolean;
+  footer?: ReactNode;
+  contentPaddingBottom?: number;
 }) {
-  const { theme } = useAppearance();
+  const { theme, preference, colorway, setPreference, setColorway } = useAppearance();
   const styles = makeStyles(theme);
-  const header = <View style={styles.header}><Text accessibilityRole="header" style={[styles.title, { flex: 1 }]}>{title}</Text><AppearancePicker /></View>;
-  if (scroll) {
-    return (
-      <View style={styles.stage}>
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled"
-          style={styles.scroll}
+  const backdrop = useRef<TargetView>(null);
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const content = <>
+    <AcrylicSurface backdrop={backdrop}>
+      <View style={styles.header}>
+        <Image accessible={false} source={require("../assets/icon.png")} style={styles.brand} />
+        <Text accessibilityRole="header" style={styles.title}>{title}</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="外观主题"
+          accessibilityState={{ expanded: appearanceOpen }}
+          onPress={() => setAppearanceOpen((open) => !open)}
+          style={styles.appearanceButton}
         >
-          {header}
-          {children}
-        </ScrollView>
+          <View style={styles.colorSwatch} />
+          <Text style={styles.appearanceLabel}>{THEME_OPTIONS.find((item) => item.value === preference)?.label} ▾</Text>
+        </Pressable>
       </View>
-    );
-  }
+      {appearanceOpen ? <View style={styles.appearanceSettings}>
+        <Text accessibilityRole="header" style={styles.label}>明暗</Text>
+        <Segmented value={preference} options={THEME_OPTIONS} onChange={(value) => { setPreference(value); setAppearanceOpen(false); }} />
+        <Text accessibilityRole="header" style={styles.label}>配色</Text>
+        <Segmented value={colorway} options={COLORWAY_OPTIONS} onChange={(value) => { setColorway(value); setAppearanceOpen(false); }} />
+      </View> : null}
+    </AcrylicSurface>
+    {children}
+  </>;
   return (
     <View style={styles.stage}>
-      <View style={styles.screen}>
-        {header}
-        {children}
-      </View>
+      <BlurTargetView ref={backdrop} pointerEvents="none" style={StyleSheet.absoluteFill}>
+        <LinearGradient
+          colors={[theme.bgSoft, theme.bgDeep]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+      </BlurTargetView>
+      {scroll ? <ScrollView
+        contentContainerStyle={[styles.scrollContent, contentPaddingBottom !== undefined && { paddingBottom: contentPaddingBottom }]}
+        keyboardShouldPersistTaps="handled"
+        style={styles.scroll}
+      >{content}</ScrollView> : <View style={styles.screen}>{content}</View>}
+      {scroll && footer ? <AcrylicSurface backdrop={backdrop} edge>{footer}</AcrylicSurface> : null}
     </View>
   );
+}
+
+function AcrylicSurface({ backdrop, children, edge = false }: { backdrop: AcrylicTarget; children: ReactNode; edge?: boolean }) {
+  const { theme, dark } = useAppearance();
+  return <View style={{
+    borderColor: theme.borderSoft,
+    borderWidth: edge ? 0 : 1,
+    borderTopWidth: 1,
+    borderRadius: edge ? 0 : radii.md,
+    overflow: "hidden",
+  }}>
+    <BlurView
+      pointerEvents="none"
+      blurTarget={backdrop}
+      blurMethod="dimezisBlurViewSdk31Plus"
+      tint={dark ? "dark" : "light"}
+      intensity={28}
+      style={StyleSheet.absoluteFill}
+    />
+    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: theme.panel + (dark ? "C0" : "DC") }]} />
+    {children}
+  </View>;
 }
 
 export function Card({ children }: { children: ReactNode }) {
@@ -167,7 +223,7 @@ export function Segmented<T extends string>({
 }: {
   value: T;
   onChange: (value: T) => void;
-  options: { value: T; label: string }[];
+  options: readonly { value: T; label: string }[];
 }) {
   const { theme } = useAppearance();
   const styles = makeStyles(theme);
@@ -201,12 +257,17 @@ export function ErrorText({ children }: { children: ReactNode }) {
 }
 
 const makeStyles = (theme: Palette) => StyleSheet.create({
-  header: { flexDirection: "row", alignItems: "center", gap: 12, flexWrap: "wrap" },
+  header: { flexDirection: "row", alignItems: "center", gap: 12, padding: spacing.md },
+  appearanceButton: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 6, justifyContent: "center" },
+  appearanceLabel: { color: theme.accent, fontSize: 13 },
+  colorSwatch: { width: 8, height: 8, backgroundColor: theme.accent, borderRadius: 4 },
+  appearanceSettings: { gap: spacing.sm, borderTopColor: theme.divider, borderTopWidth: 1, padding: spacing.md },
+  brand: { width: 32, height: 32, flexShrink: 0 },
   stage: { flex: 1, backgroundColor: theme.bg },
   scroll: { flex: 1, backgroundColor: "transparent" },
   scrollContent: { flexGrow: 1, padding: spacing.lg, gap: spacing.md },
   screen: { flex: 1, padding: spacing.lg, gap: spacing.md },
-  title: { color: theme.fg, fontSize: 30, fontWeight: "800", letterSpacing: -1 },
+  title: { flex: 1, minWidth: 0, color: theme.fg, fontSize: 28, fontWeight: "700", lineHeight: 34 },
   card: {
     backgroundColor: theme.panel,
     borderColor: theme.divider,
@@ -214,11 +275,6 @@ const makeStyles = (theme: Palette) => StyleSheet.create({
     borderRadius: radii.lg,
     padding: spacing.lg,
     gap: spacing.md,
-    shadowColor: "#000",
-    shadowOpacity: 0.04,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 16 },
-    elevation: 1,
   },
   field: { gap: spacing.xs },
   label: { color: theme.muted, fontSize: fontSize.body },
@@ -242,17 +298,10 @@ const makeStyles = (theme: Palette) => StyleSheet.create({
     paddingVertical: 13,
     paddingHorizontal: spacing.md,
   },
-  primary: {
-    backgroundColor: theme.accentStrong,
-    shadowColor: theme.accentStrong,
-    shadowOpacity: 0.04,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 0,
-  },
-  ghost: { borderColor: theme.borderSoft, borderWidth: 1, backgroundColor: theme.surface },
-  primaryText: { color: theme.onAccent, fontWeight: "800" },
-  ghostText: { color: theme.fg, fontWeight: "600" },
+  primary: { backgroundColor: theme.accentStrong },
+  ghost: { borderColor: theme.border, borderWidth: 1, backgroundColor: theme.surface },
+  primaryText: { color: theme.onAccent, fontSize: fontSize.body, fontWeight: "700" },
+  ghostText: { color: theme.fg, fontSize: fontSize.body, fontWeight: "600" },
   buttonPressed: { opacity: 0.6 },
   muted: { color: theme.muted },
   busy: { flexDirection: "row", gap: 10, alignItems: "center", paddingVertical: spacing.md },
@@ -267,6 +316,7 @@ const makeStyles = (theme: Palette) => StyleSheet.create({
   },
   segment: {
     flex: 1,
+    minHeight: 44,
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 11,
@@ -291,17 +341,4 @@ export function useTextStyles() {
   return makeTextStyles(theme);
 }
 
-function AppearancePicker() {
-  const { preference, setPreference, theme } = useAppearance();
-  const [open, setOpen] = useState(false);
-  return <View>
-    <Pressable accessibilityRole="button" accessibilityLabel="外观主题" accessibilityState={{ expanded: open }} onPress={() => setOpen(!open)} style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: 8 }}>
-      <Text style={{ color: theme.accent }}>{THEME_OPTIONS.find((item) => item.value === preference)?.label} ▾</Text>
-    </Pressable>
-    {open ? <View style={{ backgroundColor: theme.panel, borderWidth: 1, borderColor: theme.borderSoft, borderRadius: 10 }}>
-      {THEME_OPTIONS.map((item) => <Pressable key={item.value} accessibilityRole="radio" accessibilityState={{ checked: preference === item.value }} onPress={() => { setPreference(item.value); setOpen(false); }} style={{ minHeight: 44, padding: 10, justifyContent: "center" }}>
-        <Text style={{ color: preference === item.value ? theme.accent : theme.fg }}>{item.label}</Text>
-      </Pressable>)}
-    </View> : null}
-  </View>;
-}
+

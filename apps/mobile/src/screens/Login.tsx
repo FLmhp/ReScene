@@ -1,8 +1,8 @@
 import { ResceneApiError } from "@rescene/api-client";
 import { useState } from "react";
-import { Text } from "react-native";
+import { Text, View } from "react-native";
 
-import { client, persistSession } from "../api";
+import { authenticate } from "../api";
 import { Button, Card, ErrorText, Field, Screen, Segmented, useTextStyles } from "../ui";
 
 const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -28,9 +28,7 @@ export function LoginScreen({ onSignedIn, notice }: { onSignedIn: () => void; no
     setBusy(true);
     setError("");
     try {
-      const result = mode === "register" ? await client.register(trimmed, password) : await client.login(trimmed, password);
-      await persistSession(result.access_token);
-      onSignedIn();
+      if (await authenticate(mode, trimmed, password)) onSignedIn();
     } catch (reason) {
       if (reason instanceof ResceneApiError) {
         if (reason.status === 409) setError("该邮箱已注册，请直接登录。");
@@ -50,6 +48,7 @@ export function LoginScreen({ onSignedIn, notice }: { onSignedIn: () => void; no
 
   return (
     <Screen scroll title={mode === "register" ? "创建 ReScene 账号" : "登录团队工作台"}>
+      <View style={{ width: "100%", maxWidth: 460, alignSelf: "center", gap: 16 }}>
       <Card>
         {notice ? (
           <Text accessibilityLiveRegion="polite" accessibilityRole="alert" style={textStyles.muted}>
@@ -100,12 +99,13 @@ export function LoginScreen({ onSignedIn, notice }: { onSignedIn: () => void; no
         ) : null}
         <Button
           disabled={busy || !email.trim() || !password || (mode === "register" && !confirm)}
-          label={busy ? (mode === "register" ? "创建中…" : "登录中…") : mode === "register" ? "创建账号" : "登录"}
+          label={busy ? (mode === "register" ? "正在创建…" : "正在登录…") : mode === "register" ? "创建账号" : "登录"}
           onPress={() => void submit()}
         />
         {error ? <ErrorText>{error}</ErrorText> : null}
       </Card>
       <Text style={textStyles.muted}>首次使用请先注册；密码至少 12 位，仅支持邮箱密码登录。</Text>
+      </View>
     </Screen>
   );
 }

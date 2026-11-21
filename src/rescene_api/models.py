@@ -3,7 +3,19 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from rescene_api.db import Base
@@ -56,6 +68,35 @@ class Asset(Base):
     content_type: Mapped[str] = mapped_column(String(200))
     sha256: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(20), default="UPLOADING", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class IdempotencyRecord(Base):
+    """Stores the first response for a client-supplied retry key."""
+
+    __tablename__ = "idempotency_records"
+    __table_args__ = (UniqueConstraint("user_id", "operation", "scope", "key"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    operation: Mapped[str] = mapped_column(String(60))
+    scope: Mapped[str] = mapped_column(String(36), default="")
+    key: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    status_code: Mapped[int] = mapped_column(Integer, default=201)
+    response_json: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AssetCleanup(Base):
+    """Deferred object deletion: the row commits first, the bytes follow."""
+
+    __tablename__ = "asset_cleanups"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    object_key: Mapped[str] = mapped_column(Text, unique=True, index=True)
+    reason: Mapped[str] = mapped_column(String(40), default="asset.delete")
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -173,6 +214,7 @@ class Notification(Base):
 
 class JobLog(Base):
     __tablename__ = "job_logs"
+    __table_args__ = (Index("ix_job_logs_job_id_id", "job_id", "id"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     job_id: Mapped[str] = mapped_column(ForeignKey("reconstruction_jobs.id", ondelete="CASCADE"), index=True)
     attempt: Mapped[int] = mapped_column(Integer)
@@ -190,3 +232,5 @@ class ProjectInvitation(Base):
     role: Mapped[str] = mapped_column(String(20))
     invited_by: Mapped[str] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    claim_digest: Mapped[str | None] = mapped_column(String(64), index=True, unique=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

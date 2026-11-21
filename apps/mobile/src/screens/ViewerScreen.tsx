@@ -25,36 +25,46 @@ export function ViewerScreen({ reconstructionId, onBack }: { reconstructionId: s
   const textStyles = useTextStyles();
   const webview = useRef<WebViewHandle>(null);
   const [error, setError] = useState("");
-  const [generation, setGeneration] = useState(0);
-  const [viewerUrl, setViewerUrl] = useState("");
+  const [viewer, setViewer] = useState<{ url: string; generation: number; scene: string } | null>(null);
+  const generation = useRef(0);
+  const scene = JSON.stringify([reconstructionId, dark]);
+  const currentScene = useRef(scene);
+  currentScene.current = scene;
   const trustedOrigin = new URL(webBaseUrl).origin;
 
-  const load = useCallback(async () => {
+  const load = useCallback(() => {
+    const nextGeneration = ++generation.current;
     setError("");
-    setViewerUrl("");
-    try {
-      const manifest = await client.getManifest(reconstructionId);
-      const artifact = manifest.artifacts.find((item) => item.kind === "spz") ?? manifest.artifacts.find((item) => item.kind === "ply");
-      if (!artifact) throw new Error("没有可显示的 SPZ 或 PLY 产物");
-      // The web viewer accepts a short-lived signed URL, so the bearer token
-      // never enters the page. The native bridge remains for in-page renewal.
-      setViewerUrl(`${webBaseUrl}/viewer?reconstruction=${encodeURIComponent(reconstructionId)}&theme=${dark ? "dark" : "light"}&src=${encodeURIComponent(artifact.url)}`);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "获取场景失败");
-    }
-  }, [reconstructionId, dark]);
+    setViewer({
+      url: `${webBaseUrl}/viewer?reconstruction=${encodeURIComponent(reconstructionId)}&theme=${dark ? "dark" : "light"}`,
+      generation: nextGeneration,
+      scene,
+    });
+  }, [reconstructionId, dark, scene]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    load();
+    return () => { generation.current += 1; };
+  }, [load]);
 
-  async function receive(event: WebViewMessageEvent) {
+  function isCurrent(instance: NonNullable<typeof viewer>) {
+    return generation.current === instance.generation && currentScene.current === instance.scene;
+  }
+
+  function isViewerDocument(url: string) {
     try {
-      // Android WebView does not always expose `nativeEvent.url`; the WebView
-      // source and onShouldStartLoadWithRequest already pin the trusted origin.
+      const document = new URL(url);
+      return document.origin === trustedOrigin && document.pathname.replace(/\/$/, "") === "/viewer";
+    } catch { return false; }
+  }
+
+  async function receive(event: WebViewMessageEvent, instance: NonNullable<typeof viewer>) {
+    try {
+      if (!isCurrent(instance)) return;
+      // Android's WebMessageListener supplies the source origin, not a document URL.
+      // Legacy WebViews can supply the full URL or omit it; navigation pins the viewer document.
       const pageUrl = event.nativeEvent.url;
-      if (pageUrl) {
-        const source = new URL(pageUrl);
-        if (source.origin !== trustedOrigin || !source.pathname.startsWith("/viewer")) return;
-      }
+      if (pageUrl && pageUrl !== trustedOrigin && !isViewerDocument(pageUrl)) return;
       const request: unknown = JSON.parse(event.nativeEvent.data);
       if (!request || typeof request !== "object") return;
       const payload = request as Record<string, unknown>;
@@ -68,6 +78,7 @@ export function ViewerScreen({ reconstructionId, onBack }: { reconstructionId: s
       } catch (reason) {
         response = { type: "RESCENE_MANIFEST_RESPONSE", requestId: payload.requestId, error: reason instanceof Error ? reason.message : "获取产物失败" };
       }
+      if (!isCurrent(instance)) return;
       const data = JSON.stringify(JSON.stringify(response)).replace(/</g, "\\u003c");
       webview.current?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message',{data:${data}})); true;`);
     } catch {
@@ -76,32 +87,39 @@ export function ViewerScreen({ reconstructionId, onBack }: { reconstructionId: s
   }
 
   return <View style={{ flex: 1, backgroundColor: theme.bg }}>
-    <Button label="返回任务" tone="ghost" onPress={onBack} />
-    {viewerUrl ? <WebView
-      key={generation}
+    <View style={{ paddingHorizontal: 16, paddingVertical: 8, backgroundColor: theme.panel, borderBottomWidth: 1, borderBottomColor: theme.divider }}>
+      <Button label="返回任务" tone="ghost" onPress={onBack} />
+    </View>
+    {viewer && viewer.scene === scene && !error ? <WebView
+      key={viewer.generation}
       ref={webview}
       allowsInlineMediaPlayback
       javaScriptEnabled
       mixedContentMode="never"
       originWhitelist={[trustedOrigin]}
-      onShouldStartLoadWithRequest={(request) => {
-        try {
-          const url = new URL(request.url);
-          return url.origin === trustedOrigin && url.pathname.startsWith("/viewer");
-        } catch { return false; }
+      onShouldStartLoadWithRequest={({ url }) => isViewerDocument(url)}
+      onMessage={(event) => void receive(event, viewer)}
+      onError={(event) => {
+        if (isCurrent(viewer) && isViewerDocument(event.nativeEvent.url)) {
+          generation.current += 1;
+          setError("Viewer 加载失败，请检查网络后重试");
+        }
       }}
-      onMessage={(event) => void receive(event)}
-      onError={() => setError("Viewer 加载失败，请检查网络后重试")}
-      onHttpError={(event) => setError(`Viewer 加载失败 (${event.nativeEvent.statusCode})`)}
-      renderLoading={() => <ActivityIndicator accessibilityLabel="正在加载三维场景" />}
+      onHttpError={(event) => {
+        if (isCurrent(viewer) && isViewerDocument(event.nativeEvent.url)) {
+          generation.current += 1;
+          setError(`Viewer 加载失败 (${event.nativeEvent.statusCode})`);
+        }
+      }}
+      renderLoading={() => <View style={{ flex: 1, justifyContent: "center", alignItems: "center", gap: 12, backgroundColor: theme.bg }}><ActivityIndicator accessibilityLabel="正在加载三维场景" /><Text style={textStyles.muted}>正在加载三维场景…</Text></View>}
       startInLoadingState
-      source={{ uri: viewerUrl }}
+      source={{ uri: viewer.url }}
       style={{ flex: 1, backgroundColor: theme.bg }}
     /> : <View style={{ flex: 1, justifyContent: "center", alignItems: "center", gap: 12, padding: 24 }}>
       {error ? <>
         <Text accessibilityRole="alert" style={textStyles.error}>{error}</Text>
-        <Button label="重试 Viewer" onPress={() => { setGeneration((value) => value + 1); void load(); }} />
-      </> : <ActivityIndicator accessibilityLabel="正在获取三维场景" />}
+        <Button label="重试 Viewer" onPress={load} />
+      </> : <><ActivityIndicator accessibilityLabel="正在获取三维场景" /><Text style={textStyles.muted}>正在获取三维场景…</Text></>}
     </View>}
   </View>;
 }

@@ -56,11 +56,49 @@ export RESCENE_PUBLIC_WEB_URL=http://localhost:3000
 
 ### 其他客户端
 
+品牌图形以 [共享 SVG 母版](packages/design-tokens/assets/rescene-mark.svg) 为准。改图时同步检查 Web 与桌面、Android 启动器、小程序、官网 favicon、分享卡片与文档。
+
+更新 [Word 参考文档](docs/reference/README.md) 时先另存。Windows 上 OfficeCLI 1.0.162 已验证可创建、插图、重开与渲染 DOCX，原件的表格校验结果可用于比对更新前后是否引入新问题。
+
+#### Android 开发环境
+
+`apps/mobile` 在打包时读取 `EXPO_PUBLIC_API_URL` 和 `EXPO_PUBLIC_WEB_URL` 并内联到 bundle。两者未设置时会回退到生产 `https://api.rescene.xyz` 与 `https://app.rescene.xyz`，开发构建也一样；本地调试必须先设置，否则登录、上传和重建任务都会进入生产。
+
+从 `apps/mobile/.env.example` 复制出被 git 忽略的 `apps/mobile/.env.local`，按运行目标填写：
+
+```powershell
+Copy-Item apps/mobile/.env.example apps/mobile/.env.local
+```
+
+```bash
+cp apps/mobile/.env.example apps/mobile/.env.local
+```
+
+| 运行目标 | `EXPO_PUBLIC_API_URL` | `EXPO_PUBLIC_WEB_URL` |
+|---|---|---|
+| Android 模拟器（AVD） | `http://10.0.2.2:8000` | `http://10.0.2.2:3000` |
+| 同一局域网的真机 | `http://<主机局域网 IP>:8000` | `http://<主机局域网 IP>:3000` |
+| 生产构建 | `https://api.rescene.xyz` | `https://app.rescene.xyz` |
+
+`10.0.2.2` 只是 Android 模拟器指向主机回环地址的别名，真机无法访问；真机要改用主机在局域网中的地址（`ipconfig` / `ip addr` 查看），并确认系统防火墙放行 8000 和 3000。API 需以 `--host 0.0.0.0 --port 8000` 启动，Web 需以 `pnpm --filter rescene-web exec next dev -H 0.0.0.0` 启动。若要在 App 内打开 Viewer，Web 端还需设置 `NEXT_PUBLIC_API_URL` 为同一 API 地址（模拟器 `http://10.0.2.2:8000`，真机 `http://<主机局域网 IP>:8000`），并把页面来源 `http://10.0.2.2:3000` 或 `http://<主机局域网 IP>:3000` 加入 `RESCENE_CORS_ORIGINS`。
+
+配置后运行 `pnpm --filter @rescene/mobile start`。Expo 会读取 `.env.local`；修改环境变量后需清除旧 bundle，例如 `pnpm --filter @rescene/mobile exec expo start --clear`。
+
+启动 API 后先在主机确认就绪（返回 `{"status":"ready"}`），设备端实际目标以账号页显示为准：
+
+```bash
+curl -fsS http://127.0.0.1:8000/health/ready
+```
+
+启动后 Android 账号页会显示 `服务器地址：<目标 URL>`，登录时 uvicorn 访问日志应出现来自模拟器或真机的请求；若显示生产地址，说明 env 未加载或进程未重启，应先停止调试。模拟器也可用浏览器打开 `http://10.0.2.2:8000/health/ready` 验证。`EXPO_PUBLIC_*` 会被打进客户端包，不能写入任何密钥。
+
+#### 客户端命令
+
 | 客户端 | 开发命令 | 说明 |
 |---|---|---|
 | 桌面前端 | `pnpm --filter @rescene/desktop dev` | 只启动 Vite，不启动原生窗口 |
 | 桌面应用 | `pnpm --filter @rescene/desktop tauri dev` | 启动 Tauri 原生窗口，需要 Rust 和平台依赖 |
-| Android | `pnpm --filter @rescene/mobile start` | 启动 Expo 开发服务；设备或模拟器需另行配置 |
+| Android | `pnpm --filter @rescene/mobile start` | 启动 Expo 开发服务；先在 `apps/mobile/.env.local` 配置本地 API/Web，见上节 |
 | 微信小程序 | `pnpm --filter @rescene/miniapp dev:weapp` | 监听构建，使用微信开发者工具打开产物 |
 
 原生构建依赖和 CI 配置见 [release.yml](.github/workflows/release.yml)、[桌面构建脚本](scripts/build-desktop-release.sh)及 [Android 构建脚本](scripts/build-android-release.ps1)。

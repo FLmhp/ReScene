@@ -225,7 +225,7 @@ export default function ViewerPage() {
               ) : null}
             </>
           ) : (
-            <h2>正在加载场景…</h2>
+            <h2 role="status">正在加载场景…</h2>
           )}
         </section>
       )}

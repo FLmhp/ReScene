@@ -1,12 +1,16 @@
 import { Screen } from "../../screen";
 import { explainError, isOfflineError, ResceneApiError } from "@rescene/api-client";
-import type { AppNotification, Project, User } from "@rescene/schemas";
+import { JOB_STATUS_LABELS, type AppNotification, type Project, type ProjectSummary, type User } from "@rescene/schemas";
 import { Button, Input, Text, View } from "@tarojs/components";
 import Taro, { useDidShow } from "@tarojs/taro";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { apiBaseUrl, clearToken, client, hasToken, onSessionExpired, persistToken } from "../../api";
-import { enqueue, replayQueued } from "../../queue";
+import {
+  apiBaseUrl, authenticate, changeSessionPassword, client, currentQueueOwner, hasToken, isQueueOwnerCurrent,
+  onSessionExpired, queueClient, renewSession, signOutSession, verifySession,
+} from "../../api";
+import { LEGACY_QUEUE_NOTICE, QUEUE_PAUSED, newIdempotencyKey, type QueueOwner } from "@rescene/uploader";
+import { enqueue, hasLegacyQueue, replayQueued } from "../../queue";
 
 // api.ts relaunches this page when a credential expires, so the notice must
 // survive that remount to stay actionable.
@@ -35,20 +39,43 @@ function message(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback;
 }
 
+function ProjectTile({ project }: { project: Project }) {
+  const [summary, setSummary] = useState<ProjectSummary | null>(null);
+  const [summaryFailed, setSummaryFailed] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setSummary(null);
+    setSummaryFailed(false);
+    void client.getProjectSummary(project.id).then((value) => {
+      if (active) setSummary(value);
+    }).catch(() => { if (active) setSummaryFailed(true); });
+    return () => { active = false; };
+  }, [project.id]);
+  return <View className="project-tile" role="button" onClick={() => void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(project.id)}&name=${encodeURIComponent(project.name)}` })}>
+    <Text className="label">{project.name}</Text>
+    <Text className="muted">{ROLE_LABEL[project.effective_role]} · 打开项目</Text>
+    <Text className="muted">{summary ? `${summary.asset_count} 个素材 · ${summary.job_count} 个任务${summary.latest_job ? ` · ${JOB_STATUS_LABELS[summary.latest_job.status]}` : " · 暂无任务"}` : summaryFailed ? "项目概况暂不可用" : "正在加载项目概况…"}</Text>
+  </View>;
+}
+
 export default function IndexPage() {
   const [panel, setPanel] = useState<"notifications" | "account" | null>(null);
+  const [projectPage, setProjectPage] = useState(0);
   const [showPassword, setShowPassword] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [recovering, setRecovering] = useState(hasToken());
   const [projects, setProjects] = useState<Project[]>([]);
   const [name, setName] = useState("");
   const [search, setSearch] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
+  const [acceptingInvitation, setAcceptingInvitation] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [mode, setMode] = useState<"login" | "register">("login");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [legacyQueue] = useState(hasLegacyQueue);
   const [busy, setBusy] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -60,28 +87,72 @@ export default function IndexPage() {
   const authLock = useRef(false);
   const passwordLock = useRef(false);
   const projectLock = useRef(false);
+  const attemptKey = useRef<{ name: string; key: string } | null>(null);
   const recoveryLock = useRef(false);
   const booted = useRef(false);
 
   useEffect(() => {
-    const pending = Taro.getStorageSync<string>(EXPIRY_NOTICE_KEY);
-    if (pending) {
-      Taro.removeStorageSync(EXPIRY_NOTICE_KEY);
-      setError(EXPIRED_NOTICE);
-    }
+    try {
+      if (Taro.getStorageSync<string>(EXPIRY_NOTICE_KEY)) {
+        Taro.removeStorageSync(EXPIRY_NOTICE_KEY);
+        setError(EXPIRED_NOTICE);
+      }
+    } catch { /* The login form is available even when local storage fails. */ }
     return onSessionExpired(() => {
-      Taro.setStorageSync(EXPIRY_NOTICE_KEY, "1");
       setUser(null);
+      setInviteCode("");
       setProjects([]);
       setNotifications([]);
+      setUnread(0);
+      setName("");
+      setNotice("");
       setRecovering(false);
       setError(EXPIRED_NOTICE);
     });
   }, []);
 
-  const loadProjects = useCallback(async () => {
-    setProjects(await client.listProjects());
+  const loadProjects = useCallback(async (owner: QueueOwner) => {
+    try {
+      const list = await queueClient(owner).listProjects();
+      if (isQueueOwnerCurrent(owner)) setProjects(list);
+    } catch (reason) {
+      if (isQueueOwnerCurrent(owner)) throw reason;
+    }
   }, []);
+
+  const replay = useCallback((owner: QueueOwner) => {
+    void replayQueued(owner, () => undefined).then(({ created }) => {
+      if (created && isQueueOwnerCurrent(owner)) return loadProjects(owner);
+    }).catch((reason) => {
+      if (isQueueOwnerCurrent(owner)) setError(message(reason, "同步离线数据失败。"));
+    });
+  }, [loadProjects]);
+
+  async function acceptInvitation() {
+    const code = inviteCode.trim();
+    if (!code || acceptingInvitation) return;
+    const owner = currentQueueOwner();
+    if (!owner) {
+      setError(QUEUE_PAUSED);
+      return;
+    }
+    setAcceptingInvitation(true);
+    setError("");
+    setNotice("");
+    try {
+      await queueClient(owner).acceptInvitation(code);
+      if (!isQueueOwnerCurrent(owner)) return;
+      setInviteCode("");
+      setSearch("");
+      setProjectPage(0);
+      setNotice("已领取邀请。");
+      await loadProjects(owner);
+    } catch (reason) {
+      if (isQueueOwnerCurrent(owner)) setError(message(reason, "领取邀请失败"));
+    } finally {
+      setAcceptingInvitation(false);
+    }
+  }
 
   const recover = useCallback(async () => {
     if (!hasToken() || recoveryLock.current) return;
@@ -89,11 +160,14 @@ export default function IndexPage() {
     if (!booted.current) setRecovering(true);
     setError("");
     try {
-      const current = await client.getMe();
+      const current = await verifySession();
+      const owner = currentQueueOwner();
+      if (!current || !owner || current.id !== owner.id) return;
       setUser(current);
-      const renewed = await client.refresh();
-      persistToken(renewed.access_token);
-      await loadProjects();
+      if (!await renewSession() || !isQueueOwnerCurrent(owner)) return;
+      replay(owner);
+      await loadProjects(owner);
+      return isQueueOwnerCurrent(owner);
     } catch (reason) {
       setError(message(reason, "恢复登录失败，请检查服务器连接后重试。"));
     } finally {
@@ -101,27 +175,25 @@ export default function IndexPage() {
       recoveryLock.current = false;
       setRecovering(false);
     }
-  }, [loadProjects]);
+  }, [loadProjects, replay]);
 
   const loadNotifications = useCallback(async () => {
-    if (!hasToken()) return;
+    const owner = currentQueueOwner();
+    if (!owner) return;
+    const scopedClient = queueClient(owner);
     try {
-      const [items, count] = await Promise.all([client.listNotifications(true, 5), client.notificationCount()]);
+      const [items, count] = await Promise.all([scopedClient.listNotifications(true, 5), scopedClient.notificationCount()]);
+      if (!isQueueOwnerCurrent(owner)) return;
       setNotifications(items);
       setUnread(count);
     } catch (reason) {
-      setError(message(reason, "加载通知失败。"));
+      if (isQueueOwnerCurrent(owner)) setError(message(reason, "加载通知失败。"));
     }
   }, []);
 
   useDidShow(() => {
     void (async () => {
-      if (hasToken()) {
-        try { await replayQueued(client, () => undefined); }
-        catch (reason) { setError(message(reason, "同步离线数据失败。")); }
-      }
-      await recover();
-      await loadNotifications();
+      if (await recover()) await loadNotifications();
     })();
   });
 
@@ -132,12 +204,14 @@ export default function IndexPage() {
     setError("");
     setNotice("");
     try {
-      const result = await client.login(email.trim(), password);
-      persistToken(result.access_token);
+      const current = await authenticate("login", email.trim(), password);
+      const owner = currentQueueOwner();
+      if (!current || !owner || current.id !== owner.id) return;
       Taro.removeStorageSync(EXPIRY_NOTICE_KEY);
       setPassword("");
-      setUser(await client.getMe());
-      await loadProjects();
+      setUser(current);
+      replay(owner);
+      await loadProjects(owner);
       await loadNotifications();
     } catch (reason) {
       if (reason instanceof ResceneApiError && (reason.status === 401 || reason.status === 403)) {
@@ -171,13 +245,15 @@ export default function IndexPage() {
     setError("");
     setNotice("");
     try {
-      const result = await client.register(address, password);
-      persistToken(result.access_token);
+      const current = await authenticate("register", address, password);
+      const owner = currentQueueOwner();
+      if (!current || !owner || current.id !== owner.id) return;
       Taro.removeStorageSync(EXPIRY_NOTICE_KEY);
       setPassword("");
       setConfirm("");
-      setUser(await client.getMe());
-      await loadProjects();
+      setUser(current);
+      replay(owner);
+      await loadProjects(owner);
       await loadNotifications();
     } catch (reason) {
       if (reason instanceof ResceneApiError && reason.status === 409) {
@@ -198,24 +274,40 @@ export default function IndexPage() {
       setError("项目名称最多 200 个字符。");
       return;
     }
+    const owner = currentQueueOwner();
+    if (!owner) { setError(QUEUE_PAUSED); return; }
+    const scopedClient = queueClient(owner);
+    // Retry with the same key; a different name starts a new operation.
+    const attempt = attemptKey.current?.name === trimmed ? attemptKey.current : { name: trimmed, key: newIdempotencyKey() };
+    attemptKey.current = attempt;
     projectLock.current = true;
     setCreatingProject(true);
     setError("");
     try {
-      const project = await client.createProject(trimmed);
+      const project = await scopedClient.createProject(trimmed, attempt.key);
+      attemptKey.current = null;
+      if (!isQueueOwnerCurrent(owner)) return;
       setName("");
       setProjects((current) => [project, ...current]);
     } catch (reason) {
+      if (!isQueueOwnerCurrent(owner)) return;
       if (isOfflineError(reason)) {
-        await enqueue({
-          kind: "project",
-          id: `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          name: trimmed,
-          createdAt: Date.now(),
-        });
-        setName("");
-        setError("");
-        setNotice("已离线保存，联网后自动创建。");
+        try {
+          await enqueue(owner, {
+            kind: "project",
+            id: `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            name: trimmed,
+            createdAt: Date.now(),
+            idempotencyKey: attempt.key,
+          });
+          attemptKey.current = null;
+          if (!isQueueOwnerCurrent(owner)) return;
+          setName("");
+          setError("");
+          setNotice("已离线保存，联网后自动创建。");
+        } catch {
+          if (isQueueOwnerCurrent(owner)) setError("保存到本地队列失败。");
+        }
       } else {
         setError(message(reason, "创建项目失败。"));
       }
@@ -240,8 +332,7 @@ export default function IndexPage() {
     setError("");
     setNotice("");
     try {
-      const result = await client.changePassword(currentPassword, nextPassword);
-      persistToken(result.access_token);
+      if (!await changeSessionPassword(currentPassword, nextPassword)) return;
       setCurrentPassword("");
       setNextPassword("");
       setNextConfirm("");
@@ -270,9 +361,10 @@ export default function IndexPage() {
     } catch (reason) {
       setError(message(reason, "标记已读失败。"));
     }
-    // The mini program has no job screen; a task notice opens its project so
-    // the running log and stage timeline stay reachable from here.
-    if (item.project_id) void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(item.project_id)}&name=` });
+    if (item.project_id) {
+      const job = item.job_id ? `&view=tasks&job=${encodeURIComponent(item.job_id)}` : "";
+      void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(item.project_id)}${job}` });
+    }
   }
 
   async function signOut() {
@@ -281,36 +373,36 @@ export default function IndexPage() {
     setBusy(true);
     setError("");
     setNotice("");
-    let revoked = true;
-    try {
-      await client.logout();
-    } catch {
-      revoked = false;
-    } finally {
-      clearToken();
-      setUser(null);
-      setProjects([]);
-      setNotifications([]);
-      setUnread(0);
-      setCurrentPassword("");
-      setNextPassword("");
-      setNextConfirm("");
-      setSearch("");
-      setName("");
-      setBusy(false);
-      authLock.current = false;
-    }
+    const signingOut = signOutSession();
+    setUser(null);
+    setInviteCode("");
+    setProjects([]);
+    setNotifications([]);
+    setUnread(0);
+    setCurrentPassword("");
+    setNextPassword("");
+    setNextConfirm("");
+    setSearch("");
+    setProjectPage(0);
+    setName("");
+    const revoked = await signingOut;
+    setBusy(false);
+    authLock.current = false;
     if (!revoked) setError("本机已退出，但服务器无法确认会话已撤销。请检查网络并联系管理员撤销会话。");
   }
 
   const filtered = projects.filter((project) => project.name.toLowerCase().includes(search.trim().toLowerCase()));
+  const pageSize = 8;
+  const projectPageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const page = Math.min(projectPage, projectPageCount - 1);
+  const visibleProjects = filtered.slice(page * pageSize, (page + 1) * pageSize);
   const unreadItems = notifications.filter((item) => item.read_at === null);
 
   if (recovering) {
     return <Screen><Text className="muted">正在恢复登录…</Text></Screen>;
   }
 
-  if (!user) {
+  if (!user && !currentQueueOwner()) {
     return (
       <Screen>
         <Text className="muted">影像到三维空间</Text>
@@ -318,8 +410,8 @@ export default function IndexPage() {
   
         <View className="card">
           <View className="segmented">
-            <View className={mode === "login" ? "tab active" : "tab"} onClick={() => { setMode("login"); setError(""); }}>登录</View>
-            <View className={mode === "register" ? "tab active" : "tab"} onClick={() => { setMode("register"); setError(""); }}>注册</View>
+            <Button className={mode === "login" ? "button tab active" : "button tab"} aria-pressed={mode === "login"} onClick={() => { setMode("login"); setError(""); }}>登录</Button>
+            <Button className={mode === "register" ? "button tab active" : "button tab"} aria-pressed={mode === "register"} onClick={() => { setMode("register"); setError(""); }}>注册</Button>
           </View>
           <Text className="label">邮箱</Text>
           <Input className="input" placeholder="name@example.com" value={email} onInput={(event) => setEmail(event.detail.value)} />
@@ -333,14 +425,15 @@ export default function IndexPage() {
             </>
           ) : null}
           {mode === "login" ? (
-            <Button className="button" loading={busy} disabled={busy} onClick={() => void login()}>邮箱登录</Button>
+            <Button className="button" loading={busy} disabled={busy} onClick={() => void login()}>{busy ? "正在登录…" : "邮箱登录"}</Button>
           ) : (
             <Button className="button" loading={busy} disabled={busy} onClick={() => void register()}>创建账号</Button>
           )}
           <Text className="muted">{mode === "login" ? "首次使用请切换到注册；密码至少 12 位。" : "注册后即可创建项目；密码至少 12 位。"}</Text>
           {hasToken() ? <Button className="button ghost" onClick={() => void recover()}>重试恢复登录</Button> : null}
+          {error ? <Text className="error">{error} · {serverLabel()}</Text> : null}
         </View>
-        {error ? <Text className="error">{error} · {serverLabel()}</Text> : null}
+        {hasToken() ? <Text className="muted">{QUEUE_PAUSED}</Text> : null}
         {notice ? <Text>{notice}</Text> : null}
       </Screen>
     );
@@ -348,9 +441,21 @@ export default function IndexPage() {
 
   return (
     <Screen>
-      
       <Text className="title">我的项目</Text>
-      <Text className="muted">{user.email}{user.is_admin ? " · 管理员" : ""}</Text>
+      {user ? <Text className="muted">{user.email}{user.is_admin ? " · 管理员" : ""}</Text>
+        : <Button className="button ghost" onClick={() => void recover()}>重试恢复登录</Button>}
+
+      <View className="field">
+        <Text className="label">搜索项目</Text>
+        <Input className="input" value={search} onInput={(event) => { setSearch(event.detail.value); setProjectPage(0); }} />
+      </View>
+      {visibleProjects.map((project) => <ProjectTile key={project.id} project={project} />)}
+      {projectPageCount > 1 ? <View className="page-controls">
+        <Button className="button ghost compact" disabled={page === 0} onClick={() => setProjectPage(page - 1)}>上一页</Button>
+        <Text className="muted">{page + 1} / {projectPageCount}</Text>
+        <Button className="button ghost compact" disabled={page + 1 === projectPageCount} onClick={() => setProjectPage(page + 1)}>下一页</Button>
+      </View> : null}
+      {filtered.length === 0 ? <Text className="muted">{search.trim() ? "没有匹配的项目。" : "还没有项目。创建第一个项目开始上传素材。"}</Text> : null}
 
       <View className="selection-tools">
         <Button className="button ghost compact" onClick={() => setPanel(panel === "notifications" ? null : "notifications")}>通知（{unread}）</Button>
@@ -370,21 +475,19 @@ export default function IndexPage() {
         ))}
       </View> : null}
       <View className="card">
-        <Text className="label">搜索项目</Text>
-        <Input className="input" value={search} onInput={(event) => setSearch(event.detail.value)} />
         <Text className="label">新项目名称</Text>
         <Input className="input" maxlength={200} value={name} onInput={(event) => setName(event.detail.value)} />
         <Button className="button" loading={creatingProject} disabled={creatingProject || !name.trim()} onClick={() => void createProject()}>创建项目</Button>
       </View>
-      {filtered.map((project) => (
-        <View className="project-tile" key={project.id} onClick={() => void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(project.id)}&name=${encodeURIComponent(project.name)}` })}>
-          <Text className="label">{project.name}</Text><Text className="muted">{ROLE_LABEL[project.effective_role]} · 打开 ›</Text>
-        </View>
-      ))}
-      {filtered.length === 0 ? <Text className="muted">{search.trim() ? "没有匹配的项目。" : "还没有项目。"}</Text> : null}
-      {user.is_admin ? (
+      <View className="card">
+        <Text className="label">领取码</Text>
+        <Input className="input" maxlength={128} value={inviteCode} onInput={(event) => setInviteCode(event.detail.value)} />
+        <Button className="button ghost" loading={acceptingInvitation} disabled={acceptingInvitation || !inviteCode.trim()} onClick={() => void acceptInvitation()}>领取邀请</Button>
+      </View>
+      {user?.is_admin ? (
         <Button className="button ghost" onClick={() => void Taro.navigateTo({ url: "/pages/admin/index" })}>管理控制台</Button>
       ) : null}
+      {legacyQueue ? <Text className="muted">{LEGACY_QUEUE_NOTICE}</Text> : null}
       {error ? <Text className="error">{error}</Text> : null}
       {notice ? <Text>{notice}</Text> : null}
       {panel === "account" ? <View className="card">

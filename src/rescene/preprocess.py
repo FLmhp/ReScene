@@ -200,6 +200,7 @@ def preprocess_input(
     duplicate_distance: int = 4,
     record_hashes: bool = False,
     validation_sources: set[str] | None = None,
+    retain_frozen_sources: bool = False,
     seed: int = 42,
 ) -> dict[str, object]:
     """Normalize, score, de-duplicate, and select frames without changing the source."""
@@ -223,6 +224,10 @@ def preprocess_input(
     )
     if frozen_validation is not None and not frozen_validation.issubset(source_ids):
         raise ValueError("Frozen validation contains unknown source IDs")
+    if retain_frozen_sources and (
+        source_type != "images" or not frozen_validation or not len(frozen_validation) < len(sources) <= max_frames
+    ):
+        raise ValueError("Retaining frozen sources requires an image directory within the frame budget and a split")
 
     normalized_dir = output_dir / "normalized"
     records: list[dict[str, object]] = []
@@ -260,10 +265,12 @@ def preprocess_input(
     if len(eligible_indexes) < min(2, len(unique_indexes)):
         eligible_indexes = unique_indexes
     budget = min(max_frames, len(eligible_indexes))
-    if frozen_validation is not None and len(frozen_validation) >= budget:
+    if not retain_frozen_sources and frozen_validation is not None and len(frozen_validation) >= budget:
         raise ValueError("Frozen validation must leave room for at least one training frame")
     forced_indexes: set[int] = set()
-    if frozen_validation is not None:
+    if retain_frozen_sources:
+        selected_indexes = set(range(len(records)))
+    elif frozen_validation is not None:
         forced_indexes = {
             index for index in range(len(records)) if str(records[index]["source_id"]) in frozen_validation
         }
@@ -324,7 +331,9 @@ def preprocess_input(
                 selected=selected,
                 validation=validation,
                 selection_reason=(
-                    "coverage"
+                    "frozen"
+                    if retain_frozen_sources
+                    else "coverage"
                     if selected
                     else "duplicate"
                     if record["duplicate"]
@@ -378,6 +387,8 @@ def preprocess_input(
         },
         "frames": [asdict(record) for record in selected_records],
     }
+    if retain_frozen_sources:
+        manifest["retain_frozen_sources"] = True
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "input_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -398,13 +409,27 @@ def preprocess_input(
     return manifest
 
 
+class InvalidInputManifest(ValueError):
+    """A saved input manifest cannot describe the selected images."""
+
+
 def relocate_selected_images(run_dir: Path) -> None:
     """Rebase selected image paths after moving a reconstruction directory."""
     manifest_path = run_dir / "input_manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InvalidInputManifest("Input manifest is not valid UTF-8 JSON") from error
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("frames"), list):
+        raise InvalidInputManifest("Input manifest must contain a frames array")
     for frame in manifest["frames"]:
+        if not isinstance(frame, dict):
+            raise InvalidInputManifest("Each input manifest frame must be an object")
         if frame.get("selected"):
-            image = run_dir / "images" / Path(frame["file"]).name
+            file = frame.get("file")
+            if not isinstance(file, str) or not file:
+                raise InvalidInputManifest("Selected input manifest frame must have a file path")
+            image = run_dir / "images" / Path(file).name
             if not image.is_file():
                 raise FileNotFoundError(f"Selected image missing: {image.name}")
             frame["file"] = str(image)

@@ -1,3 +1,5 @@
+import { newIdempotencyKey } from "./idempotency";
+
 /**
  * Offline replay state machine shared by Android and the Mini Program.
  *
@@ -5,24 +7,115 @@
  * retry, and the conflict rule live here so both clients behave alike.
  */
 
+export const QUEUE_PAUSED = "离线队列已暂停，请联网验证当前账户后重试。";
+export const LEGACY_QUEUE_NOTICE = "设备上有旧版离线数据，账户归属无法确认。请在当前账户重新创建项目或添加所需素材。";
+
+export type QueueCredential = { token: string; owner: string | null };
+export type QueueOwner = { id: string; generation: number };
+type SessionSnapshot = { token: string | null; generation: number };
+
+export function accountQueueKey(prefix: string, owner: QueueOwner): string {
+  return `${prefix}-${encodeURIComponent(owner.id).replace(/~/g, "%7E").replace(/%/g, "~")}`;
+}
+
+export function readQueueCredential(raw: string | null): QueueCredential | null {
+  if (!raw) return null;
+  if (!raw.startsWith("{")) return { token: raw, owner: null };
+  try {
+    const { token, owner } = JSON.parse(raw) as Partial<QueueCredential>;
+    if (typeof token === "string" && token) {
+      return { token, owner: typeof owner === "string" && owner.trim() ? owner : null };
+    }
+  } catch { /* Invalid local credentials require a fresh login. */ }
+  return null;
+}
+
+export function createQueueSession(initial: QueueCredential | null = null) {
+  let credential = initial;
+  let generation = 0;
+  const snapshot = (): SessionSnapshot => ({ token: credential?.token ?? null, generation });
+  const matches = (value: SessionSnapshot) => value.generation === generation && value.token === (credential?.token ?? null);
+  return {
+    snapshot,
+    matches,
+    reset() {
+      generation += 1;
+      credential = null;
+    },
+    update(expected: SessionSnapshot, next: QueueCredential | null) {
+      if (!matches(expected)) return false;
+      if (credential?.owner && credential.owner !== next?.owner) generation += 1;
+      credential = next;
+      return true;
+    },
+    owner(): QueueOwner | null {
+      return credential?.owner ? { id: credential.owner, generation } : null;
+    },
+    owns(owner: QueueOwner) {
+      return owner.generation === generation && owner.id === credential?.owner;
+    },
+  };
+}
+
+/** Reads JWT expiry only for local scheduling and queue suspension. */
+export function sessionExpiry(token: string): number | null {
+  const payload = token.split(".")[1];
+  if (!payload) return null;
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let output = "";
+  let buffer = 0;
+  let bits = 0;
+  for (const character of payload.replace(/-/g, "+").replace(/_/g, "/")) {
+    if (character === "=") break;
+    const value = alphabet.indexOf(character);
+    if (value < 0) return null;
+    buffer = ((buffer << 6) | value) & 0xffffff;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      output += String.fromCharCode((buffer >> bits) & 0xff);
+    }
+  }
+  try {
+    const claims = JSON.parse(output) as { exp?: unknown } | null;
+    return typeof claims?.exp === "number" ? claims.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
 export type QueuedUpload = {
   kind: "upload";
   id: string;
   projectId: string;
+  /** App-owned copy while `managed` is true; a picker temporary otherwise. */
   uri: string;
   name: string;
   mimeType: string;
   size: number;
+  managed?: boolean;
   assetId?: string;
   createdAt: number;
 };
 
-export type QueuedProject = { kind: "project"; id: string; name: string; createdAt: number };
+/** The queued copy is gone; the user has to pick that file again. */
+export class QueuedMediaMissing extends Error {
+  constructor() {
+    super("本地素材副本已丢失，请重新选择该文件。");
+    this.name = "QueuedMediaMissing";
+  }
+}
+
+export function isQueuedMediaMissing(error: unknown): boolean {
+  return error instanceof QueuedMediaMissing;
+}
+
+export type QueuedProject = { kind: "project"; id: string; name: string; createdAt: number; idempotencyKey?: string };
 
 export type QueuedEntry = QueuedUpload | QueuedProject;
 
 export type QueueHandlers = {
-  createProject(name: string): Promise<void>;
+  createProject(name: string, idempotencyKey?: string): Promise<void>;
   upload(entry: QueuedUpload, onProgress?: (percent: number) => void): Promise<void>;
 };
 
@@ -39,7 +132,8 @@ function isEntry(value: unknown): value is QueuedEntry {
       typeof entry.uri === "string" &&
       typeof entry.name === "string" &&
       typeof entry.mimeType === "string" &&
-      typeof entry.size === "number"
+      typeof entry.size === "number" &&
+      (entry.managed === undefined || typeof entry.managed === "boolean")
     );
   }
   return false;
@@ -60,36 +154,202 @@ export function serializeQueue(entries: QueuedEntry[]): string {
   return JSON.stringify(entries);
 }
 
-/** A 409 means the server already owns this upload, so replaying it again cannot help. */
-function isConflict(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as { status?: number }).status === 409;
-}
+/** The only 409 that means the server already owns this upload. */
+export const ASSET_NOT_AWAITING_UPLOAD = "asset.not_awaiting_upload";
 
 /**
- * Replay in enqueue order. One failing entry never blocks the ones behind it:
- * projects that fail and uploads that fail for network reasons stay queued.
+ * A bare 409 is ambiguous: the API also uses it for an incomplete object, a
+ * truncated body, or a digest that no longer matches the local file. Those are
+ * retryable, so only the explicit duplicate code may end the queue entry.
  */
+export function isDuplicateUploadError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { status, code } = error as { status?: unknown; code?: unknown };
+  return status === 409 && code === ASSET_NOT_AWAITING_UPLOAD;
+}
+
+/** The API's stable error code, carried by `ResceneApiError` and native `UploadError`s. */
+export function uploadErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const { code } = error as { code?: unknown };
+  return typeof code === "string" ? code : undefined;
+}
+
+type ReplayCounts = Omit<ReplayResult, "remaining">;
+type CompletedEntry = keyof ReplayCounts;
+
+async function finishEntry(entry: QueuedEntry, handle: (entry: QueuedEntry) => Promise<void>): Promise<CompletedEntry> {
+  try {
+    await handle(entry);
+    return entry.kind === "project" ? "created" : "uploaded";
+  } catch (reason) {
+    if (entry.kind === "upload" && isDuplicateUploadError(reason)) return "dropped";
+    throw reason;
+  }
+}
+
 export async function replayQueue(entries: QueuedEntry[], handlers: QueueHandlers): Promise<ReplayResult> {
-  const remaining: QueuedEntry[] = [];
-  let created = 0;
-  let uploaded = 0;
-  let dropped = 0;
+  const result: ReplayResult = { remaining: [], created: 0, uploaded: 0, dropped: 0 };
   for (const entry of entries) {
     try {
-      if (entry.kind === "project") {
-        await handlers.createProject(entry.name);
-        created += 1;
-      } else {
-        await handlers.upload(entry);
-        uploaded += 1;
-      }
-    } catch (error) {
-      if (entry.kind === "upload" && isConflict(error)) {
-        dropped += 1;
-        continue;
-      }
-      remaining.push(entry);
+      const outcome = await finishEntry(entry, (row) =>
+        row.kind === "project" ? handlers.createProject(row.name, row.idempotencyKey) : handlers.upload(row),
+      );
+      result[outcome] += 1;
+    } catch {
+      result.remaining.push(entry);
     }
   }
-  return { remaining, created, uploaded, dropped };
+  return result;
+}
+
+type QueueStorage = {
+  read(owner: QueueOwner): Promise<QueuedEntry[]>;
+  write(owner: QueueOwner, entries: QueuedEntry[]): Promise<void>;
+  isCurrent(owner: QueueOwner): boolean;
+};
+
+type NativeUpload = (entry: QueuedUpload, rememberAsset: (assetId: string) => Promise<void>) => Promise<void>;
+type EntryResult = CompletedEntry | "missing" | "busy";
+
+class QueueStorageError extends Error {
+  constructor(cause: unknown) {
+    super("无法保存或读取本地离线队列，请检查设备存储后重试。", { cause });
+  }
+}
+
+export type NativeQueueOptions = { idempotencyKey?: () => string };
+
+export function createNativeQueue(storage: QueueStorage, options: NativeQueueOptions = {}) {
+  const nextKey = options.idempotencyKey ?? newIdempotencyKey;
+  const writes = new Map<string, Promise<void>>();
+  const claimed = new Map<string, { generation: number; task: Promise<EntryResult> }>();
+  const replaying = new Map<string, { generation: number; task: Promise<ReplayCounts> }>();
+
+  function assertCurrent(owner: QueueOwner): void {
+    if (!storage.isCurrent(owner)) throw new Error(QUEUE_PAUSED);
+  }
+
+  async function read(owner: QueueOwner): Promise<QueuedEntry[]> {
+    try { return await storage.read(owner); }
+    catch (reason) { throw new QueueStorageError(reason); }
+  }
+
+  function mutate(owner: QueueOwner, change: (entries: QueuedEntry[]) => QueuedEntry[]): Promise<void> {
+    const previous = writes.get(owner.id) ?? Promise.resolve();
+    const task = previous.catch(() => undefined).then(async () => {
+      const entries = await read(owner);
+      const next = change(entries);
+      if (next === entries) return;
+      try { await storage.write(owner, next); }
+      catch (reason) { throw new QueueStorageError(reason); }
+    }).finally(() => {
+      if (writes.get(owner.id) === task) writes.delete(owner.id);
+    });
+    writes.set(owner.id, task);
+    return task;
+  }
+
+  async function load(owner: QueueOwner): Promise<QueuedEntry[]> {
+    await writes.get(owner.id)?.catch(() => undefined);
+    return read(owner);
+  }
+
+  function enqueue(owner: QueueOwner, entry: QueuedEntry): Promise<void> {
+    return mutate(owner, (entries) => {
+      assertCurrent(owner);
+      return entries.some((row) => row.id === entry.id) ? entries : [...entries, entry];
+    });
+  }
+
+  function remove(owner: QueueOwner, id: string): Promise<void> {
+    return mutate(owner, (entries) => entries.filter((row) => row.id !== id));
+  }
+
+  function remember(owner: QueueOwner, id: string, assetId: string): Promise<void> {
+    return mutate(owner, (entries) => entries.map((row) => row.id === id && row.kind === "upload" ? { ...row, assetId } : row));
+  }
+
+  /** A draft queued before retry keys existed gets one, saved before the first attempt. */
+  async function withIdempotencyKey(owner: QueueOwner, entry: QueuedEntry): Promise<QueuedEntry> {
+    if (entry.kind !== "project" || entry.idempotencyKey) return entry;
+    const key = nextKey();
+    const prepared: QueuedProject = { ...entry, idempotencyKey: key };
+    await mutate(owner, (rows) => rows.map((row) => (row.id === entry.id ? prepared : row)));
+    assertCurrent(owner);
+    return prepared;
+  }
+
+  function runEntry(
+    owner: QueueOwner,
+    id: string,
+    handle: (entry: QueuedEntry) => Promise<void>,
+    skipClaimed: boolean,
+  ): Promise<EntryResult> {
+    const key = JSON.stringify([owner.id, id]);
+    const existing = claimed.get(key);
+    if (existing) {
+      if (skipClaimed) return Promise.resolve("busy");
+      if (existing.generation === owner.generation) return existing.task;
+      return existing.task.catch(() => undefined).then(() => runEntry(owner, id, handle, skipClaimed));
+    }
+
+    const task = (async (): Promise<EntryResult> => {
+      assertCurrent(owner);
+      const entry = (await load(owner)).find((row) => row.id === id);
+      if (!entry) return "missing";
+      assertCurrent(owner);
+      const prepared = await withIdempotencyKey(owner, entry);
+      const outcome = await finishEntry(prepared, handle);
+      await remove(owner, id);
+      return outcome;
+    })().finally(() => { claimed.delete(key); });
+    claimed.set(key, { generation: owner.generation, task });
+    return task;
+  }
+
+  function upload(owner: QueueOwner, id: string, handle: NativeUpload): Promise<EntryResult> {
+    return runEntry(owner, id, async (entry) => {
+      if (entry.kind !== "upload") throw new Error("找不到待上传素材。");
+      await handle(entry, (assetId) => remember(owner, entry.id, assetId));
+    }, false);
+  }
+
+  async function replayOnce(owner: QueueOwner, handlers: { createProject: QueueHandlers["createProject"]; upload: NativeUpload }): Promise<ReplayCounts> {
+    assertCurrent(owner);
+    const ids = (await load(owner)).map((entry) => entry.id);
+    const result = { created: 0, uploaded: 0, dropped: 0 };
+    let storageError: QueueStorageError | undefined;
+    for (const id of ids) {
+      if (!storage.isCurrent(owner)) break;
+      try {
+        const outcome = await runEntry(owner, id, (entry) => entry.kind === "project"
+          ? handlers.createProject(entry.name, entry.idempotencyKey)
+          : handlers.upload(entry, (assetId) => remember(owner, entry.id, assetId)), true);
+        if (outcome !== "busy" && outcome !== "missing") result[outcome] += 1;
+      } catch (reason) {
+        if (reason instanceof QueueStorageError) storageError ??= reason;
+      }
+    }
+    if (storageError) throw storageError;
+    return result;
+  }
+
+  function replay(owner: QueueOwner, handlers: Parameters<typeof replayOnce>[1]): Promise<ReplayCounts> {
+    const existing = replaying.get(owner.id);
+    if (existing) {
+      if (existing.generation === owner.generation) return existing.task;
+      return existing.task.catch(() => undefined).then(() => replay(owner, handlers));
+    }
+    const task = replayOnce(owner, handlers).finally(() => { replaying.delete(owner.id); });
+    replaying.set(owner.id, { generation: owner.generation, task });
+    return task;
+  }
+
+  /** Remove one entry the user explicitly abandoned. */
+  function discard(owner: QueueOwner, id: string): Promise<void> {
+    return remove(owner, id);
+  }
+
+  return { enqueue, discard, load, replay, upload };
 }

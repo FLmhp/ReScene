@@ -2,18 +2,37 @@ import base64
 import hashlib
 import hmac
 import json
-from datetime import timedelta
+import time
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import oss2
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, event, func, select, update
 
 from rescene_api import main
-from rescene_api.auth import hash_password
+from rescene_api.auth import hash_password, issue_token, verify_password
 from rescene_api.config import Settings
-from rescene_api.db import SessionLocal
+from rescene_api.db import SessionLocal, engine
 from rescene_api.main import app
-from rescene_api.models import Asset, JobStage, Notification, Reconstruction, ReconstructionJob, User, now
+from rescene_api.models import (
+    Asset,
+    AssetCleanup,
+    AuditLog,
+    JobStage,
+    Notification,
+    Project,
+    ProjectInvitation,
+    ProjectMember,
+    Reconstruction,
+    ReconstructionJob,
+    User,
+    now,
+)
+from rescene_api.ratelimit import limiter
+from rescene_api.schemas import ChangePasswordRequest
 from rescene_api.storage import OssStorage, TemporaryCredentials
 
 
@@ -271,16 +290,16 @@ def test_registration_rejects_invalid_input() -> None:
 class RecordingStore:
     """Stands in for OSS so deletion is observable without network calls."""
 
-    def __init__(self, fail: bool = False) -> None:
+    def __init__(self) -> None:
         self.deleted: list[str] = []
-        self.fail = fail
+        self.errors: dict[str, Exception] = {}
 
     def upload_credentials(self, key: str, session: str) -> TemporaryCredentials:
         return TemporaryCredentials("id", "secret", "token", "later")
 
     def delete(self, key: str) -> None:
-        if self.fail:
-            raise RuntimeError("object was never written")
+        if key in self.errors:
+            raise self.errors[key]
         self.deleted.append(key)
 
 
@@ -299,9 +318,13 @@ def test_asset_delete_and_stale_upload_expiry(monkeypatch) -> None:
         assert session.status_code == 201
         grant = session.json()
         assert client.delete(f"/v1/assets/{grant['asset_id']}", headers=headers).status_code == 204
-        assert store.deleted == [grant["object_key"]]
+        assert store.deleted == []
         assert client.get(f"/v1/projects/{project_id}", headers=headers).json()["assets"] == []
         assert client.delete(f"/v1/assets/{grant['asset_id']}", headers=headers).status_code == 404
+        assert main.reap_once() is None
+        assert store.deleted == [grant["object_key"]]
+        with SessionLocal() as db:
+            assert db.scalars(select(AssetCleanup)).all() == []
 
         with SessionLocal() as db:
             stale = Asset(
@@ -324,18 +347,284 @@ def test_asset_delete_and_stale_upload_expiry(monkeypatch) -> None:
             db.add_all([stale, ready])
             db.commit()
             ready_id = ready.id
-            stale_key = stale.object_key
+            stale_id, stale_key = stale.id, stale.object_key
+        store.errors[stale_key] = oss2.exceptions.NoSuchKey(404, {}, "", {"Code": "NoSuchKey"})
         monkeypatch.setenv("RESCENE_STALE_UPLOAD_SECONDS", "60")
         main.settings.cache_clear()
         detail = client.get(f"/v1/projects/{project_id}", headers=headers).json()
         assert [item["filename"] for item in detail["assets"]] == ["frame.jpg"]
-        assert stale_key in store.deleted
+        assert store.deleted == [grant["object_key"]]
+        with SessionLocal() as db:
+            assert db.get(Asset, stale_id) is None
+            assert db.scalar(select(AuditLog).where(AuditLog.target_id == stale_id)).action == "asset.expire"
+            queued = db.scalars(select(AssetCleanup)).all()
+            assert [(row.object_key, row.reason) for row in queued] == [(stale_key, "asset.expire")]
+        assert main.reap_once() is None
+        with SessionLocal() as db:
+            assert db.scalars(select(AssetCleanup)).all() == []
 
         job = client.post(f"/v1/projects/{project_id}/jobs", headers=headers, json={"asset_ids": [ready_id]})
         assert job.status_code == 201
         refused = client.delete(f"/v1/assets/{ready_id}", headers=headers)
         assert refused.status_code == 409
         assert refused.headers["x-error-code"] == "asset.in_use"
+
+
+def test_stale_upload_expiry_queues_bytes_for_the_reaper(monkeypatch) -> None:
+    store = RecordingStore()
+
+    def unavailable_storage():
+        raise HTTPException(503, "OSS is not configured")
+
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            owner = User(email="cleanup-owner@example.com", password_hash=hash_password("correct-horse"))
+            outsider = User(email="cleanup-outsider@example.com", password_hash=owner.password_hash)
+            db.add_all([owner, outsider])
+            db.commit()
+        headers = {"Authorization": f"Bearer {issue_token(owner.id)}"}
+        project_id = client.post("/v1/projects", headers=headers, json={"name": "Upload cleanup"}).json()["id"]
+        route = f"/v1/projects/{project_id}/assets"
+        detail_route = f"/v1/projects/{project_id}"
+        old = now() - timedelta(days=2)
+        with SessionLocal() as db:
+            assets = {
+                key: Asset(
+                    project_id=project_id,
+                    object_key=f"cleanup/{key}",
+                    filename=f"{key}.jpg",
+                    size=10,
+                    content_type="image/jpeg",
+                    status=asset_status,
+                    created_at=created_at,
+                )
+                for key, asset_status, created_at in (
+                    ("retry", "UPLOADING", old),
+                    ("expired", "UPLOADING", old),
+                    ("ready", "READY", old),
+                    ("young", "UPLOADING", now()),
+                )
+            }
+            db.add_all(assets.values())
+            db.commit()
+        monkeypatch.setattr(main, "storage", lambda: store)
+        assert client.get(route).status_code == 401
+        assert client.get(route, headers={"Authorization": f"Bearer {issue_token(outsider.id)}"}).status_code == 403
+        assert client.get(f"{detail_route}?view=summary", headers=headers).json()["asset_count"] == 4
+        assert store.deleted == []
+
+        # Expiry is a database-only step now: storage being down neither blocks
+        # the listing nor leaves the abandoned rows behind.
+        monkeypatch.setattr(main, "storage", unavailable_storage)
+        unavailable = client.get(route, headers=headers)
+        assert unavailable.status_code == 200
+        remaining = {assets[key].id for key in ("ready", "young")}
+        assert {item["id"] for item in unavailable.json()["items"]} == remaining
+        with SessionLocal() as db:
+            assert sorted(
+                db.scalars(select(AuditLog.target_id).where(AuditLog.action == "asset.expire")).all()
+            ) == sorted([assets["expired"].id, assets["retry"].id])
+            queued = db.scalars(select(AssetCleanup)).all()
+            assert sorted(row.object_key for row in queued) == sorted(
+                [assets["expired"].object_key, assets["retry"].object_key]
+            )
+
+        # The reaper applies backoff per record instead of retrying every GET.
+        monkeypatch.setattr(main, "storage", lambda: store)
+        store.errors[assets["expired"].object_key] = oss2.exceptions.OssError(503, {}, "ServiceUnavailable", {})
+        store.errors[assets["retry"].object_key] = oss2.exceptions.RequestError(TimeoutError())
+        assert main.reap_asset_cleanups() == 0
+        assert main.reap_asset_cleanups() == 0
+        assert store.deleted == []
+        with SessionLocal() as db:
+            records = db.scalars(select(AssetCleanup)).all()
+            assert len(records) == 2
+            assert {record.attempts for record in records} == {1}
+            assert all(record.next_attempt_at.replace(tzinfo=UTC) > now() + timedelta(seconds=60) for record in records)
+            for record in records:
+                record.next_attempt_at = now() - timedelta(seconds=1)
+            db.commit()
+
+        store.errors.clear()
+        detail = client.get(detail_route, headers=headers)
+        assert detail.status_code == 200
+        assert {item["id"] for item in detail.json()["assets"]} == remaining
+        assert main.reap_asset_cleanups() == 2
+        assert sorted(store.deleted) == sorted([assets["expired"].object_key, assets["retry"].object_key])
+        with SessionLocal() as db:
+            assert db.scalars(select(AssetCleanup)).all() == []
+            assert db.get(Asset, assets["retry"].id) is None
+
+
+def register_asset(client, email: str) -> tuple[dict[str, str], str, dict[str, object]]:
+    created = client.post("/v1/auth/register", json={"email": email, "password": "correct-horse"})
+    headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+    project_id = client.post("/v1/projects", headers=headers, json={"name": "Cleanup queue"}).json()["id"]
+    session = client.post(
+        f"/v1/projects/{project_id}/assets/upload-session",
+        headers=headers,
+        json={"filename": "frame.jpg", "size": 2048, "content_type": "image/jpeg", "sha256": "a" * 64},
+    )
+    assert session.status_code == 201
+    return headers, project_id, session.json()
+
+
+def test_asset_delete_keeps_the_row_and_bytes_when_the_commit_fails(monkeypatch) -> None:
+    store = RecordingStore()
+    monkeypatch.setattr(main, "storage", lambda: store)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        headers, project_id, grant = register_asset(client, "conflict@example.com")
+        with SessionLocal() as db:
+            db.add(AssetCleanup(object_key=str(grant["object_key"]), reason="asset.delete", next_attempt_at=now()))
+            db.commit()
+
+        failed = client.delete(f"/v1/assets/{grant['asset_id']}", headers=headers)
+        assert failed.status_code == 500
+        assert store.deleted == []
+        detail = client.get(f"/v1/projects/{project_id}", headers=headers).json()
+        assert [item["id"] for item in detail["assets"]] == [grant["asset_id"]]
+        with SessionLocal() as db:
+            assert db.get(Asset, str(grant["asset_id"])) is not None
+            assert db.get(Asset, str(grant["asset_id"])).status == "UPLOADING"
+            assert db.scalars(select(AuditLog).where(AuditLog.action == "asset.delete")).all() == []
+            db.delete(db.scalar(select(AssetCleanup)))
+            db.commit()
+
+        assert client.delete(f"/v1/assets/{grant['asset_id']}", headers=headers).status_code == 204
+        assert store.deleted == []
+        main.reap_once()
+        assert store.deleted == [grant["object_key"]]
+
+
+def test_cleanup_queue_retries_transient_failures_with_backoff(monkeypatch) -> None:
+    store = RecordingStore()
+    monkeypatch.setattr(main, "storage", lambda: store)
+    with TestClient(app) as client:
+        headers, project_id, grant = register_asset(client, "backoff@example.com")
+        assert client.delete(f"/v1/assets/{grant['asset_id']}", headers=headers).status_code == 204
+        with SessionLocal() as db:
+            record = db.scalar(select(AssetCleanup))
+            assert record is not None and record.object_key == grant["object_key"] and record.attempts == 0
+            store.errors[str(grant["object_key"])] = oss2.exceptions.OssError(503, {}, "ServiceUnavailable", {})
+
+        assert main.reap_asset_cleanups() == 0
+        with SessionLocal() as db:
+            record = db.scalar(select(AssetCleanup))
+            assert record is not None
+            assert record.attempts == 1
+            assert record.last_error is not None and "OssError" in record.last_error
+            assert record.next_attempt_at.replace(tzinfo=UTC) > now() + timedelta(seconds=60)
+            record.next_attempt_at = now() - timedelta(seconds=1)
+            db.commit()
+
+        store.errors.clear()
+        assert main.reap_asset_cleanups() == 1
+        assert store.deleted == [grant["object_key"]]
+        with SessionLocal() as db:
+            assert db.scalars(select(AssetCleanup)).all() == []
+
+
+def test_cleanup_queue_treats_a_missing_object_as_done(monkeypatch) -> None:
+    store = RecordingStore()
+    monkeypatch.setattr(main, "storage", lambda: store)
+    with TestClient(app) as client:
+        headers, _, grant = register_asset(client, "missing-object@example.com")
+        assert client.delete(f"/v1/assets/{grant['asset_id']}", headers=headers).status_code == 204
+        with SessionLocal() as db:
+            store.errors[str(grant["object_key"])] = oss2.exceptions.NoSuchKey(404, {}, "", {"Code": "NoSuchKey"})
+
+        assert main.reap_asset_cleanups() == 1
+        assert store.deleted == []
+        with SessionLocal() as db:
+            assert db.scalars(select(AssetCleanup)).all() == []
+
+
+def ready_asset(project_id: str, name: str = "frame.jpg") -> str:
+    with SessionLocal() as db:
+        asset = Asset(
+            project_id=project_id,
+            object_key=f"idempotent/{name}",
+            filename=name,
+            size=10,
+            content_type="image/jpeg",
+            status="READY",
+            sha256="a" * 64,
+        )
+        db.add(asset)
+        db.commit()
+        return asset.id
+
+
+def test_job_creation_replays_the_first_response_for_a_repeated_key() -> None:
+    with TestClient(app) as client:
+        created = client.post("/v1/auth/register", json={"email": "retry@example.com", "password": "correct-horse"})
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+        project_id = client.post("/v1/projects", headers=headers, json={"name": "Retry"}).json()["id"]
+        asset_id = ready_asset(project_id)
+        keyed = {**headers, "Idempotency-Key": "job-retry-1"}
+        body = {"profile": "balanced", "asset_ids": [asset_id]}
+
+        first = client.post(f"/v1/projects/{project_id}/jobs", headers=keyed, json=body)
+        second = client.post(f"/v1/projects/{project_id}/jobs", headers=keyed, json=body)
+        assert first.status_code == 201 and second.status_code == 201
+        assert second.json() == first.json()
+        with SessionLocal() as db:
+            assert len(db.scalars(select(ReconstructionJob)).all()) == 1
+            assert len(db.scalars(select(AuditLog).where(AuditLog.action == "job.create")).all()) == 1
+
+        conflict = client.post(
+            f"/v1/projects/{project_id}/jobs", headers=keyed, json={"profile": "fast", "asset_ids": [asset_id]}
+        )
+        assert conflict.status_code == 409
+        assert conflict.headers["x-error-code"] == "idempotency.conflict"
+        with SessionLocal() as db:
+            assert len(db.scalars(select(ReconstructionJob)).all()) == 1
+
+        new_key = {**headers, "Idempotency-Key": "job-retry-2"}
+        again = client.post(f"/v1/projects/{project_id}/jobs", headers=new_key, json=body)
+        assert again.status_code == 201 and again.json()["id"] != first.json()["id"], "a new key starts a new operation"
+
+
+def test_project_creation_replays_only_for_the_same_key() -> None:
+    with TestClient(app) as client:
+        created = client.post("/v1/auth/register", json={"email": "projects@example.com", "password": "correct-horse"})
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+        keyed = {**headers, "Idempotency-Key": "project-retry-1"}
+
+        first = client.post("/v1/projects", headers=keyed, json={"name": "Studio"})
+        second = client.post("/v1/projects", headers=keyed, json={"name": "Studio"})
+        assert first.status_code == 201 and second.status_code == 201
+        assert second.json() == first.json()
+
+        plain = client.post("/v1/projects", headers=headers, json={"name": "Studio"})
+        other = client.post("/v1/projects", headers=headers, json={"name": "Studio"})
+        assert plain.json()["id"] != other.json()["id"], "requests without a key keep creating new projects"
+        assert len({first.json()["id"], plain.json()["id"], other.json()["id"]}) == 3
+
+        too_long = client.post("/v1/projects", headers={**headers, "Idempotency-Key": "x" * 129}, json={"name": "Long"})
+        assert too_long.status_code == 400
+        assert too_long.headers["x-error-code"] == "idempotency.invalid_key"
+
+
+def test_idempotency_keys_are_scoped_to_the_account_and_project() -> None:
+    with TestClient(app) as client:
+        first = client.post("/v1/auth/register", json={"email": "one@example.com", "password": "correct-horse"})
+        second = client.post("/v1/auth/register", json={"email": "two@example.com", "password": "correct-horse"})
+        one = {"Authorization": f"Bearer {first.json()['access_token']}", "Idempotency-Key": "shared-key"}
+        two = {"Authorization": f"Bearer {second.json()['access_token']}", "Idempotency-Key": "shared-key"}
+        mine = client.post("/v1/projects", headers=one, json={"name": "Mine"}).json()
+        theirs = client.post("/v1/projects", headers=two, json={"name": "Theirs"})
+        assert theirs.status_code == 201 and theirs.json()["id"] != mine["id"]
+
+        second_project = {**one, "Idempotency-Key": "shared-key-2"}
+        other_project = client.post("/v1/projects", headers=second_project, json={"name": "Second"}).json()["id"]
+        asset_a = ready_asset(mine["id"], "a.jpg")
+        asset_b = ready_asset(other_project, "b.jpg")
+        headers_a = {**one, "Idempotency-Key": "job-shared"}
+        job_a = client.post(f"/v1/projects/{mine['id']}/jobs", headers=headers_a, json={"asset_ids": [asset_a]})
+        job_b = client.post(f"/v1/projects/{other_project}/jobs", headers=headers_a, json={"asset_ids": [asset_b]})
+        assert job_a.status_code == 201 and job_b.status_code == 201
+        assert job_a.json()["id"] != job_b.json()["id"], "the project scopes the key"
 
 
 def test_password_change_revokes_other_sessions() -> None:
@@ -364,6 +653,188 @@ def test_password_change_revokes_other_sessions() -> None:
         )
         login = client.post("/v1/auth/login", json={"email": "rotate@example.com", "password": "correct-horse-2"})
         assert login.status_code == 200
+
+
+def test_password_change_rejects_a_stale_verified_hash() -> None:
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/v1/auth/register", json={"email": "race@example.com", "password": "correct-horse"}
+            ).status_code
+            == 201
+        )
+        with SessionLocal() as db:
+            user_id = db.scalar(select(User.id).where(User.email == "race@example.com"))
+        with SessionLocal() as stale, SessionLocal() as fresher:
+            user = stale.get(User, user_id)
+            fresher.execute(update(User).where(User.id == user_id).values(password_hash=hash_password("someone-else")))
+            fresher.commit()
+            with pytest.raises(HTTPException) as raised:
+                main.change_password(
+                    ChangePasswordRequest(current_password="correct-horse", new_password="correct-horse-2"),
+                    stale,
+                    user,
+                )
+        assert raised.value.status_code == 409
+        assert raised.value.headers["X-Error-Code"] == "auth.session_stale"
+        with SessionLocal() as db:
+            current = db.get(User, user_id)
+            assert verify_password("someone-else", current.password_hash)
+            assert current.token_version == 0, "a refused rotation must not advance the version"
+
+
+def test_session_version_grows_with_every_revocation() -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            db.add(User(email="root@example.com", password_hash=hash_password("correct-horse"), is_admin=True))
+            db.add(User(email="member@example.com", password_hash=hash_password("correct-horse")))
+            db.commit()
+        with SessionLocal() as db:
+            member_id = db.scalar(select(User.id).where(User.email == "member@example.com"))
+
+        def bearer(email: str) -> dict[str, str]:
+            token = client.post("/v1/auth/login", json={"email": email, "password": "correct-horse"}).json()[
+                "access_token"
+            ]
+            return {"Authorization": f"Bearer {token}"}
+
+        admin = bearer("root@example.com")
+        member = bearer("member@example.com")
+
+        def version() -> int:
+            with SessionLocal() as db:
+                return db.get(User, member_id).token_version
+
+        start = version()
+        assert client.post("/v1/auth/logout", headers=member).status_code == 204
+        after_logout = version()
+        assert after_logout > start
+        assert (
+            client.post(
+                f"/v1/users/{member_id}/password", headers=admin, json={"password": "reset-password"}
+            ).status_code
+            == 204
+        )
+        after_reset = version()
+        assert after_reset > after_logout
+        assert client.patch(f"/v1/users/{member_id}", headers=admin, json={"active": False}).status_code == 200
+        after_deactivate = version()
+        assert after_deactivate > after_reset
+        assert client.get("/v1/auth/me", headers=member).status_code == 401
+
+
+def test_project_list_resolves_roles_in_one_batch() -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            owner = User(email="owner@example.com", password_hash=hash_password("correct-horse"))
+            member = User(email="member@example.com", password_hash=hash_password("correct-horse"))
+            db.add_all([owner, member])
+            db.flush()
+            owned = Project(name="Owned", owner_id=member.id)
+            db.add(owned)
+            for index in range(4):
+                project = Project(name=f"Shared {index}", owner_id=owner.id)
+                db.add(project)
+                db.flush()
+                db.add(ProjectMember(project_id=project.id, user_id=member.id, role="member"))
+            hidden = Project(name="Hidden", owner_id=owner.id)
+            deleted = Project(name="Deleted", owner_id=owner.id, deleted_at=now())
+            db.add_all([hidden, deleted])
+            db.commit()
+            member_id = member.id
+        headers = {
+            "Authorization": f"Bearer {client.post('/v1/auth/login', json={'email': 'member@example.com', 'password': 'correct-horse'}).json()['access_token']}"
+        }
+
+        def count_queries() -> tuple[int, list[str]]:
+            statements: list[str] = []
+
+            def record(_conn, _cursor, statement, _parameters, _context, _executemany):
+                statements.append(statement)
+
+            event.listen(engine, "before_cursor_execute", record)
+            try:
+                response = client.get("/v1/projects", headers=headers)
+            finally:
+                event.remove(engine, "before_cursor_execute", record)
+            assert response.status_code == 200
+            return len(statements), [statement.lower() for statement in statements]
+
+        with_many, statements = count_queries()
+        projects = client.get("/v1/projects", headers=headers).json()
+        assert {item["name"] for item in projects} == {"Owned", "Shared 0", "Shared 1", "Shared 2", "Shared 3"}
+        assert [item["created_at"] for item in projects] == sorted(
+            (item["created_at"] for item in projects), reverse=True
+        )
+        assert {item["effective_role"] for item in projects} == {"owner", "member"}
+
+        with SessionLocal() as db:
+            db.execute(delete(ProjectMember).where(ProjectMember.user_id == member_id))
+            db.commit()
+        with_fewer, _ = count_queries()
+        assert with_fewer == with_many, "the list query count must not grow with collaborations"
+        assert sum("project_members" in statement for statement in statements) == 2, (
+            "one membership filter plus one batched role projection"
+        )
+
+        assert [item["name"] for item in client.get("/v1/projects", headers=headers).json()] == ["Owned"]
+
+
+def test_project_summary_list_has_bounded_query_count() -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            owner = User(email="library@example.com", password_hash=hash_password("correct-horse"))
+            db.add(owner)
+            db.flush()
+            for index in range(20):
+                project = Project(name=f"Library {index:02d}", owner_id=owner.id)
+                db.add(project)
+                db.flush()
+                db.add_all(
+                    [
+                        Asset(
+                            project_id=project.id,
+                            object_key=f"library/{index}/{asset_index}",
+                            filename=f"frame-{asset_index}.jpg",
+                            content_type="image/jpeg",
+                            size=10,
+                            status="READY",
+                        )
+                        for asset_index in range(3)
+                    ]
+                )
+                db.add_all(
+                    [
+                        ReconstructionJob(
+                            project_id=project.id,
+                            profile="fast",
+                            status="RUNNING" if index % 2 else "SUCCEEDED",
+                        ),
+                        ReconstructionJob(project_id=project.id, profile="balanced", status="SUCCEEDED"),
+                    ]
+                )
+            db.commit()
+        login = client.post("/v1/auth/login", json={"email": "library@example.com", "password": "correct-horse"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        statements: list[str] = []
+
+        def record(_conn, _cursor, statement, _parameters, _context, _executemany):
+            statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            response = client.get("/v1/projects?view=summary", headers=headers)
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+        assert response.status_code == 200
+        summaries = response.json()
+        assert len(summaries) == 20
+        assert {item["asset_count"] for item in summaries} == {3}
+        assert {item["job_count"] for item in summaries} == {2}
+        assert sum(item["has_active_jobs"] for item in summaries) == 10
+        assert all(item["cover"] is not None and item["latest_job"] is not None for item in summaries)
+        assert len(statements) <= 8, statements
+        assert sum("from projects" in statement.lower() for statement in statements) == 1
 
 
 def test_admin_governance() -> None:
@@ -412,45 +883,108 @@ def test_admin_governance() -> None:
         assert client.patch("/v1/users/missing", headers=admin, json={"active": False}).status_code == 404
 
 
-def test_invitation_is_consumed_on_registration() -> None:
+def test_invitation_requires_one_time_claim_by_the_matching_account(monkeypatch) -> None:
+    clock = datetime(2026, 11, 20, tzinfo=UTC)
+    monkeypatch.setattr(main, "now", lambda: clock)
     with TestClient(app) as client:
         owner = client.post("/v1/auth/register", json={"email": "lead@example.com", "password": "correct-horse"})
         headers = {"Authorization": f"Bearer {owner.json()['access_token']}"}
         project_id = client.post("/v1/projects", headers=headers, json={"name": "Invite"}).json()["id"]
         route = f"/v1/projects/{project_id}/members"
-
+        pending_route = f"/v1/projects/{project_id}/invitations"
+        accept_route = "/v1/project-invitations/accept"
         invited = client.post(route, headers=headers, json={"email": " Guest@Example.com ", "role": "viewer"})
         assert invited.status_code == 201
-        assert invited.json() == {"status": "invited", "email": "guest@example.com", "role": "viewer"}
-        assert [
-            item["email"] for item in client.get(f"/v1/projects/{project_id}/invitations", headers=headers).json()
-        ] == ["guest@example.com"]
-
-        dropped = client.post(route, headers=headers, json={"email": "cancel@example.com"})
-        assert dropped.json()["status"] == "invited"
-        pending = client.get(f"/v1/projects/{project_id}/invitations", headers=headers).json()
-        cancelled = next(item for item in pending if item["email"] == "cancel@example.com")
-        assert (
-            client.delete(f"/v1/projects/{project_id}/invitations/{cancelled['id']}", headers=headers).status_code
-            == 204
-        )
+        assert invited.headers["cache-control"] == "no-store"
+        issued = invited.json()
+        code = issued.pop("claim_code")
+        assert datetime.fromisoformat(issued.pop("expires_at")) == clock + timedelta(days=7)
+        assert issued == {"status": "invited", "email": "guest@example.com", "role": "viewer"}
+        digest = hashlib.sha256(code.encode()).hexdigest()
+        with SessionLocal() as db:
+            assert db.scalar(select(ProjectInvitation)).claim_digest == digest
+        pending = client.get(pending_route, headers=headers)
+        assert [item["email"] for item in pending.json()] == ["guest@example.com"]
+        assert code not in pending.text and digest not in pending.text
+        assert client.post(accept_route, json={"code": code}).status_code == 401
+        wrong = client.post(accept_route, headers=headers, json={"code": code})
+        assert wrong.status_code == 404
 
         guest = client.post("/v1/auth/register", json={"email": "guest@example.com", "password": "correct-horse"})
         guest_headers = {"Authorization": f"Bearer {guest.json()['access_token']}"}
+        assert client.get("/v1/projects", headers=guest_headers).json() == []
+        claimed = client.post(accept_route, headers=guest_headers, json={"code": code})
+        assert claimed.status_code == 200
+        assert claimed.json() == {"project_id": project_id, "role": "viewer"}
+        reused = client.post(accept_route, headers=guest_headers, json={"code": code})
+        assert reused.status_code == wrong.status_code
+        assert reused.json() == wrong.json()
+        assert reused.headers["x-error-code"] == wrong.headers["x-error-code"] == "invitation.unavailable"
         assert [item["id"] for item in client.get("/v1/projects", headers=guest_headers).json()] == [project_id]
         members = client.get(route, headers=headers).json()
         assert [(item["email"], item["role"]) for item in members] == [
             ("lead@example.com", "owner"),
             ("guest@example.com", "viewer"),
         ]
-        assert client.get(f"/v1/projects/{project_id}/invitations", headers=headers).json() == []
+        assert client.get(pending_route, headers=headers).json() == []
+        audit = client.get(f"/v1/projects/{project_id}/audit", headers=headers)
+        assert code not in audit.text and digest not in audit.text
+        assert [item["action"] for item in audit.json()["items"]].count("project.member.invite.accept") == 1
 
         known = client.post(route, headers=headers, json={"email": "guest@example.com", "role": "member"})
         guest_id = client.get("/v1/auth/me", headers=guest_headers).json()["id"]
-        assert known.json() == {"status": "member", "user_id": guest_id, "role": "member"}
+        assert known.json() == {"status": "member", "user_id": guest_id, "role": "viewer"}
         assert [
             item["role"] for item in client.get(route, headers=headers).json() if item["email"] == "guest@example.com"
-        ] == ["member"]
+        ] == ["viewer"]
+
+
+@pytest.mark.parametrize("reason", ["revoked", "rotated", "expired", "deleted", "disabled", "legacy"])
+def test_existing_account_invitation_requires_active_code(monkeypatch, reason: str) -> None:
+    clock = datetime(2026, 11, 20, tzinfo=UTC)
+    monkeypatch.setattr(main, "now", lambda: clock)
+    with TestClient(app) as client:
+        owner = client.post("/v1/auth/register", json={"email": "lead@example.com", "password": "correct-horse"})
+        owner_headers = {"Authorization": f"Bearer {owner.json()['access_token']}"}
+        guest = client.post("/v1/auth/register", json={"email": "guest@example.com", "password": "correct-horse"})
+        guest_headers = {"Authorization": f"Bearer {guest.json()['access_token']}"}
+        project_id = client.post("/v1/projects", headers=owner_headers, json={"name": "Invite"}).json()["id"]
+        route = f"/v1/projects/{project_id}"
+        invitation = {"email": "guest@example.com", "role": "member"}
+        issued = client.post(f"{route}/members", headers=owner_headers, json=invitation).json()
+        assert issued["status"] == "invited"
+        assert client.get(route, headers=guest_headers).status_code == 403
+        invitation_id = client.get(f"{route}/invitations", headers=owner_headers).json()[0]["id"]
+        code = issued["claim_code"]
+        if reason == "revoked":
+            assert client.delete(f"{route}/invitations/{invitation_id}", headers=owner_headers).status_code == 204
+        elif reason == "rotated":
+            new = client.post(f"{route}/members", headers=owner_headers, json=invitation).json()
+            assert new["claim_code"] != code
+        elif reason == "expired":
+            clock += timedelta(days=7)
+        elif reason == "deleted":
+            assert client.delete(route, headers=owner_headers).status_code == 204
+        elif reason == "disabled":
+            with SessionLocal.begin() as db:
+                db.scalar(select(User).where(User.email == invitation["email"])).active = False
+        elif reason == "legacy":
+            with SessionLocal.begin() as db:
+                legacy = db.get(ProjectInvitation, invitation_id)
+                legacy.claim_digest = None
+                legacy.expires_at = None
+        response = client.post("/v1/project-invitations/accept", headers=guest_headers, json={"code": code})
+        if reason == "disabled":
+            assert response.status_code == 401
+        else:
+            assert response.status_code == 404
+            assert response.headers["x-error-code"] == "invitation.unavailable"
+            assert client.get("/v1/projects", headers=guest_headers).json() == []
+        if reason == "rotated":
+            response = client.post(
+                "/v1/project-invitations/accept", headers=guest_headers, json={"code": new["claim_code"]}
+            )
+            assert response.json() == {"project_id": project_id, "role": "member"}
 
 
 def test_job_stages_and_notifications(monkeypatch) -> None:
@@ -561,6 +1095,269 @@ def test_auth_rate_limit(monkeypatch) -> None:
         main.settings.cache_clear()
 
 
+def test_rate_limit_ignores_rotated_forwarded_for(monkeypatch) -> None:
+    monkeypatch.setenv("RESCENE_AUTH_RATE_LIMIT", "3")
+    main.settings.cache_clear()
+    try:
+        with TestClient(app) as client:
+            with SessionLocal() as db:
+                db.add(User(email="spoofed@example.com", password_hash=hash_password("correct-horse")))
+                db.commit()
+            payload = {"email": "spoofed@example.com", "password": "correct-horse"}
+            for index in range(3):
+                spoof = {"X-Forwarded-For": f"203.0.113.{index}, 10.0.0.1"}
+                assert client.post("/v1/auth/login", headers=spoof, json=payload).status_code == 200
+            blocked = client.post("/v1/auth/login", headers={"X-Forwarded-For": "198.51.100.7"}, json=payload)
+            assert blocked.status_code == 429
+            assert blocked.headers["x-error-code"] == "auth.rate_limited"
+            assert int(blocked.headers["retry-after"]) >= 1
+    finally:
+        main.settings.cache_clear()
+
+
+def test_rate_limit_separates_verified_client_addresses(monkeypatch) -> None:
+    monkeypatch.setenv("RESCENE_AUTH_RATE_LIMIT", "2")
+    main.settings.cache_clear()
+    try:
+        with TestClient(app) as client:
+            with SessionLocal() as db:
+                db.add(User(email="addressed@example.com", password_hash=hash_password("correct-horse")))
+                db.commit()
+            payload = {"email": "addressed@example.com", "password": "correct-horse"}
+            first, second = {"X-Real-IP": "203.0.113.10"}, {"X-Real-IP": "203.0.113.11"}
+            for headers in (first, first):
+                assert client.post("/v1/auth/login", headers=headers, json=payload).status_code == 200
+            assert client.post("/v1/auth/login", headers=first, json=payload).status_code == 429
+            for headers in (second, second):
+                assert client.post("/v1/auth/login", headers=headers, json=payload).status_code == 200
+            assert client.post("/v1/auth/login", headers=second, json=payload).status_code == 429
+            malformed = client.post("/v1/auth/login", headers={"X-Real-IP": "not-an-ip"}, json=payload)
+            assert malformed.status_code == 200
+    finally:
+        main.settings.cache_clear()
+
+
+def test_rate_limiter_prunes_idle_keys() -> None:
+    limiter.reset()
+    limiter.allow("idle:path", 5, 0.01)
+    assert "idle:path" in limiter._hits
+    time.sleep(0.02)
+    limiter._next_prune = 0.0
+    limiter.allow("fresh:path", 5, 60)
+    assert "idle:path" not in limiter._hits
+    assert "fresh:path" in limiter._hits
+    limiter.reset()
+
+
+def test_oversized_request_body_is_rejected() -> None:
+    with TestClient(app) as client:
+        oversized = b"a" * (3 * 1024 * 1024)
+        declared = client.post(
+            "/v1/auth/register",
+            content=oversized,
+            headers={"Content-Type": "application/json"},
+        )
+        assert declared.status_code == 413
+        streamed = client.post(
+            "/v1/auth/register",
+            content=iter([oversized[: 1024 * 1024], oversized[1024 * 1024 :]]),
+            headers={"Content-Type": "application/json"},
+        )
+        assert streamed.status_code == 413
+    with SessionLocal() as db:
+        assert db.query(User).count() == 0
+
+
+def test_email_normalization_across_admin_and_invitations() -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            admin = User(email="root@example.com", password_hash=hash_password("correct-horse"), is_admin=True)
+            db.add(admin)
+            db.commit()
+            admin_headers = {"Authorization": f"Bearer {issue_token(admin.id)}"}
+        created = client.post(
+            "/v1/users",
+            headers=admin_headers,
+            json={"email": "  Staff@Example.COM  ", "password": "correct-horse"},
+        )
+        assert created.status_code == 201
+        assert created.json()["email"] == "staff@example.com"
+        assert (
+            client.post("/v1/auth/login", json={"email": "STAFF@example.com", "password": "correct-horse"}).status_code
+            == 200
+        )
+        for invalid in ("broken", "space inside@example.com", f"{'a' * 320}@example.com"):
+            assert (
+                client.post(
+                    "/v1/users",
+                    headers=admin_headers,
+                    json={"email": invalid, "password": "correct-horse"},
+                ).status_code
+                == 422
+            )
+        assert (
+            client.post(
+                "/v1/auth/login",
+                json={"email": "staff@example.com", "password": "x" * 2000},
+            ).status_code
+            == 422
+        )
+
+        owner = client.post("/v1/auth/register", json={"email": "  Spaced@Example.com ", "password": "correct-horse"})
+        assert owner.status_code == 201
+        owner_headers = {"Authorization": f"Bearer {owner.json()['access_token']}"}
+        project_id = client.post("/v1/projects", headers=owner_headers, json={"name": "Invites"}).json()["id"]
+        invited = client.post(
+            f"/v1/projects/{project_id}/members",
+            headers=owner_headers,
+            json={"email": "  Guest@Example.COM ", "role": "viewer"},
+        )
+        assert invited.status_code == 201
+        assert invited.json()["email"] == "guest@example.com"
+        with SessionLocal() as db:
+            assert db.scalar(select(ProjectInvitation.email)) == "guest@example.com"
+        assert (
+            client.post(
+                f"/v1/projects/{project_id}/members",
+                headers=owner_headers,
+                json={"email": "not-an-email"},
+            ).status_code
+            == 422
+        )
+
+
+def test_complete_asset_reports_retryable_conflict_codes(monkeypatch) -> None:
+    store = RecordingStore()
+    monkeypatch.setattr(main, "storage", lambda: store)
+
+    def head(*_):
+        raise oss2.exceptions.NotFound(404, {}, b"", {})
+
+    with TestClient(app) as client:
+        headers, _, grant = register_asset(client, "conflicts@example.com")
+        asset_id = str(grant["asset_id"])
+        complete = f"/v1/assets/{asset_id}/complete"
+
+        monkeypatch.setattr(main, "storage", lambda: SimpleNamespace(head=head))
+        incomplete = client.post(complete, headers=headers, json={"size": 2048, "sha256": "a" * 64})
+        assert incomplete.status_code == 409
+        assert incomplete.headers["x-error-code"] == "asset.upload_incomplete"
+
+        monkeypatch.setattr(
+            main,
+            "storage",
+            lambda: SimpleNamespace(head=lambda _: (1024, "image/jpeg")),
+        )
+        sized = client.post(complete, headers=headers, json={"size": 2048, "sha256": "a" * 64})
+        assert sized.status_code == 409
+        assert sized.headers["x-error-code"] == "asset.upload_size_mismatch"
+
+        monkeypatch.setattr(
+            main,
+            "storage",
+            lambda: SimpleNamespace(head=lambda _: (2048, "image/jpeg")),
+        )
+        hashed = client.post(complete, headers=headers, json={"size": 2048, "sha256": "b" * 64})
+        assert hashed.status_code == 409
+        assert hashed.headers["x-error-code"] == "asset.upload_hash_mismatch"
+
+        completed = client.post(complete, headers=headers, json={"size": 2048, "sha256": "a" * 64})
+        assert completed.status_code == 200
+        assert completed.json()["status"] == "READY"
+        repeated = client.post(f"/v1/assets/{asset_id}/upload-session", headers=headers)
+        assert repeated.status_code == 409
+        assert repeated.headers["x-error-code"] == "asset.not_awaiting_upload"
+
+
+def test_upload_session_rolls_back_when_credentials_fail(monkeypatch) -> None:
+    store = RecordingStore()
+
+    def unavailable():
+        raise HTTPException(503, "OSS is not configured")
+
+    route_headers: dict[str, str] = {}
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/auth/register", json={"email": "credentials@example.com", "password": "correct-horse"}
+        )
+        route_headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+        project_id = client.post("/v1/projects", headers=route_headers, json={"name": "Credentials"}).json()["id"]
+        route = f"/v1/projects/{project_id}/assets/upload-session"
+        payload = {"filename": "frame.jpg", "size": 2048, "content_type": "image/jpeg", "sha256": "a" * 64}
+
+        monkeypatch.setattr(main, "storage", unavailable)
+        failed = client.post(route, headers=route_headers, json=payload)
+        assert failed.status_code == 503
+        assert failed.headers["x-error-code"] == "asset.upload_credentials_unavailable"
+        assert failed.headers["retry-after"] == "30"
+        with SessionLocal() as db:
+            assert db.scalars(select(Asset)).all() == []
+            assert db.scalars(select(AuditLog).where(AuditLog.action == "asset.upload.init")).all() == []
+
+        monkeypatch.setattr(main, "storage", lambda: store)
+        created_session = client.post(route, headers=route_headers, json=payload)
+        assert created_session.status_code == 201
+        assert created_session.json()["asset_id"]
+        with SessionLocal() as db:
+            asset = db.scalar(select(Asset))
+            assert asset is not None and asset.status == "UPLOADING"
+            audit_row = db.scalar(select(AuditLog).where(AuditLog.action == "asset.upload.init"))
+            assert audit_row is not None and audit_row.target_id == asset.id
+
+
+def test_stale_upload_expiry_is_bounded_per_request(monkeypatch) -> None:
+    store = RecordingStore()
+    monkeypatch.setattr(main, "storage", lambda: store)
+    with TestClient(app) as client:
+        headers, project_id, _ = register_asset(client, "bounded@example.com")
+        stale_at = now() - timedelta(days=2)
+        with SessionLocal() as db:
+            db.add_all(
+                Asset(
+                    project_id=project_id,
+                    object_key=f"bounded/{index}",
+                    filename=f"frame-{index}.jpg",
+                    size=10,
+                    content_type="image/jpeg",
+                    created_at=stale_at,
+                )
+                for index in range(75)
+            )
+            db.commit()
+        route = f"/v1/projects/{project_id}/assets"
+        for expected in (20, 40, 60, 75):
+            assert client.get(route, headers=headers).status_code == 200
+            with SessionLocal() as db:
+                assert db.scalar(select(func.count()).select_from(AssetCleanup)) == expected
+        assert store.deleted == []
+
+
+def test_cleanup_queue_stops_retrying_permanent_failures(monkeypatch) -> None:
+    store = RecordingStore()
+    monkeypatch.setattr(main, "storage", lambda: store)
+    with TestClient(app) as client:
+        headers, _, grant = register_asset(client, "permanent@example.com")
+        assert client.delete(f"/v1/assets/{grant['asset_id']}", headers=headers).status_code == 204
+        with SessionLocal() as db:
+            record = db.scalar(select(AssetCleanup))
+            assert record is not None
+            record.attempts = main.CLEANUP_MAX_ATTEMPTS - 1
+            store.errors[record.object_key] = oss2.exceptions.OssError(503, {}, "ServiceUnavailable", {})
+            db.commit()
+        assert main.reap_asset_cleanups() == 0
+        with SessionLocal() as db:
+            record = db.scalar(select(AssetCleanup))
+            assert record.attempts == main.CLEANUP_MAX_ATTEMPTS
+            record.next_attempt_at = now() - timedelta(seconds=1)
+            db.commit()
+        assert main.reap_asset_cleanups() == 0
+        with SessionLocal() as db:
+            record = db.scalar(select(AssetCleanup))
+            assert record is not None and record.attempts == main.CLEANUP_MAX_ATTEMPTS
+            assert record.last_error is not None
+        assert store.deleted == []
+
+
 def test_share_qr_and_audit() -> None:
     with TestClient(app) as client:
         owner = client.post("/v1/auth/register", json={"email": "sharer@example.com", "password": "correct-horse"})
@@ -601,11 +1398,14 @@ def test_share_qr_and_audit() -> None:
             db.commit()
         reader = client.post("/v1/auth/login", json={"email": "reader@example.com", "password": "correct-horse"})
         reader_headers = {"Authorization": f"Bearer {reader.json()['access_token']}"}
+        invitation = client.post(
+            f"/v1/projects/{project_id}/members", headers=headers, json={"email": "reader@example.com"}
+        ).json()
         assert (
             client.post(
-                f"/v1/projects/{project_id}/members", headers=headers, json={"email": "reader@example.com"}
-            ).json()["status"]
-            == "member"
+                "/v1/project-invitations/accept", headers=reader_headers, json={"code": invitation["claim_code"]}
+            ).status_code
+            == 200
         )
         assert client.get(f"/v1/projects/{project_id}/audit", headers=reader_headers).status_code == 403
 
@@ -643,13 +1443,13 @@ def test_user_directory_pagination_and_detail() -> None:
         bob_headers = {"Authorization": f"Bearer {bob.json()['access_token']}"}
         alpha = client.post("/v1/projects", headers=alice_headers, json={"name": "Alpha"}).json()["id"]
         beta = client.post("/v1/projects", headers=bob_headers, json={"name": "Beta"}).json()["id"]
-        invite = {"email": "bob@example.com"}
-        assert client.post(f"/v1/projects/{alpha}/members", headers=alice_headers, json=invite).status_code == 201
+        invite = client.post(f"/v1/projects/{beta}/members", headers=bob_headers, json={"email": "alice@example.com"})
+        assert invite.status_code == 201
         assert (
             client.post(
-                f"/v1/projects/{beta}/members", headers=bob_headers, json={"email": "alice@example.com"}
+                "/v1/project-invitations/accept", headers=alice_headers, json={"code": invite.json()["claim_code"]}
             ).status_code
-            == 201
+            == 200
         )
 
         alice_id = client.get("/v1/users?query=alice", headers=admin).json()["items"][0]["id"]
@@ -723,6 +1523,86 @@ def test_announcement_fanout_and_delete() -> None:
         assert client.get("/v1/announcements", headers=admin).json() == []
         missing = client.delete(f"/v1/announcements/{announcement['id']}", headers=admin)
         assert missing.status_code == 404 and missing.headers["x-error-code"] == "announcement.not_found"
+
+
+def test_notifications_follow_current_project_access() -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            root = User(email="root@example.com", password_hash=hash_password("correct-horse"), is_admin=True)
+            owner = User(email="owner@example.com", password_hash=hash_password("correct-horse"))
+            member = User(email="member@example.com", password_hash=hash_password("correct-horse"))
+            db.add_all([root, owner, member])
+            db.flush()
+            project = Project(name="Scope", owner_id=owner.id)
+            db.add(project)
+            db.flush()
+            db.add(ProjectMember(project_id=project.id, user_id=member.id, role="member"))
+            project_notice = Notification(
+                user_id=member.id, kind="job_succeeded", title="项目完成", body="场景已就绪", project_id=project.id
+            )
+            other_notice = Notification(
+                user_id=owner.id, kind="job_succeeded", title="项目完成", body="场景已就绪", project_id=project.id
+            )
+            announcement = Notification(user_id=member.id, kind="announcement", title="公告", body="维护")
+            admin_notice = Notification(
+                user_id=root.id, kind="job_succeeded", title="项目完成", body="场景已就绪", project_id=project.id
+            )
+            db.add_all([project_notice, other_notice, announcement, admin_notice])
+            db.commit()
+            project_id, member_id = project.id, member.id
+            notice_id, announcement_id = project_notice.id, announcement.id
+            admin_notice_id = admin_notice.id
+        admin = client.post("/v1/auth/login", json={"email": "root@example.com", "password": "correct-horse"})
+        admin_headers = {"Authorization": f"Bearer {admin.json()['access_token']}"}
+        member_headers = {
+            "Authorization": f"Bearer {client.post('/v1/auth/login', json={'email': 'member@example.com', 'password': 'correct-horse'}).json()['access_token']}"
+        }
+        owner_headers = {
+            "Authorization": f"Bearer {client.post('/v1/auth/login', json={'email': 'owner@example.com', 'password': 'correct-horse'}).json()['access_token']}"
+        }
+
+        listed = [item["id"] for item in client.get("/v1/notifications", headers=member_headers).json()]
+        assert len(listed) == 2 and set(listed) == {announcement_id, notice_id}
+        assert client.get("/v1/notifications/count", headers=member_headers).json() == {"unread": 2}
+        first_page = client.get("/v1/notifications?limit=1", headers=member_headers).json()
+        second_page = client.get("/v1/notifications?limit=1&offset=1", headers=member_headers).json()
+        assert len(first_page) == len(second_page) == 1
+        assert {first_page[0]["id"], second_page[0]["id"]} == {announcement_id, notice_id}
+
+        with SessionLocal() as db:
+            db.execute(
+                delete(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == member_id)
+            )
+            db.commit()
+
+        assert [item["id"] for item in client.get("/v1/notifications", headers=member_headers).json()] == [
+            announcement_id
+        ]
+        assert client.get("/v1/notifications/count", headers=member_headers).json() == {"unread": 1}
+        assert client.post("/v1/notifications/read", headers=member_headers, json={"ids": [notice_id]}).json() == {
+            "updated": 0
+        }
+        with SessionLocal() as db:
+            assert db.get(Notification, notice_id).read_at is None, "a hidden notice must not be marked read"
+            assert db.get(Notification, announcement_id).read_at is None
+        assert client.post("/v1/notifications/read", headers=member_headers, json={}).json() == {"updated": 1}
+
+        assert [item["id"] for item in client.get("/v1/notifications", headers=owner_headers).json()] == [
+            other_notice.id
+        ]
+        assert [item["id"] for item in client.get("/v1/notifications", headers=admin_headers).json()] == [
+            admin_notice_id
+        ]
+
+        with SessionLocal() as db:
+            db.get(Project, project_id).deleted_at = now()
+            db.commit()
+
+        assert client.get("/v1/notifications", headers=owner_headers).json() == []
+        assert client.get("/v1/notifications/count", headers=owner_headers).json() == {"unread": 0}
+        assert client.get("/v1/notifications", headers=admin_headers).json() == []
+
+        assert len(client.get("/v1/notifications?limit=1", headers=member_headers).json()) == 1
 
 
 def test_global_audit_filters_and_csv() -> None:

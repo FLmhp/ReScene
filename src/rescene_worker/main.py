@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import errno
+import gzip
 import hashlib
 import json
 import mimetypes
@@ -12,7 +14,7 @@ import tarfile
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,7 +27,13 @@ from oss2.credentials import Credentials, CredentialsProvider
 from PIL import Image
 
 from rescene.metrics import final_ply_path
-from rescene.preprocess import IMAGE_SUFFIXES, VIDEO_SUFFIXES, relocate_selected_images, video_input_args
+from rescene.preprocess import (
+    IMAGE_SUFFIXES,
+    VIDEO_SUFFIXES,
+    InvalidInputManifest,
+    relocate_selected_images,
+    video_input_args,
+)
 from rescene_worker.logs import LogShipper
 
 
@@ -86,24 +94,48 @@ class Api:
         raise AssertionError("Worker API retry loop exhausted")
 
 
+_last_gpu_probe_warning: float | None = None
+
+
+def warn_gpu_probe(message: str) -> None:
+    global _last_gpu_probe_warning
+    now = time.monotonic()
+    if _last_gpu_probe_warning is None or now - _last_gpu_probe_warning >= 60:
+        print(f"worker GPU probe: {message}", file=sys.stderr, flush=True)
+        _last_gpu_probe_warning = now
+
+
 def gpu_name() -> str:
-    result = subprocess.run(
-        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        warn_gpu_probe("device name timed out")
+        return "unknown"
     return result.stdout.strip().splitlines()[0] if result.returncode == 0 and result.stdout.strip() else "unknown"
 
 
 def gpu_has_compute_process() -> bool:
-    result = subprocess.run(
-        ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader,nounits"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.returncode != 0 or bool(result.stdout.strip())
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        warn_gpu_probe("compute process query timed out; skipping lease")
+        return True
+    if result.returncode != 0:
+        warn_gpu_probe("compute process query failed; skipping lease")
+        return True
+    return bool(result.stdout.strip())
 
 
 @contextmanager
@@ -146,25 +178,48 @@ def sha256_file(path: Path) -> str:
 
 
 class IncompleteCheckpoint(ValueError):
-    """A legacy archive lacks files required by the current engine."""
+    """An archive lacks usable files required by the current engine."""
+
+
+class UnsafeCheckpoint(RuntimeError):
+    """An archive contains a member that could escape the job directory."""
+
+
+# Disk, permission, and quota failures are local infrastructure problems; retrying
+# the same archive cannot fix them, so they never trigger a clean restart.
+_UNCLEAN_OS_ERRORS = {errno.ENOSPC, errno.EDQUOT, errno.EACCES, errno.EPERM, errno.EROFS}
+
+
+def is_corrupt_checkpoint(error: BaseException) -> bool:
+    """Whether a restore failure means the archive itself is unusable."""
+    if isinstance(error, (IncompleteCheckpoint, UnsafeCheckpoint, tarfile.TarError, gzip.BadGzipFile, EOFError)):
+        return True
+    if isinstance(error, OSError):
+        return error.errno not in _UNCLEAN_OS_ERRORS
+    return False
 
 
 def restore_archive(bucket: oss2.Bucket, key: str, job_dir: Path) -> None:
     archive = job_dir.parent / f"{job_dir.name}.resume.tar.gz"
-    bucket.get_object_to_file(key, str(archive))
-    with tarfile.open(archive, "r:gz") as source:
-        root = job_dir.resolve()
-        for member in source.getmembers():
-            if member.issym() or member.islnk() or member.isdev():
-                raise RuntimeError(f"Unsafe archive member type: {member.name}")
-            target = (job_dir / member.name).resolve()
-            if target != root and root not in target.parents:
-                raise RuntimeError(f"Unsafe archive member: {member.name}")
-        source.extractall(job_dir)
+    try:
+        bucket.get_object_to_file(key, str(archive))
+        with tarfile.open(archive, "r:gz") as source:
+            root = job_dir.resolve()
+            for member in source.getmembers():
+                if member.issym() or member.islnk() or member.isdev():
+                    raise UnsafeCheckpoint(f"Unsafe archive member type: {member.name}")
+                target = (job_dir / member.name).resolve()
+                if target != root and root not in target.parents:
+                    raise UnsafeCheckpoint(f"Unsafe archive member: {member.name}")
+            source.extractall(job_dir)
+    except BaseException:
+        with suppress(OSError):
+            archive.unlink(missing_ok=True)
+        raise
     archive.unlink(missing_ok=True)
     if not (job_dir / "photometric_selection.json").is_file():
         raise IncompleteCheckpoint("Checkpoint has no photometric selection")
-    if key.endswith(("/training.tar.gz", "/export.tar.gz")) and not all(
+    if checkpoint_stage(key) in {"training", "export"} and not all(
         (job_dir / path).is_file() for path in ("photometric_split.json", "geometry_frames.json")
     ):
         raise IncompleteCheckpoint("Checkpoint has no training provenance")
@@ -172,15 +227,30 @@ def restore_archive(bucket: oss2.Bucket, key: str, job_dir: Path) -> None:
         relocate_selected_images(job_dir)
     except FileNotFoundError as error:
         raise IncompleteCheckpoint("Checkpoint has no input manifest or selected image") from error
+    except InvalidInputManifest as error:
+        raise IncompleteCheckpoint("Checkpoint has an invalid input manifest") from error
 
 
-def archive_stage(bucket: oss2.Bucket, job_dir: Path, output_prefix: str, stage: str) -> str:
+# Resume consumes the fused cloud (and the optional mesh); the stereo, image,
+# and sparse work trees are reproducible from the sparse model.
+DENSE_CHECKPOINT_FILES = ("dense/fused.ply", "dense/meshed-poisson.ply")
+
+
+def archive_stage(
+    bucket: oss2.Bucket,
+    job_dir: Path,
+    output_prefix: str,
+    stage: str,
+    *,
+    include_outputs: bool = True,
+    key_name: str | None = None,
+) -> str:
     archive = job_dir.parent / f"{job_dir.name}-{stage}.tar.gz"
     stage_files = {
-        "preprocess": {"images", "input_manifest.json", "photometric_selection.json"},
-        "geometry": {"sparse", "dense", "degradation.json"},
-        "training": {"gsplat", "photometric_split.json", "geometry_frames.json"},
-        "export": {"scene.spz", "metrics.json", "report.md"},
+        "preprocess": ("images", "input_manifest.json", "photometric_selection.json"),
+        "geometry": ("sparse", "degradation.json", *DENSE_CHECKPOINT_FILES),
+        "training": ("gsplat", "photometric_split.json", "geometry_frames.json"),
+        "export": ("scene.spz", "metrics.json", "report.md"),
     }
     included = {"config.json", "benchmark.json", "environment.json"}
     completed = []
@@ -189,14 +259,15 @@ def archive_stage(bucket: oss2.Bucket, job_dir: Path, output_prefix: str, stage:
         completed.append(name)
         if name == stage:
             break
+    skipped = set() if include_outputs else {"gsplat"} if stage == "training" else set()
     with tarfile.open(archive, "w:gz", compresslevel=1) as target:
-        for name in sorted(included):
+        for name in sorted(included - skipped):
             path = job_dir / name
             if path.exists():
                 target.add(path, arcname=name)
         for name in completed:
             target.add(job_dir / "stages" / f"{name}.json", arcname=f"stages/{name}.json")
-    key = f"{output_prefix}checkpoints/{stage}.tar.gz"
+    key = f"{output_prefix}checkpoints/{key_name or stage}.tar.gz"
     try:
         oss2.resumable_upload(bucket, key, str(archive), multipart_threshold=64 * 1024**2, num_threads=1)
     finally:
@@ -210,10 +281,28 @@ def stage_progress(stage: str, status: str) -> float:
     return value if status == "success" else max(0.0, value - 0.1)
 
 
+CHECKPOINT_STAGES = ("preprocess", "geometry", "training", "export")
+
+
+def checkpoint_stage(key: str) -> str | None:
+    """Return the pipeline stage a checkpoint key carries, if it is ours."""
+    name = str(key).rsplit("/", 1)[-1]
+    if not name.endswith(".tar.gz"):
+        return None
+    stage = name[: -len(".tar.gz")].split("-", 1)[0]
+    return stage if stage in CHECKPOINT_STAGES else None
+
+
 def is_resumed_stage(job: dict, stage: str) -> bool:
-    stages = ("preprocess", "geometry", "training", "export")
     key = str(job.get("resume_artifact_key") or "")
-    return any(key.endswith(f"/checkpoints/{name}.tar.gz") for name in stages[stages.index(stage) :])
+    resumed = checkpoint_stage(key)
+    if resumed is None:
+        return False
+    if CHECKPOINT_STAGES.index(resumed) > CHECKPOINT_STAGES.index(stage):
+        return True
+    # A degraded training checkpoint lacks the gsplat tree, so the successful
+    # retry must upload a complete checkpoint and refresh the API stage row.
+    return resumed == stage and key.endswith(f"/checkpoints/{stage}.tar.gz")
 
 
 class JobCancelled(RuntimeError):
@@ -276,6 +365,15 @@ def terminate_job_group(process: subprocess.Popen) -> None:
     process.wait()
 
 
+def degradation_for_stage(job_dir: Path, stage: str) -> dict | None:
+    path = job_dir / "degradation.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) and value.get("stage") == stage else None
+
+
 def monitor_job(
     api: Api,
     endpoint: str,
@@ -302,10 +400,19 @@ def monitor_job(
             if sent.get(stage) == modified:
                 continue
             resume_key = None
-            if state.get("status") == "success" and (stage != "export" or finished):
+            status = state.get("status")
+            if status == "success" and (stage != "export" or finished):
                 resume_key = archive_stage(bucket, job_dir, job["output_prefix"], stage)
-            elif stage == "export" and state.get("status") == "success":
+            elif status == "success" and stage == "export":
                 continue
+            elif status == "failed" and stage == "training" and degradation_for_stage(job_dir, stage) is not None:
+                # Persist the degradation decision even though training failed: the
+                # next attempt must resume with the recorded fallback instead of
+                # repeating the configuration that already ran out of memory. The
+                # partial gsplat tree is excluded so the retry starts clean.
+                resume_key = archive_stage(
+                    bucket, job_dir, job["output_prefix"], stage, include_outputs=False, key_name=f"{stage}-degraded"
+                )
             check_lease(events)
             api.post(
                 f"{endpoint}/stage",
@@ -324,7 +431,7 @@ def monitor_job(
         events[0].wait(2)
 
 
-def artifacts(job_dir: Path, bucket: oss2.Bucket, output_prefix: str) -> list[dict]:
+def artifacts(job_dir: Path, bucket: oss2.Bucket, output_prefix: str, check: Callable[[], None]) -> list[dict]:
     candidates: list[tuple[str, Path]] = []
     for kind, name in (("spz", "scene.spz"), ("metrics", "metrics.json"), ("report", "report.md")):
         path = job_dir / name
@@ -339,6 +446,7 @@ def artifacts(job_dir: Path, bucket: oss2.Bucket, output_prefix: str) -> list[di
             candidates.append((kind, path))
     result = []
     for kind, path in candidates:
+        check()
         key = f"{output_prefix}artifacts/{kind}/{path.name}"
         oss2.resumable_upload(bucket, key, str(path), multipart_threshold=64 * 1024**2, num_threads=1)
         result.append(
@@ -353,6 +461,7 @@ def artifacts(job_dir: Path, bucket: oss2.Bucket, output_prefix: str) -> list[di
     manifest = job_dir / "manifest.json"
     manifest.write_text(json.dumps({"version": 1, "artifacts": result}, indent=2), encoding="utf-8")
     key = f"{output_prefix}artifacts/manifest/manifest.json"
+    check()
     bucket.put_object_from_file(key, str(manifest), headers={"Content-Type": "application/json"})
     result.append(
         {
@@ -455,7 +564,17 @@ def execute_attempt(
     if resume_key:
         try:
             restore_archive(bucket, resume_key, output_dir)
-        except (oss2.exceptions.NoSuchKey, tarfile.ReadError, EOFError, IncompleteCheckpoint) as error:
+        except (
+            oss2.exceptions.NoSuchKey,
+            IncompleteCheckpoint,
+            UnsafeCheckpoint,
+            tarfile.TarError,
+            gzip.BadGzipFile,
+            OSError,
+            EOFError,
+        ) as error:
+            if not isinstance(error, oss2.exceptions.NoSuchKey) and not is_corrupt_checkpoint(error):
+                raise
             print(f"{job['job_id']} checkpoint unavailable ({type(error).__name__}); restarting", flush=True)
             safe_cleanup(output_dir, job_dir)
             output_dir.mkdir()
@@ -512,7 +631,7 @@ def execute_attempt(
         return
     metrics_path = output_dir / "metrics.json"
     metrics = json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.exists() else {}
-    published = artifacts(output_dir, bucket, job["output_prefix"])
+    published = artifacts(output_dir, bucket, job["output_prefix"], lambda: check_lease(events))
     check_lease(events)
     api.post(f"{endpoint}/complete", {"artifacts": published, "quality_score": metrics.get("psnr")})
 

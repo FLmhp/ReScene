@@ -12,6 +12,7 @@ import { createSHA256 } from "hash-wasm";
 import OSS, { type Checkpoint as OssCheckpoint } from "ali-oss";
 
 import type { ProgressReporter, UploadAdapter, UploadRequest, UploadResult } from "./index";
+import { ASSET_NOT_AWAITING_UPLOAD, isDuplicateUploadError } from "./queue";
 
 const CHUNK = 8 * 1024 * 1024;
 const STORE = "checkpoints";
@@ -147,14 +148,19 @@ export function createWebUploader(client: ResceneClient): UploadAdapter {
             // The asset behind the checkpoint is gone; start a fresh session.
             saved = undefined;
             await persist(null);
-          } else if (error instanceof ResceneApiError && error.status === 409) {
-            if (saved.uploaded) {
-              await persist(null);
-              throw new ResceneApiConflict(
-                "The previous upload failed server verification. Its checkpoint was discarded; retry to upload the file again.",
-              );
-            }
-          } else {
+          } else if (isDuplicateUploadError(error)) {
+            // The asset is settled and will never accept this object again.
+            await persist(null);
+            throw new ResceneApiConflict(
+              "The upload already settled on the server. Its checkpoint was discarded; retry to upload the file again.",
+            );
+          } else if (error instanceof ResceneApiError && error.status === 409 && saved.uploaded) {
+            // Incomplete, truncated, or mismatched objects are retryable. Keep
+            // the checkpoint record but drop the part list: resuming parts of an
+            // already rejected object would only reproduce the same rejection.
+            saved = { asset_id: saved.asset_id, object_key: saved.object_key, uploaded: false };
+            await persist(saved);
+          } else if (!(error instanceof ResceneApiError && error.status === 409)) {
             throw error;
           }
         }
@@ -171,7 +177,10 @@ export function createWebUploader(client: ResceneClient): UploadAdapter {
       try {
         grant = saved ? await client.refreshUploadSession(saved.asset_id, "sts") : await createSession();
       } catch (error) {
-        const stale = error instanceof ResceneApiError && (error.status === 404 || error.status === 409);
+        // Refresh only 409s when the asset stopped awaiting an upload; an older
+        // server omits the code, and any other code is unexpected.
+        const stale = error instanceof ResceneApiError && (error.status === 404
+          || (error.status === 409 && (error.code === undefined || error.code === ASSET_NOT_AWAITING_UPLOAD)));
         if (!saved || !stale) throw error;
         // Stale sessions cannot be refreshed; discard them and re-initiate.
         await persist(null);
@@ -218,12 +227,14 @@ export function createWebUploader(client: ResceneClient): UploadAdapter {
         const completed = await client.completeAsset(grant.asset_id, file.size, digest);
         if (completed.status !== "READY") throw new Error("Uploaded asset did not reach READY");
       } catch (error) {
-        if (error instanceof ResceneApiError && error.status === 409) {
+        if (isDuplicateUploadError(error)) {
           await persist(null);
           throw new ResceneApiConflict(
-            "The uploaded object failed server verification. Its checkpoint was discarded; retry to upload the file again.",
+            "The asset already settled on the server. Its checkpoint was discarded; retry to upload the file again.",
           );
         }
+        // Any other 409 (object still incomplete, truncated, or hashed
+        // differently) stays checkpointed so a retry can resume or re-verify.
         throw error;
       }
       await persist(null);

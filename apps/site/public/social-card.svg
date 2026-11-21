@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
-  <defs><radialGradient id="glow"><stop stop-color="#263960"/><stop offset="1" stop-color="#0b0d12"/></radialGradient><linearGradient id="line" x2="1" y2="1"><stop stop-color="#8aa4ff"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs>
-  <rect width="1200" height="630" fill="#0b0d12"/><circle cx="890" cy="305" r="400" fill="url(#glow)"/>
-  <g fill="none" stroke="url(#line)" opacity=".24"><circle cx="880" cy="310" r="220"/><ellipse cx="880" cy="310" rx="270" ry="120" transform="rotate(-25 880 310)"/><path d="M650 370 880 500 1110 370V230L880 100 650 230v140Zm0-140 230 130 230-130M880 360v140"/></g>
-  <g fill="none" stroke="#9bb8ff" stroke-width="12" stroke-linejoin="round"><path d="M792 359V257l88-51 88 51v102l-88 51-88-51Z"/><path d="m792 257 88 51 88-51M880 308v102"/></g><circle cx="880" cy="308" r="16" fill="#f4f5f7"/>
-  <text x="100" y="292" fill="#f2f4f8" font-family="system-ui, sans-serif" font-weight="700" font-size="88">ReScene</text><text x="104" y="355" fill="#b9c0ce" font-family="system-ui, sans-serif" font-size="28">From images to spatial scenes</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="ReScene">
+  <rect width="1200" height="630" fill="#101827"/>
+  <path d="M0 548H1200 M710 0V630 M1160 0V630 M710 82H1160" fill="none" stroke="#27354f"/>
+  <g transform="translate(740 138) scale(.37)"><path fill="#8693FF" d="M382 312 728 187 882 258 600 363 882 496V674L538 800V679L784 585 574 486V374L523 389Z"/><path fill="#2EDAD5" fill-rule="evenodd" d="M142 400 382 312 522 385V576L380 636 555 800 442 840 251 674 239 678V789L142 829ZM239 483 414 421V512L239 588Z"/></g>
+  <text x="78" y="315" fill="#f2f4f8" font-family="Arial, sans-serif" font-weight="700" font-size="94">ReScene</text>
+  <text x="83" y="382" fill="#b9c8e1" font-family="Arial, sans-serif" font-size="30">From images to spatial scenes</text>
 </svg>

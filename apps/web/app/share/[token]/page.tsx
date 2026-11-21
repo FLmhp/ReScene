@@ -48,10 +48,17 @@ export default function SharedScene({ params }: { params: Promise<{ token: strin
           onRetry={() => void load()}
         />
       ) : (
-        <div className="empty">
-          <h2>{error || "正在加载场景…"}</h2>
-          {error ? <button type="button" disabled={loading} onClick={() => void load()}>重新获取场景</button> : null}
-        </div>
+        <section className="empty" aria-live="polite">
+          {error ? (
+            <>
+              <h2>场景加载失败</h2>
+              <p className="error" role="alert">{error}</p>
+              <button type="button" disabled={loading} onClick={() => void load()}>重新获取场景</button>
+            </>
+          ) : (
+            <h2 role="status">正在加载场景…</h2>
+          )}
+        </section>
       )}
     </main>
   );

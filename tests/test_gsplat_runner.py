@@ -8,6 +8,27 @@ import pytest
 from rescene.gsplat_runner import configure_trainer
 
 
+def test_worker_override_only_changes_training_loader(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("imageio.v2")
+    original = torch.utils.data.DataLoader
+
+    class Runner:
+        trainset = [1, 2]
+        valset = [3]
+
+        def train(self):
+            return (
+                torch.utils.data.DataLoader(self.trainset, num_workers=4).num_workers,
+                torch.utils.data.DataLoader(self.valset, num_workers=1).num_workers,
+            )
+
+    trainer = SimpleNamespace(Dataset=torch.utils.data.Dataset, Runner=Runner)
+    configure_trainer(trainer, tmp_path / "selection.json", train_workers=8)
+    assert trainer.Runner().train() == (8, 1)
+    assert torch.utils.data.DataLoader is original
+
+
 def _setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     torch = pytest.importorskip("torch")
     imageio = pytest.importorskip("imageio.v2")
