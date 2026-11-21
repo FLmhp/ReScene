@@ -118,7 +118,7 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 | [025](025-serialize-desktop-artifact-cache-publication.md) | A20 | 串行化同一桌面场景缓存发布 | P2 | M | 无 | TODO |
 | [026](026-preserve-expanded-notification-pages.md) | A21 | 在自动刷新时保留已展开的通知分页 | P2 | S–M | 无 | TODO |
 | [027](027-project-list-role-projection.md) | A22 | 在项目列表查询中一次取回角色 | P3 | S | 无 | TODO |
-| [028](028-reject-degenerate-pose-alignment.md) | A23 | 拒绝退化的相机位姿对齐 | P3 | S | 无 | TODO |
+| [028](028-reject-degenerate-pose-alignment.md) | A23 | 拒绝退化的相机位姿对齐 | P3 | S | 无 | DONE · `47038ab` |
 | [029](029-make-narrow-navigation-keyboard-accessible.md) | A24 | 让窄屏工作台抽屉遵循键盘焦点顺序 | P3 | S–M | 无 | TODO |
 | [030](030-split-trial-summaries-by-scene.md) | A25 | 按数据集和场景分组试验汇总 | P3 | S–M | 无 | TODO |
 | [031](031-classify-only-current-backend-attempt.md) | A26 | 仅按当前引擎子进程日志分类失败 | P3 | S | 无 | DONE · `ff7a640` |
