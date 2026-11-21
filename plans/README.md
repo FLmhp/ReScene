@@ -45,6 +45,20 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 
 环境：Python 3.11.18（uv 虚拟环境 + `infra/api/constraints.txt`）、Node 26.13.1、pnpm 10.18.3、PostgreSQL 16.16（scoop 隔离实例，端口 55432，schema 级隔离夹具）。Ruff lint/format、`mypy` schema、`pnpm check:versions` 通过。Docker 守护进程在本机未启动，镜像构建与容器日志抽查记录为待验收。
 
+### 第二轮集成（006–032）
+
+集成工作树 `C:/rs-audit-integration`，分支 `codex/audit-integration`，起点 `21b2052`。各计划提交哈希见上表；合并均使用 `git merge --no-ff`，共享文件（`rescene_api/main.py`、`Workbench.tsx`、原生项目页与测试夹具）按先落计划再核对后一计划锚点的方式逐项合并。
+
+| 范围 | 计划 | 聚焦验证 |
+|---|---|---|
+| API、权限、迁移、日志 | 006 007 008 009 010 013 014 022 023 027 | 隔离 PostgreSQL 的租约、分享、删除、幂等、账户代次与旧库接管用例通过；Alembic `0007→0009`、SQLite 与 PostgreSQL 迁移夹具通过；lint/format/mypy 通过 |
+| Worker、离线实验、流水线 | 011 016 018 019 024 028 030 031 032 | 评估证据合并、降采样清单校验、进程组退出、租约丢失后停止上传、GPU 探测超时、退化位姿拒绝、按场景汇总、仅当前尝试分类、Worker drain 恢复用例通过 |
+| 四端客户端 | 012 015 017 020 021 025 026 029 | 原生素材持久化、任务快照与 SSE 空闲回退、编译产物日志轮询、原生桥首载与重试、桌面缓存跨进程限制、通知分页保留、窄屏抽屉焦点管理用例通过 |
+
+最终闸门（2026-11-21）：Python 全量 `pytest` 362 项通过、7 项跳过（含 PostgreSQL 16.16）；Ruff lint/format 与 `mypy` 通过。Node 侧 `pnpm -r typecheck` 全部通过，workspace 测试 101 项通过；`rescene-web`、`@rescene/desktop`、`@rescene/miniapp`（生产 `build:weapp`）与 `@rescene/mobile`（Android 导出）构建成功；`scripts/check-miniapp-login.mjs` 与 `scripts/check-mobile-viewer.cjs` 夹具通过。Rust `cargo fmt --check`、`cargo clippy --offline --all-targets -D warnings`、`cargo test --offline`（3 项）通过。执行环境为 Node 26.13.1、pnpm 10.18.3、Python 3.11.18；仓库声明的 Node 22 未复跑。
+
+待验收：Android 阅读器与原生队列需真机回归（001、020、021），微信开发者工具需覆盖日志从空到实时、切换与退后台（017），窄屏抽屉需真实浏览器 Tab/Shift+Tab 实测（029），Worker 上传中断与 GPU 探测超时需在真实 5090 与驱动上验证（019、024），生产旧库接管需隔离备份复核（022）。025 的缓存锁只覆盖进程内，跨进程并发仍未防护。Docker 守护进程未运行，镜像构建与容器日志抽查、GPU 训练回归仍待记录。
+
 ## 审计发现
 
 | # | 发现与影响 | 类别 | 工作量 | 修复风险 | 置信度与证据 |
