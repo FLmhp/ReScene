@@ -409,13 +409,27 @@ def preprocess_input(
     return manifest
 
 
+class InvalidInputManifest(ValueError):
+    """A saved input manifest cannot describe the selected images."""
+
+
 def relocate_selected_images(run_dir: Path) -> None:
     """Rebase selected image paths after moving a reconstruction directory."""
     manifest_path = run_dir / "input_manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InvalidInputManifest("Input manifest is not valid UTF-8 JSON") from error
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("frames"), list):
+        raise InvalidInputManifest("Input manifest must contain a frames array")
     for frame in manifest["frames"]:
+        if not isinstance(frame, dict):
+            raise InvalidInputManifest("Each input manifest frame must be an object")
         if frame.get("selected"):
-            image = run_dir / "images" / Path(frame["file"]).name
+            file = frame.get("file")
+            if not isinstance(file, str) or not file:
+                raise InvalidInputManifest("Selected input manifest frame must have a file path")
+            image = run_dir / "images" / Path(file).name
             if not image.is_file():
                 raise FileNotFoundError(f"Selected image missing: {image.name}")
             frame["file"] = str(image)

@@ -25,7 +25,13 @@ from oss2.credentials import Credentials, CredentialsProvider
 from PIL import Image
 
 from rescene.metrics import final_ply_path
-from rescene.preprocess import IMAGE_SUFFIXES, VIDEO_SUFFIXES, relocate_selected_images, video_input_args
+from rescene.preprocess import (
+    IMAGE_SUFFIXES,
+    VIDEO_SUFFIXES,
+    InvalidInputManifest,
+    relocate_selected_images,
+    video_input_args,
+)
 from rescene_worker.logs import LogShipper
 
 
@@ -146,21 +152,26 @@ def sha256_file(path: Path) -> str:
 
 
 class IncompleteCheckpoint(ValueError):
-    """A legacy archive lacks files required by the current engine."""
+    """An archive lacks usable files required by the current engine."""
 
 
 def restore_archive(bucket: oss2.Bucket, key: str, job_dir: Path) -> None:
     archive = job_dir.parent / f"{job_dir.name}.resume.tar.gz"
-    bucket.get_object_to_file(key, str(archive))
-    with tarfile.open(archive, "r:gz") as source:
-        root = job_dir.resolve()
-        for member in source.getmembers():
-            if member.issym() or member.islnk() or member.isdev():
-                raise RuntimeError(f"Unsafe archive member type: {member.name}")
-            target = (job_dir / member.name).resolve()
-            if target != root and root not in target.parents:
-                raise RuntimeError(f"Unsafe archive member: {member.name}")
-        source.extractall(job_dir)
+    try:
+        bucket.get_object_to_file(key, str(archive))
+        with tarfile.open(archive, "r:gz") as source:
+            root = job_dir.resolve()
+            for member in source.getmembers():
+                if member.issym() or member.islnk() or member.isdev():
+                    raise RuntimeError(f"Unsafe archive member type: {member.name}")
+                target = (job_dir / member.name).resolve()
+                if target != root and root not in target.parents:
+                    raise RuntimeError(f"Unsafe archive member: {member.name}")
+            source.extractall(job_dir)
+    except BaseException:
+        with suppress(OSError):
+            archive.unlink(missing_ok=True)
+        raise
     archive.unlink(missing_ok=True)
     if not (job_dir / "photometric_selection.json").is_file():
         raise IncompleteCheckpoint("Checkpoint has no photometric selection")
@@ -172,6 +183,8 @@ def restore_archive(bucket: oss2.Bucket, key: str, job_dir: Path) -> None:
         relocate_selected_images(job_dir)
     except FileNotFoundError as error:
         raise IncompleteCheckpoint("Checkpoint has no input manifest or selected image") from error
+    except InvalidInputManifest as error:
+        raise IncompleteCheckpoint("Checkpoint has an invalid input manifest") from error
 
 
 def archive_stage(bucket: oss2.Bucket, job_dir: Path, output_prefix: str, stage: str) -> str:
