@@ -1,8 +1,10 @@
 import { isOfflineError, ResceneApiError, type ResceneClient } from "@rescene/api-client";
-import type { UploadGrant } from "@rescene/schemas";
-import { inspectMedia, mediaType, SAMPLE_SIDE } from "@rescene/uploader";
 import { sha256 } from "@noble/hashes/sha2.js";
+import type { UploadGrant } from "@rescene/schemas";
+import { inspectMedia, mediaType, SAMPLE_SIDE, type QueueOwner } from "@rescene/uploader";
 import Taro from "@tarojs/taro";
+
+import { assertQueueOwner, isQueueOwnerCurrent } from "./api";
 
 export const MINIAPP_FILE_LIMIT = 10 * 1024 * 1024;
 export const MINIAPP_FILE_COUNT = 8;
@@ -162,14 +164,17 @@ export async function chooseMedia(): Promise<ChosenFile[]> {
  * `assetId` resumes that queued asset instead of creating another row.
  */
 export async function uploadFile(
+  owner: QueueOwner,
   client: ResceneClient,
   projectId: string,
   file: ChosenFile,
   onProgress?: (percent: number) => void,
-  options?: { assetId?: string; onAsset?: (id: string) => void },
+  options?: { assetId?: string; onAsset?: (id: string) => void | Promise<void> },
 ): Promise<string> {
+  assertQueueOwner(owner);
   let last = -1;
   const report = (percent: number) => {
+    if (!isQueueOwnerCurrent(owner)) return;
     const value = Math.max(0, Math.min(100, Math.round(percent)));
     if (value <= last) return;
     last = value;
@@ -186,6 +191,7 @@ export async function uploadFile(
   }
   report(20);
 
+  assertQueueOwner(owner);
   let grant: UploadGrant;
   try {
     grant = options?.assetId
@@ -207,7 +213,8 @@ export async function uploadFile(
       isOfflineError(reason),
     );
   }
-  options?.onAsset?.(grant.asset_id);
+  await options?.onAsset?.(grant.asset_id);
+  assertQueueOwner(owner);
   if (!grant.url || !grant.fields) throw new UploadError("服务端未返回上传表单", file, "session");
 
   const task = Taro.uploadFile({
@@ -231,6 +238,7 @@ export async function uploadFile(
   }
   report(90);
 
+  assertQueueOwner(owner);
   try {
     await client.completeAsset(grant.asset_id, file.size, sha256Hex);
   } catch (reason) {

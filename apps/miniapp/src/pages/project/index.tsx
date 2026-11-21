@@ -3,17 +3,16 @@ import { AssetThumbnail } from "../../asset-thumbnail";
 import { explainError, isOfflineError, ResceneApiError } from "@rescene/api-client";
 import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, canRetryJob, jobErrorHint, queuedJobHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
 import type { Asset, Job, JobLog, MemberRole, Profile, ProjectWorkspace, ProjectMember, ShareSummary, WorkerStatus } from "@rescene/schemas";
-import { MediaPreflightError, summarizeMediaWarnings } from "@rescene/uploader";
+import { MediaPreflightError, QUEUE_PAUSED, summarizeMediaWarnings, type QueueOwner } from "@rescene/uploader";
 import { Button, Image, Input, Progress, ScrollView, Text, View } from "@tarojs/components";
 import Taro, { useDidHide, useDidShow, useRouter } from "@tarojs/taro";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { apiBaseUrl, client, webBaseUrl } from "../../api";
-import { enqueue, loadQueue, replayQueued, saveQueue } from "../../queue";
+import { apiBaseUrl, assertQueueOwner, client, currentQueueOwner, isQueueOwnerCurrent, onSessionExpired, webBaseUrl } from "../../api";
+import { enqueue, replayQueued, uploadQueued } from "../../queue";
 import {
   chooseMedia,
   inspectChosenFiles,
-  uploadFile,
   UploadError,
   UploadSelectionError,
   MINIAPP_FILE_COUNT,
@@ -49,7 +48,7 @@ type TimelineRow = {
   progress: number;
   message?: string | null;
 };
-type UploadItem = { id: string; file: ChosenFile; progress: number; status: "waiting" | "uploading" | "failed" | "done"; error?: string };
+type UploadItem = { owner: QueueOwner; id: string; file: ChosenFile; progress: number; status: "waiting" | "uploading" | "failed" | "done"; error?: string };
 const message = (reason: unknown, fallback: string) => {
   if (reason instanceof ResceneApiError) {
     if (reason.status === 403) return "没有权限执行此操作，或你不是该项目成员。";
@@ -178,13 +177,15 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
 
   useDidShow(() => {
     setVisible(true);
-    void replayQueued(client, () => undefined)
-      .then(({ uploaded }) => { if (uploaded) void load(); })
-      .catch((reason) => setError(message(reason, "同步离线上传失败")));
+    const owner = currentQueueOwner();
+    if (owner) void replayQueued(owner, () => undefined)
+      .then(({ uploaded }) => { if (uploaded && isQueueOwnerCurrent(owner)) void load(); })
+      .catch((reason) => { if (isQueueOwnerCurrent(owner)) setError(message(reason, "同步离线上传失败")); });
     reload();
   });
 
   useDidHide(() => setVisible(false));
+  useEffect(() => onSessionExpired(() => { setUploads([]); setNotice(""); }), []);
   useEffect(() => {
     if (!visible) return;
     const timer = setInterval(() => void loadWorker(), 15000);
@@ -274,58 +275,32 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
     if (reconstructionId && canWrite) void loadShares();
   }, [reconstructionId, canWrite, loadShares]);
 
-  async function runUploads(items: UploadItem[], indexes: number[]) {
-    if (uploadLock.current) return;
+  async function runUploads(owner: QueueOwner, items: UploadItem[], indexes: number[]) {
+    if (uploadLock.current || !isQueueOwnerCurrent(owner)) return;
     uploadLock.current = true;
     setUploading(true);
     try {
       for (const index of indexes) {
         const item = items[index];
-        const file = item.file;
+        if (!isQueueOwnerCurrent(owner)) return;
+        if (item.owner.id !== owner.id || item.owner.generation !== owner.generation) continue;
         setUploads((current) => current.map((row, i) => i === index ? { ...row, status: "uploading", progress: 0, error: undefined } : row));
         try {
-          const entries = await loadQueue();
-          const queued = entries.find((entry) => entry.kind === "upload" && entry.id === item.id);
-          const assetId = queued && queued.kind === "upload" ? queued.assetId : undefined;
-          if (!queued) {
-            // A retry of a row that failed online still needs its queue slot so an
-            // offline retry is durable rather than only announced.
-            await saveQueue([...entries, {
-              kind: "upload",
-              id: item.id,
-              projectId,
-              uri: file.path,
-              name: file.name,
-              mimeType: file.contentType,
-              size: file.size,
-              createdAt: Date.now(),
-            }]);
-          }
-          await uploadFile(client, projectId, file, (progress) => setUploads((current) => current.map((row, i) => i === index ? { ...row, progress } : row)), {
-            assetId,
-            onAsset: (id) => {
-              void (async () => {
-                const stored = await loadQueue();
-                await saveQueue(stored.map((entry) => entry.kind === "upload" && entry.id === item.id ? { ...entry, assetId: id } : entry));
-              })().catch(() => undefined);
-            },
-          });
-          await saveQueue((await loadQueue()).filter((entry) => entry.id !== item.id));
+          await uploadQueued(owner, item.id, (progress) => setUploads((current) => current.map((row, i) => i === index ? { ...row, progress } : row)));
+          if (!isQueueOwnerCurrent(owner)) return;
           setUploads((current) => current.map((row, i) => i === index ? { ...row, status: "done", progress: 100 } : row));
         } catch (reason) {
-          const failedFile = reason instanceof UploadError ? reason.file : file;
+          if (!isQueueOwnerCurrent(owner)) return;
           const offline = isOfflineError(reason) || (reason instanceof UploadError && reason.offline);
-          if (!offline) await saveQueue((await loadQueue()).filter((entry) => entry.id !== item.id));
           setUploads((current) => current.map((row, i) => i === index ? {
             ...row,
-            file: failedFile,
             status: "failed",
             error: offline ? "已保存，联网后自动重试。" : message(reason, "上传失败"),
           } : row));
         }
       }
       await load();
-      setUploads((current) => current.filter((item) => item.status !== "done"));
+      if (isQueueOwnerCurrent(owner)) setUploads((current) => current.filter((item) => item.status !== "done"));
     } finally {
       uploadLock.current = false;
       setUploading(false);
@@ -334,12 +309,15 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
 
   async function upload() {
     if (selectLock.current || uploadLock.current) return;
+    const owner = currentQueueOwner();
+    if (!owner) { setError(QUEUE_PAUSED); return; }
     selectLock.current = true;
     setUploading(true);
     try {
       setError("");
       const files = await chooseMedia();
       const warnings = await inspectChosenFiles(files);
+      assertQueueOwner(owner);
       if (warnings.length) {
         const result = await Taro.showModal({ title: "素材检查提示", content: summarizeMediaWarnings(warnings), confirmText: "仍然上传", cancelText: "重新选择" });
         if (!result.confirm) return;
@@ -348,7 +326,7 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
       const pending: UploadItem[] = [];
       for (const file of files) {
         const id = `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        await enqueue({
+        await enqueue(owner, {
           kind: "upload",
           id,
           projectId,
@@ -358,13 +336,14 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
           size: file.size,
           createdAt: Date.now(),
         });
-        pending.push({ id, file, progress: 0, status: "waiting" });
+        pending.push({ owner, id, file, progress: 0, status: "waiting" });
       }
       const items = [...failed, ...pending];
+      if (!isQueueOwnerCurrent(owner)) return;
       setUploads(items);
-      await runUploads(items, pending.map((_, index) => failed.length + index));
+      await runUploads(owner, items, pending.map((_, index) => failed.length + index));
     } catch (reason) {
-      if (reason instanceof UploadSelectionError && reason.cancelled) return;
+      if (!isQueueOwnerCurrent(owner) || (reason instanceof UploadSelectionError && reason.cancelled)) return;
       setError(reason instanceof MediaPreflightError ? reason.message : message(reason, "选择文件失败"));
     } finally {
       selectLock.current = false;
@@ -594,7 +573,7 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
         </> : null}
         {uploads.map((item, index) => <View className="row" key={`${item.file.path}-${index}`}>
           <Text>{item.file.name} · {item.status === "failed" ? item.error : `${item.progress}%`}</Text>
-          {item.status === "failed" ? <Button className="button ghost" disabled={uploading} onClick={() => void runUploads(uploads, [index])}>重试上传</Button> : null}
+          {item.status === "failed" ? <Button className="button ghost" disabled={uploading} onClick={() => void runUploads(item.owner, uploads, [index])}>重试上传</Button> : null}
         </View>)}
         {!detail.assets.length && !uploads.length ? <Text className="muted">暂无素材</Text> : null}
         {canWrite && detail.assets.length > 0 ? <View className="selection-tools">

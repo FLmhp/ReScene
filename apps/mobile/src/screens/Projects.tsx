@@ -1,10 +1,11 @@
 import { explainError, isOfflineError } from "@rescene/api-client";
+import { LEGACY_QUEUE_NOTICE, QUEUE_PAUSED } from "@rescene/uploader";
 import type { AppNotification, Project, User } from "@rescene/schemas";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Pressable, Text, View } from "react-native";
 
-import { client, persistSession } from "../api";
-import { enqueue, replayQueued } from "../queue";
+import { changeSessionPassword, client, currentQueueOwner, isQueueOwnerCurrent, queueClient } from "../api";
+import { enqueue, hasLegacyQueue, replayQueued } from "../queue";
 import { useAppearance } from "../appearance";
 import { Button, Card, ErrorText, Field, Screen, useTextStyles } from "../ui";
 
@@ -32,6 +33,7 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
   const replayed = useRef(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [legacyQueue, setLegacyQueue] = useState(false);
 
   const loadNotifications = useCallback(async () => {
     try {
@@ -56,38 +58,53 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
 
   useEffect(() => { void load(); void loadNotifications(); }, [load, loadNotifications]);
 
+  const replay = useCallback(() => {
+    const owner = currentQueueOwner();
+    if (!owner) return;
+    void replayQueued(owner, () => undefined).then(({ created, uploaded }) => {
+      if (isQueueOwnerCurrent(owner) && (created || uploaded)) void load();
+    }).catch(() => undefined);
+  }, [load]);
+
   useEffect(() => {
     if (replayed.current) return;
     replayed.current = true;
-    void replayQueued(client, () => undefined).then(({ created, uploaded }) => { if (created || uploaded) void load(); }).catch(() => undefined);
-  }, [load]);
+    void hasLegacyQueue().then(setLegacyQueue).catch(() => undefined);
+    replay();
+  }, [replay]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
       if (state !== "active") return;
-      void replayQueued(client, () => undefined).then(({ created, uploaded }) => { if (created || uploaded) void load(); }).catch(() => undefined);
+      replay();
       void loadNotifications();
     });
     return () => subscription.remove();
-  }, [load, loadNotifications]);
+  }, [loadNotifications, replay]);
 
   async function create() {
     if (!name.trim() || flight.current) return;
+    const owner = currentQueueOwner();
+    if (!owner) { setError(QUEUE_PAUSED); return; }
+    const scopedClient = queueClient(owner);
     flight.current = true;
     setBusy(true);
     setError("");
     try {
-      const project = await client.createProject(name.trim());
+      const project = await scopedClient.createProject(name.trim());
+      if (!isQueueOwnerCurrent(owner)) return;
       setName("");
       onOpen(project);
     } catch (reason) {
+      if (!isQueueOwnerCurrent(owner)) return;
       if (isOfflineError(reason)) {
         try {
-          await enqueue({ kind: "project", id: `project-${Date.now()}`, name: name.trim(), createdAt: Date.now() });
+          await enqueue(owner, { kind: "project", id: `project-${Date.now()}`, name: name.trim(), createdAt: Date.now() });
+          if (!isQueueOwnerCurrent(owner)) return;
           setName("");
           setNotice("已离线保存，联网后自动创建。");
         } catch {
-          setError("保存到本地队列失败。");
+          if (isQueueOwnerCurrent(owner)) setError("保存到本地队列失败。");
         }
       } else {
         setError(explainError(reason, "创建项目失败"));
@@ -106,8 +123,7 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
     setError("");
     setNotice("");
     try {
-      const result = await client.changePassword(currentPassword, newPassword);
-      await persistSession(result.access_token);
+      if (!await changeSessionPassword(currentPassword, newPassword)) return;
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
@@ -202,6 +218,7 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
         <ErrorText>{error}</ErrorText>
         <Button label="重新加载" onPress={() => void load()} tone="ghost" />
       </Card> : null}
+      {legacyQueue ? <Text style={textStyles.muted}>{LEGACY_QUEUE_NOTICE}</Text> : null}
       {notice ? <Text accessibilityLiveRegion="polite" style={textStyles.muted}>{notice}</Text> : null}
       {visible.length === 0 ? <Text style={textStyles.muted}>{search.trim() ? "没有匹配的项目。" : "还没有项目。"}</Text> : null}
       {visible.map((item) => (

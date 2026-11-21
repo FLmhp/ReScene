@@ -25,15 +25,32 @@ await runInContext(`
     const entries = Object.entries(require.m);
     const taro = entries.find(([, factory]) => String(factory).includes('"initNativeApi"') && String(factory).includes('.exports["default"]'));
     const runtime = entries.find(([, factory]) => String(factory).includes("navigator:function()") && String(factory).includes("requestAnimationFrame:function()"));
-    const entry = entries.find(([, factory]) => String(factory).includes('"rescene-session-expired"') && String(factory).includes('"/v1/auth/login"'));
+    const entry = entries.find(([, factory]) => String(factory).includes('"rescene-session-expired"') && String(factory).includes('"rescene-token"'));
     const uploader = entries.find(([, factory]) => String(factory).includes("createOffscreenCanvas") && String(factory).includes("readFileSync"));
     const navigation = entries.find(([, factory]) => String(factory).includes(".reLaunch({url:") && String(factory).includes('"/pages/index/index"'));
-    if (!taro || !runtime || !entry || !uploader || !navigation) throw new Error("Cannot locate built Taro, login, navigation or upload modules");
+    const queue = entries.find(([, factory]) => String(factory).includes('"rescene-queue"') && String(factory).includes("getStorageInfoSync"));
+    if (!taro || !runtime || !entry || !uploader || !navigation || !queue) throw new Error("Cannot locate built Taro, login, navigation, queue or upload modules");
     let homeUrl;
+    let oldIdentityStarted;
+    let finishOldIdentity;
+    const oldIdentityPending = new Promise(resolve => { oldIdentityStarted = resolve; });
+    const oldIdentityResponse = new Promise(resolve => { finishOldIdentity = resolve; });
+    const legacy = JSON.stringify([{ kind: "project", id: "old", name: "Legacy fixture", createdAt: 1 }]);
+    const createdDrafts = [];
+    const storage = new Map([["rescene-queue", legacy]]);
+    let storageUnavailable = true;
     require.m[runtime[0]] = module => { module.exports = { navigator: { userAgent: "WeChat" } }; };
     require.m[taro[0]] = module => {
       module.exports = {
-        getStorageSync: () => { throw new Error("Storage unavailable at startup"); },
+        getStorageSync: key => {
+          if (storageUnavailable) {
+            storageUnavailable = false;
+            throw new Error("Storage unavailable at startup");
+          }
+          return storage.get(key);
+        },
+        setStorageSync: (key, value) => { storage.set(key, value); },
+        removeStorageSync: key => { storage.delete(key); },
         reLaunch: async ({url}) => { homeUrl = url; },
         getFileSystemManager: () => ({ readFileSync: path => new Uint8Array(path === "bad" ? [1, 2, 3] : [255, 216, 255]).buffer }),
         createOffscreenCanvas: ({ width, height }) => ({
@@ -43,10 +60,23 @@ await runInContext(`
             getImageData: () => ({ data: new Uint8Array(width * height * 4).fill(255) }),
           }),
         }),
-        request: async ({url, header}) => {
-          if (url.endsWith("/v1/auth/login")) return { statusCode: 200, data: { access_token: "fixture-token", token_type: "bearer" } };
+        request: async ({url, header, method, data}) => {
+          if (url.endsWith("/v1/auth/login")) {
+            const email = JSON.parse(data).email;
+            return { statusCode: 200, data: { access_token: email === "stale@example.org" ? "fixture-old-token" : "fixture-token", token_type: "bearer" } };
+          }
+          if (header.Authorization === "Bearer fixture-old-token" && url.endsWith("/v1/auth/me")) {
+            oldIdentityStarted();
+            await oldIdentityResponse;
+            return { statusCode: 200, data: { id: "old-user", email: "stale@example.org", is_admin: false } };
+          }
           if (header.Authorization !== "Bearer fixture-token") throw new Error("Missing login token");
           if (url.endsWith("/v1/auth/me")) return { statusCode: 200, data: { id: "user", email: "test@example.org", is_admin: false } };
+          if (url.endsWith("/v1/projects") && method === "POST") {
+            const { name } = JSON.parse(data);
+            createdDrafts.push(name);
+            return { statusCode: 201, data: { id: "replayed", name, owner_id: "user", effective_role: "owner" } };
+          }
           if (url.endsWith("/v1/projects")) return { statusCode: 200, data: [{ id: "project", name: "Fixture", owner_id: "user", effective_role: "member" }] };
           if (url.endsWith("/project?view=summary")) return { statusCode: 200, data: { id: "project", name: "Fixture", owner_id: "user", effective_role: "member", asset_count: 1, job_count: 0, has_active_jobs: false, cover: null, latest_job: null } };
           if (url.endsWith("/project/assets?cursor=")) return { statusCode: 200, data: { items: [{ id: "a1", filename: "reference.jpg", size: 150, status: "READY" }], next_cursor: null } };
@@ -55,13 +85,29 @@ await runInContext(`
         },
       };
     };
-    const client = Object.values(require(entry[0])).find(value => typeof value?.login === "function");
+    const api = Object.values(require(entry[0]));
+    const client = api.find(value => typeof value?.login === "function");
+    const authenticate = api.find(value => typeof value === "function" && value.length === 3);
+    const currentOwner = api.find(value => typeof value === "function" && String(value).includes(".owner()"));
+    const replay = Object.values(require(queue[0])).find(value => typeof value === "function" && String(value).includes(".replay("));
+    if (!client || !authenticate || !currentOwner || !replay) throw new Error("Cannot locate compiled auth or queue API");
     globalThis.loginResult = (async () => {
       const openHome = Object.values(require(navigation[0])).find(value => typeof value === "function");
       await openHome();
       if (homeUrl !== "/pages/index/index") throw new Error("Stale entry did not return to the login route");
-      const login = await client.login("test@example.org", "fixture-password");
-      const user = await client.getMe();
+      const staleLogin = authenticate("login", "stale@example.org", "fixture-password");
+      await oldIdentityPending;
+      const user = await authenticate("login", "test@example.org", "fixture-password");
+      finishOldIdentity();
+      if (await staleLogin !== null) throw new Error("Late identity response replaced the newer account");
+      const credential = JSON.parse(storage.get("rescene-token"));
+      if (credential.token !== "fixture-token" || credential.owner !== user.id) throw new Error("Verified account was not bound to its credential");
+      if (storage.get("rescene-queue") !== legacy) throw new Error("Unowned legacy queue changed");
+      storage.set("rescene-queue-old-user", legacy);
+      storage.set("rescene-queue-user", JSON.stringify([{ kind: "project", id: "mine", name: "Current account draft", createdAt: 2 }]));
+      const replayed = await replay(currentOwner(), () => {});
+      if (replayed.created !== 1 || createdDrafts.join() !== "Current account draft") throw new Error("Replay did not isolate the current account");
+      if (storage.get("rescene-queue-old-user") !== legacy || storage.get("rescene-queue-user") !== "[]") throw new Error("Replay did not persist the current account's completion");
       const [project] = await client.listProjects();
       const workspace = await client.getWorkspace(project.id);
       const inspect = Object.values(require(uploader[0])).find(value => typeof value === "function" && String(value).includes("createOffscreenCanvas"));
@@ -70,10 +116,10 @@ await runInContext(`
       const warnings = await inspect(files);
       let rejected = false;
       try { await inspect([{path: "bad", name: "bad.jpg", size: 12}]); } catch (error) { rejected = error.message.includes("bad.jpg") && error.message.includes("内容与扩展名不符"); }
-      return [login.access_token, user.id, project.effective_role, workspace.asset_count, workspace.assets[0].id, warnings.length, rejected];
+      return [client.getToken(), user.id, project.effective_role, workspace.asset_count, workspace.assets[0].id, warnings.length, rejected];
     })();
   }]);
   loginResult;
 `, context, { displayErrors: false }).then(result => assert.deepEqual([...result], ["fixture-token", "user", "member", 1, "a1", 3, true]));
 assert.equal(runInContext("evalAttempts", context), 0);
-console.log("Built miniapp validates startup recovery, login, paged workspace, and media preflight using native API fixtures");
+console.log("Built miniapp validates startup recovery, account-bound login and queue storage, paged workspace, and media preflight using native API fixtures");

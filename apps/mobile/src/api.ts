@@ -1,5 +1,11 @@
 import { ResceneApiError, ResceneClient } from "@rescene/api-client";
+import {
+  createQueueSession, QUEUE_PAUSED, readQueueCredential, sessionExpiry,
+  type QueueCredential, type QueueOwner,
+} from "@rescene/uploader";
 import * as SecureStore from "expo-secure-store";
+
+export { sessionExpiry };
 
 const TOKEN_KEY = "rescene-token";
 const RENEW_BEFORE_MS = 60_000;
@@ -7,129 +13,166 @@ const RENEW_BEFORE_MS = 60_000;
 export const apiBaseUrl = process.env.EXPO_PUBLIC_API_URL ?? "https://api.rescene.xyz";
 export const webBaseUrl = process.env.EXPO_PUBLIC_WEB_URL ?? "https://app.rescene.xyz";
 
-export const client = new ResceneClient(apiBaseUrl);
+const session = createQueueSession();
+type Snapshot = ReturnType<typeof session.snapshot>;
+const expiryListeners = new Set<() => void>();
 
-export type RestoredSession = "signed-in" | "signed-out" | "offline";
-
-const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-/** Minimal base64url decoder: React Native has no guaranteed global `atob`. */
-function decodeBase64Url(input: string): string {
-  let output = "";
-  let buffer = 0;
-  let bits = 0;
-  for (const character of input.replace(/-/g, "+").replace(/_/g, "/")) {
-    if (character === "=") break;
-    const value = BASE64_ALPHABET.indexOf(character);
-    if (value < 0) continue;
-    buffer = ((buffer << 6) | value) & 0xffffff;
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      output += String.fromCharCode((buffer >> bits) & 0xff);
+function sessionFetch(expected: Snapshot, owner?: QueueOwner): typeof fetch {
+  return async (input, init) => {
+    if (owner) assertQueueOwner(owner);
+    const request = fetch(input, init);
+    let response: Response;
+    try {
+      response = await request;
+    } catch (error) {
+      if (!owner) throw error;
+      const signal = init?.signal ?? (typeof Request !== "undefined" && input instanceof Request ? input.signal : undefined);
+      const aborted = error && typeof error === "object" && "name" in error && error.name === "AbortError";
+      if (signal?.aborted || aborted) throw error;
+      // Expo rejects failed native requests with FetchError, which is not a TypeError.
+      throw new ResceneApiError(0, "网络连接失败，请检查网络后重试。");
     }
-  }
-  return output;
+    if (response.status === 401 && expected.token && session.matches(expected)) {
+      void discardSession().catch(() => undefined);
+      for (const listener of expiryListeners) listener();
+    }
+    return response;
+  };
 }
 
-/** Reads the JWT `exp` claim without trusting it for authorization; null means opaque/undecodable. */
-export function sessionExpiry(token: string): number | null {
-  try {
-    const payload = token.split(".")[1];
-    if (!payload) return null;
-    const claims: unknown = JSON.parse(decodeBase64Url(payload));
-    if (typeof claims !== "object" || claims === null || !("exp" in claims)) return null;
-    return typeof claims.exp === "number" ? claims.exp * 1000 : null;
-  } catch {
-    return null;
-  }
+export const client = new ResceneClient(apiBaseUrl, null, (input, init) => sessionFetch(session.snapshot())(input, init));
+
+export type RestoredSession = "signed-in" | "signed-out" | "offline" | null;
+
+export function onSessionExpired(listener: () => void): () => void {
+  expiryListeners.add(listener);
+  return () => { expiryListeners.delete(listener); };
 }
 
-export async function discardSession(): Promise<void> {
+export function currentQueueOwner(): QueueOwner | null {
+  const { token } = session.snapshot();
+  return token && (sessionExpiry(token) ?? Infinity) > Date.now() ? session.owner() : null;
+}
+
+export function isQueueOwnerCurrent(owner: QueueOwner): boolean {
+  return session.owns(owner) && currentQueueOwner() !== null;
+}
+
+export function assertQueueOwner(owner: QueueOwner): void {
+  if (!isQueueOwnerCurrent(owner)) throw new Error(QUEUE_PAUSED);
+}
+
+export function queueClient(owner: QueueOwner): ResceneClient {
+  assertQueueOwner(owner);
+  const expected = session.snapshot();
+  return new ResceneClient(apiBaseUrl, expected.token, sessionFetch(expected, owner));
+}
+
+let storageWrite: Promise<unknown> = Promise.resolve();
+
+function persistCredential(expected: Snapshot, next: QueueCredential): Promise<boolean> {
+  const write = storageWrite.catch(() => undefined).then(async () => {
+    if (!session.matches(expected)) return false;
+    await SecureStore.setItemAsync(TOKEN_KEY, JSON.stringify(next));
+    if (!session.update(expected, next)) return false;
+    client.setToken(next.token);
+    return true;
+  });
+  storageWrite = write;
+  return write;
+}
+
+export function discardSession(): Promise<void> {
+  session.reset();
   client.setToken(null);
-  await SecureStore.deleteItemAsync(TOKEN_KEY);
+  // An older in-flight storage write must settle before the durable binding is removed.
+  const write = storageWrite.catch(() => undefined).then(() => SecureStore.deleteItemAsync(TOKEN_KEY));
+  storageWrite = write;
+  return write;
 }
 
-async function restoreSessionOnce(): Promise<RestoredSession> {
-  const token = client.getToken() ?? (await SecureStore.getItemAsync(TOKEN_KEY));
-  if (!token) return "signed-out";
-  client.setToken(token);
+export async function authenticate(mode: "login" | "register", email: string, password: string): Promise<boolean> {
+  const clearing = discardSession();
+  const expected = session.snapshot();
+  await clearing;
+  if (!session.matches(expected)) return false;
+  const auth = new ResceneClient(apiBaseUrl);
+  const { access_token: token } = await auth[mode](email, password);
+  if (!session.matches(expected)) return false;
+  const user = await auth.getMe();
+  return persistCredential(expected, { token, owner: user.id });
+}
 
+export async function changeSessionPassword(currentPassword: string, newPassword: string): Promise<boolean> {
+  const expected = session.snapshot();
+  const owner = session.owner();
+  const auth = new ResceneClient(apiBaseUrl, expected.token, sessionFetch(expected));
+  const result = await auth.changePassword(currentPassword, newPassword);
+  return persistCredential(expected, { token: result.access_token, owner: owner?.id ?? null });
+}
+
+async function endRestore(): Promise<RestoredSession> {
+  const clearing = discardSession();
+  const expected = session.snapshot();
+  await clearing;
+  return session.matches(expected) ? "signed-out" : null;
+}
+
+async function restoreSessionOnce(expected: Snapshot): Promise<RestoredSession> {
+  if (!expected.token) {
+    if (expected.generation !== 0) return null;
+    const credential = readQueueCredential(await SecureStore.getItemAsync(TOKEN_KEY));
+    if (!session.matches(expected)) return null;
+    if (!credential) return "signed-out";
+    session.update(expected, credential);
+    client.setToken(credential.token);
+    expected = session.snapshot();
+  }
+  const token = expected.token;
+  if (!token) return "signed-out";
   const expiry = sessionExpiry(token);
   if (expiry !== null && expiry <= Date.now()) {
-    await discardSession();
-    return "signed-out";
+    return endRestore();
   }
 
-  if (expiry !== null && expiry - Date.now() <= RENEW_BEFORE_MS) {
-    try {
-      const renewed = await client.refresh();
-      await persistSession(renewed.access_token);
-    } catch (error) {
-      if (error instanceof ResceneApiError && (error.status === 401 || error.status === 403)) {
-        await discardSession();
-        return "signed-out";
-      }
-      // Renewal is best-effort; the current token may still validate below.
-    }
-  }
-
+  const auth = new ResceneClient(apiBaseUrl, token, sessionFetch(expected));
   try {
-    await client.getMe();
-    return "signed-in";
+    const user = await auth.getMe();
+    if (!session.matches(expected)) return null;
+    const shouldRenew = expiry !== null && expiry - Date.now() <= RENEW_BEFORE_MS;
+    const renewed = shouldRenew ? await auth.refresh() : null;
+    if (!renewed && session.owns({ id: user.id, generation: expected.generation })) return "signed-in";
+    return await persistCredential(expected, { token: renewed?.access_token ?? token, owner: user.id })
+      ? "signed-in" : null;
   } catch (error) {
+    if (!session.matches(expected)) return null;
     if (error instanceof ResceneApiError && (error.status === 401 || error.status === 403)) {
-      await discardSession();
-      return "signed-out";
+      return endRestore();
     }
     return "offline";
   }
 }
 
-let inFlightRestore: Promise<RestoredSession> | null = null;
+let inFlightRestore: { generation: number; task: Promise<RestoredSession> } | undefined;
 
-/**
- * Restores the stored credential, renews it when it is close to expiry, and
- * verifies it with `getMe`. Network failure keeps the credential (offline);
- * a rejected credential is discarded (signed-out). Concurrent callers share
- * one validation/renewal so app-resume races cannot double-refresh.
- */
 export function restoreSession(): Promise<RestoredSession> {
-  if (!inFlightRestore) {
-    inFlightRestore = restoreSessionOnce().finally(() => {
-      inFlightRestore = null;
-    });
-  }
-  return inFlightRestore;
-}
-
-export async function persistSession(token: string): Promise<void> {
-  try {
-    await SecureStore.setItemAsync(TOKEN_KEY, token);
-    client.setToken(token);
-  } catch (error) {
-    client.setToken(null);
-    throw error;
-  }
+  const expected = session.snapshot();
+  if (inFlightRestore?.generation === expected.generation) return inFlightRestore.task;
+  const task = restoreSessionOnce(expected).finally(() => {
+    if (inFlightRestore?.task === task) inFlightRestore = undefined;
+  });
+  inFlightRestore = { generation: expected.generation, task };
+  return task;
 }
 
 export type LogoutResult = { revoked: boolean; cleared: boolean };
 
-/** Best-effort server revocation; local credentials are always removed when the device allows it. */
 export async function clearSession(): Promise<LogoutResult> {
-  let revoked = false;
-  try {
-    await client.logout();
-    revoked = true;
-  } catch {
-    revoked = false;
-  }
-  let cleared = false;
-  try {
-    await discardSession();
-    cleared = true;
-  } catch {
-    cleared = false;
-  }
+  const auth = new ResceneClient(apiBaseUrl, session.snapshot().token);
+  const clearing = discardSession();
+  const [revoked, cleared] = await Promise.all([
+    auth.logout().then(() => true, () => false),
+    clearing.then(() => true, () => false),
+  ]);
   return { revoked, cleared };
 }
