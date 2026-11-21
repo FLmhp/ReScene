@@ -314,8 +314,14 @@ def change_password(
     """Rotate the signed-in account's password and retire every other session."""
     if not verify_password(payload.current_password, user.password_hash):
         fail(status.HTTP_400_BAD_REQUEST, "Current password is incorrect", "auth.password_mismatch")
-    user.password_hash = hash_password(payload.new_password)
-    user.token_version += 1
+    rotated = db.execute(
+        update(User)
+        .where(User.id == user.id, User.active.is_(True), User.password_hash == user.password_hash)
+        .values(password_hash=hash_password(payload.new_password), token_version=User.token_version + 1)
+    )
+    if rotated.rowcount != 1:
+        db.rollback()
+        fail(status.HTTP_409_CONFLICT, "Account changed while the password was verified", "auth.session_stale")
     db.commit()
     db.refresh(user)
     return {"access_token": issue_token(user.id, user.token_version), "token_type": "bearer"}
@@ -411,7 +417,7 @@ def update_user(user_id: str, payload: UpdateUserRequest, db: Db, admin: AdminDe
     if payload.active is not None:
         target.active = payload.active
         if not payload.active:
-            target.token_version += 1
+            db.execute(update(User).where(User.id == target.id).values(token_version=User.token_version + 1))
     if payload.is_admin is not None:
         target.is_admin = payload.is_admin
     audit(db, admin.id, "user.update", "user", target.id, active=target.active, is_admin=target.is_admin)
@@ -425,8 +431,14 @@ def reset_user_password(user_id: str, payload: ResetPasswordRequest, db: Db, adm
     target = db.get(User, user_id)
     if not target:
         fail(status.HTTP_404_NOT_FOUND, "User not found", "user.not_found")
-    target.password_hash = hash_password(payload.password)
-    target.token_version += 1
+    reset = db.execute(
+        update(User)
+        .where(User.id == target.id, User.password_hash == target.password_hash)
+        .values(password_hash=hash_password(payload.password), token_version=User.token_version + 1)
+    )
+    if reset.rowcount != 1:
+        db.rollback()
+        fail(status.HTTP_409_CONFLICT, "Account password changed concurrently; retry", "user.concurrent_change")
     audit(db, admin.id, "user.password.reset", "user", target.id)
     db.commit()
 
