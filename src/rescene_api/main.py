@@ -29,6 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from rescene.preprocess import IMAGE_SUFFIXES, VIDEO_SUFFIXES
+from rescene_api.access_logging import LOGGING_CONFIG
 from rescene_api.auth import decode_token, hash_password, issue_token, verify_password
 from rescene_api.config import settings
 from rescene_api.db import SessionLocal, init_db
@@ -1860,4 +1861,4 @@ def share_qr(token: str, db: Db) -> Response:
 
 
 def run() -> None:
-    uvicorn.run("rescene_api.main:app", host="0.0.0.0", port=8000, workers=2)
+    uvicorn.run("rescene_api.main:app", host="0.0.0.0", port=8000, workers=2, log_config=LOGGING_CONFIG)
