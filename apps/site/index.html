@@ -158,21 +158,21 @@
     </section>
     <section id="delivery" class="section">
       <div class="container">
-        <div class="section-heading"><h2>平台交付与验证进度</h2><p>正式安装包为 0.4.0，%RESCENE_VERSION% 正在验收。安装包向授权协作者提供。</p></div>
+        <div class="section-heading"><h2>平台交付与验证进度</h2><p>Windows 与 Android 正式安装包仍为 0.4.0，向授权协作者提供。下表区分当前入口与 %RESCENE_VERSION% 候选验证。</p></div>
         <div class="table-wrap">
           <table>
             <thead><tr><th scope="col">平台</th><th scope="col">当前入口</th><th scope="col">%RESCENE_VERSION% 验证进度</th></tr></thead>
             <tbody>
-              <tr><th scope="row">Web</th><td><a href="https://app.rescene.xyz/">在线工作台</a></td><td>已验证断点上传与 Viewer 签名链接恢复。</td></tr>
+              <tr><th scope="row">Web</th><td><a href="https://app.rescene.xyz/">在线工作台</a></td><td>本轮在 Edge 验证窄屏键盘导航；此前候选已验证断点上传与 Viewer 签名链接恢复。</td></tr>
               <tr><th scope="row">Windows</th><td>0.4.0 安装包</td><td>已验证覆盖安装、SPZ 浏览、产物下载和分享撤销。</td></tr>
-              <tr><th scope="row">Android</th><td>0.4.0 签名 APK</td><td>已验证图片、视频上传及图片任务交付，应用重启后可从历史记录打开同一排队视频任务。</td></tr>
-              <tr><th scope="row">微信小程序</th><td>协作者体验版</td><td>已验证新版冷启动，以及登录、图片任务和手机浏览器查看分享。正式发布待审核。</td></tr>
+              <tr><th scope="row">Android</th><td>0.4.0 签名 APK</td><td>此前候选已验证图片与视频上传；本轮离线续传和私有 Viewer 仍须真机复核。</td></tr>
+              <tr><th scope="row">微信小程序</th><td>协作者体验版</td><td>此前候选已验证登录、图片任务与浏览器分享；本轮日志追踪与分享切换须复核，正式版以平台审核为准。</td></tr>
             </tbody>
           </table>
         </div>
         <div class="delivery-notes">
-          <p>RTX 5090 已完成图片与视频各三条路线的验收任务，并验证产物重载和对象存储阶段恢复。工作台由单个 GPU Worker 串行处理任务，离线时提交进入队列。</p>
-          <p>下一步优先完成真机复测与生产回归，再评估大场景的资源占用和几何质量。</p>
+          <p>此前候选在 RTX 5090 上完成图片与视频各三条路线，并验证产物重载和对象存储恢复。这些结果不代表新节点或当前线上版本已完成同样的验证。</p>
+          <p>工作台由单个 GPU Worker 串行处理任务，节点离线时提交仍进入队列。</p>
         </div>
       </div>
     </section>
