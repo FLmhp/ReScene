@@ -104,8 +104,9 @@ def fail(
 def client_address(request: Request) -> str:
     """Rate-limit identity from the hop Caddy vouches for, never the XFF chain.
 
-    Caddy overwrites `X-Real-IP` with the socket peer before proxying, so the
-    value cannot be chosen by the caller. Direct API exposure is unsupported.
+    Caddy overwrites `X-Real-IP` with the client address resolved through its
+    trusted-proxy list, so the value cannot be chosen by the caller. Direct API
+    exposure is unsupported.
     """
     forwarded = request.headers.get("x-real-ip", "").strip()
     if forwarded:

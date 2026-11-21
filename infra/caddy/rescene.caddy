@@ -38,8 +38,9 @@ api.rescene.xyz {
 	}
 	reverse_proxy rescene-api:8000 {
 		# Caddy is the only API entry point; replace any client-supplied value
-		# so the API can rate-limit on a trusted client address.
-		header_up X-Real-IP {remote_host}
+		# with the address resolved through trusted_proxies. `remote_host` is
+		# the immediate Cloudflare peer, not the end user.
+		header_up X-Real-IP {http.request.client_ip}
 	}
 }
 
