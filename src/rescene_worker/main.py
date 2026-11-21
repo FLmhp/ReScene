@@ -92,24 +92,48 @@ class Api:
         raise AssertionError("Worker API retry loop exhausted")
 
 
+_last_gpu_probe_warning: float | None = None
+
+
+def warn_gpu_probe(message: str) -> None:
+    global _last_gpu_probe_warning
+    now = time.monotonic()
+    if _last_gpu_probe_warning is None or now - _last_gpu_probe_warning >= 60:
+        print(f"worker GPU probe: {message}", file=sys.stderr, flush=True)
+        _last_gpu_probe_warning = now
+
+
 def gpu_name() -> str:
-    result = subprocess.run(
-        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        warn_gpu_probe("device name timed out")
+        return "unknown"
     return result.stdout.strip().splitlines()[0] if result.returncode == 0 and result.stdout.strip() else "unknown"
 
 
 def gpu_has_compute_process() -> bool:
-    result = subprocess.run(
-        ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader,nounits"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.returncode != 0 or bool(result.stdout.strip())
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        warn_gpu_probe("compute process query timed out; skipping lease")
+        return True
+    if result.returncode != 0:
+        warn_gpu_probe("compute process query failed; skipping lease")
+        return True
+    return bool(result.stdout.strip())
 
 
 @contextmanager

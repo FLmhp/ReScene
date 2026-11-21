@@ -88,6 +88,76 @@ def test_artifact_upload_stops_at_object_boundaries(tmp_path, monkeypatch, inter
     bucket.put_object_from_file.assert_not_called()
 
 
+def test_gpu_probe_timeouts_and_warning_throttle(monkeypatch, capsys):
+    import subprocess
+
+    import rescene_worker.main as worker
+
+    clock = iter([0, 1, 59, 60])
+    monkeypatch.setattr(worker.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(worker, "_last_gpu_probe_warning", None)
+    run = Mock(side_effect=subprocess.TimeoutExpired("nvidia-smi", 10))
+    monkeypatch.setattr(worker.subprocess, "run", run)
+    assert worker.gpu_name() == "unknown"
+    assert worker.gpu_has_compute_process()
+    assert worker.gpu_has_compute_process()
+    assert worker.gpu_has_compute_process()
+    assert all(call.kwargs["timeout"] == 10 for call in run.call_args_list)
+    assert capsys.readouterr().err.count("worker GPU probe:") == 2
+
+
+@pytest.mark.parametrize("returncode,stdout,busy", [(0, "123\n", True), (0, "", False), (1, "", True)])
+def test_gpu_compute_probe_results(monkeypatch, returncode, stdout, busy):
+    import rescene_worker.main as worker
+
+    run = Mock(return_value=SimpleNamespace(returncode=returncode, stdout=stdout))
+    monkeypatch.setattr(worker.subprocess, "run", run)
+    assert worker.gpu_has_compute_process() is busy
+    assert run.call_args.kwargs["timeout"] == 10
+
+
+def test_gpu_timeout_releases_slot_and_next_idle_poll_leases(tmp_path, monkeypatch):
+    import subprocess
+    from contextlib import contextmanager
+
+    import rescene_worker.main as worker
+
+    config = SimpleNamespace(work_root=tmp_path, poll_seconds=1)
+    api = Mock()
+    api.post.return_value = {"job": None}
+    monkeypatch.setattr(worker, "load_config", lambda: config)
+    monkeypatch.setattr(worker, "Api", lambda _config: api)
+    monkeypatch.setenv("RESCENE_DRAIN_FILE", str(tmp_path / "drain"))
+    state = {"held": False, "released": 0}
+
+    @contextmanager
+    def slot():
+        assert not state["held"]
+        state["held"] = True
+        try:
+            yield 7
+        finally:
+            state["held"] = False
+            state["released"] += 1
+
+    run = Mock(side_effect=[subprocess.TimeoutExpired("nvidia-smi", 10), SimpleNamespace(returncode=0, stdout="")])
+    monkeypatch.setattr(worker, "gpu_slot", slot)
+    monkeypatch.setattr(worker.subprocess, "run", run)
+
+    def sleep(_seconds):
+        assert not state["held"]
+        if state["released"] == 1:
+            api.post.assert_not_called()
+        else:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(worker.time, "sleep", sleep)
+    with pytest.raises(KeyboardInterrupt):
+        worker.run_forever()
+    assert state["released"] == 2
+    api.post.assert_called_once_with("/v1/worker/lease")
+
+
 def test_stage_progress_is_bounded():
     assert stage_progress("geometry", "running") == pytest.approx(0.4)
     assert stage_progress("geometry", "success") == pytest.approx(0.5)
