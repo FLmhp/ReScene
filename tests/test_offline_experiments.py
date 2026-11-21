@@ -65,10 +65,32 @@ def test_monitor_signals_only_the_trial_on_deadline(tmp_path, monkeypatch):
     monkeypatch.setattr(supervisor, "gpu_processes", lambda: {})
     monkeypatch.setattr(supervisor, "environment", dict)
     terminate = Mock()
-    monkeypatch.setattr(supervisor.os, "killpg", terminate, raising=False)
+    monkeypatch.setattr(supervisor, "stop_trial", terminate)
     result = supervisor.monitor({"name": "test", "profile": "fast", "spec": spec, "repeat": 1}, deadline=0)
-    terminate.assert_called_once_with(12345, supervisor.signal.SIGTERM)
+    terminate.assert_called_once_with(proc, 12345)
     assert not result["valid"] and result["abort_reason"] == "batch deadline reached"
+
+
+def test_stop_trial_checks_group_after_leader_exit_and_escalates(monkeypatch):
+    calls = []
+    probes = iter([True, True, True, False])
+
+    def killpg(pgid, sig):
+        calls.append((pgid, sig))
+        if sig == 0 and not next(probes):
+            raise ProcessLookupError
+
+    clock = iter([0, 11, 11, 12])
+    monkeypatch.setattr(supervisor, "os", SimpleNamespace(name="posix", killpg=killpg))
+    monkeypatch.setattr(supervisor, "signal", SimpleNamespace(SIGTERM=15, SIGKILL=9))
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(supervisor.time, "sleep", lambda _: None)
+    supervisor.stop_trial(Mock(pid=123, poll=Mock(return_value=0)), 123)
+    assert (123, supervisor.signal.SIGTERM) in calls
+    assert (123, supervisor.signal.SIGKILL) in calls
+    assert all(pgid == 123 for pgid, _ in calls)
+    with pytest.raises(RuntimeError, match="ownership"):
+        supervisor.stop_trial(Mock(pid=123), None)
 
 
 def test_monitor_keeps_phase_memory_peaks_between_utilization_samples(tmp_path, monkeypatch):
@@ -85,12 +107,68 @@ def test_monitor_keeps_phase_memory_peaks_between_utilization_samples(tmp_path, 
     monkeypatch.setattr(supervisor, "ROOT", tmp_path)
     monkeypatch.setattr(supervisor.subprocess, "Popen", Mock(return_value=proc))
     monkeypatch.setattr(supervisor, "gpu_processes", Mock(side_effect=[{12345: 80}, {12345: 120}]))
+    monkeypatch.setattr(supervisor, "stop_trial", Mock())
     monkeypatch.setattr(supervisor, "gpu_utilization", Mock(return_value=45))
     monkeypatch.setattr(supervisor, "owned", lambda pid, owner: pid == owner)
     monkeypatch.setattr(supervisor, "free_bytes", lambda: 10 * 1024**3)
     monkeypatch.setattr(supervisor.time, "sleep", lambda seconds: None)
     result = supervisor.monitor({"name": "test", "profile": "fast", "spec": spec, "repeat": 1})
     assert result["phase_gpu"]["training"] == {"samples": 1, "peak_owned_mib": 120, "mean_utilization_percent": 45}
+
+
+@pytest.mark.parametrize(
+    "initial, failure, expected",
+    [
+        ((True, True), None, "manual"),
+        ((True, False), "stop", "unsafe"),
+        ((True, False), "popen", "start"),
+        ((True, False), None, "start"),
+        ((False, False), None, "stopped"),
+    ],
+)
+def test_worker_recovery_respects_ownership(tmp_path, monkeypatch, capsys, initial, failure, expected):
+    spec = tmp_path / "spec.json"
+    spec.write_text("{}")
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps([{"name": "one", "spec": str(spec), "profile": "fast", "repeat": 1}]))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(supervisor, "DATA", tmp_path)
+    monkeypatch.setattr(supervisor, "ROOT", tmp_path)
+    monkeypatch.setattr(supervisor, "RUNS", tmp_path / "runs-root")
+    monkeypatch.setattr(supervisor, "require_free", Mock())
+    monkeypatch.setattr(supervisor, "require_idle_worker", Mock())
+    monkeypatch.setattr(supervisor, "worker_state", Mock(side_effect=[initial, (False, True)]))
+    monkeypatch.setattr(supervisor, "stop_trial", Mock())
+    monkeypatch.setattr(supervisor.signal, "SIGHUP", 1, raising=False)
+    monkeypatch.setattr(supervisor.signal, "signal", Mock(return_value=None))
+    monkeypatch.setattr(sys, "argv", ["supervisor", str(plan)])
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[-1] == "stop" and failure == "stop":
+            raise supervisor.subprocess.TimeoutExpired(command, 60)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(supervisor.subprocess, "run", run)
+    proc = Mock(pid=123, wait=Mock(return_value=0))
+    popen = Mock(side_effect=OSError("launch failed")) if failure == "popen" else Mock(return_value=proc)
+    monkeypatch.setattr(supervisor.subprocess, "Popen", popen)
+    if expected == "manual":
+        with pytest.raises(RuntimeError, match="manually drained"):
+            supervisor.main()
+        assert "restore=skipped reason=pre-existing-drain" in capsys.readouterr().out
+    elif expected == "unsafe":
+        with pytest.raises(RuntimeError, match="stop did not complete"):
+            supervisor.main()
+    elif failure == "popen":
+        with pytest.raises(OSError, match="launch failed"):
+            supervisor.main()
+    else:
+        assert supervisor.main() == 0
+    starts = [command for command in calls if command[-1] == "start"]
+    assert bool(starts) == (expected == "start")
 
 
 def test_freeze_nested_subsets_keep_the_same_validation_views(tmp_path):
@@ -134,6 +212,38 @@ def test_summary_records_a_failure_without_metrics(tmp_path):
     summarize(tmp_path / "runs", resources, output)
     result = json.loads(output.read_text())
     assert result["failures"] == [{"run": "failed", "reason": "algorithm", "validation": {"valid": False}}]
+
+
+def test_summary_groups_scenes_and_validation_sets_without_guessing_identity(tmp_path):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    for name, scene, score, sources in (
+        ("fern1", "fern", 10, ["a"]),
+        ("fern2", "fern", 20, ["a"]),
+        ("fern3", "fern", 30, ["b"]),
+        ("flower", "flower", 40, ["a"]),
+        ("unknown", None, 50, ["a"]),
+    ):
+        run = runs / name
+        run.mkdir()
+        (run / "metrics.json").write_text(json.dumps({"psnr": score, "candidate_id": "wrong"}))
+        (run / "benchmark.json").write_text(
+            json.dumps({"dataset_id": "dataset", "scene_id": scene, "candidate_id": "f2-5k", "repeat": 1})
+        )
+        (run / "environment.json").write_text('{"source_tree_sha256": "hash"}')
+        (run / "trial_validation.json").write_text(json.dumps({"valid": True, "validation_sources": sources}))
+    output = tmp_path / "summary.json"
+    summarize(runs, tmp_path / "resources", output)
+    result = json.loads(output.read_text())
+    assert result["version"] == 2
+    assert len(result["groups"]) == 3
+    assert sorted((g["scene_id"], g["repeats"], g["medians"]["psnr"]) for g in result["groups"]) == [
+        ("fern", 1, 30),
+        ("fern", 2, 15),
+        ("flower", 1, 40),
+    ]
+    assert len(result["candidates"]) == 3
+    assert result["failures"][0]["reason"] == "missing benchmark identity"
 
 
 def test_global_colmap_uses_a_private_copy_and_never_runs_incremental_fallback(tmp_path, monkeypatch):
