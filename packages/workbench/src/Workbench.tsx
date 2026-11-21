@@ -12,7 +12,7 @@ import type {
   JobStage,
   MemberRole,
   Profile,
-  Project,
+  ProjectSummary,
   ProjectWorkspace,
   ProjectInvitation,
   ProjectMember,
@@ -52,7 +52,19 @@ const PROFILES: Profile[] = ["fast", "balanced", "quality"];
 const PANES = [{ key: "materials", label: "素材" }, { key: "tasks", label: "任务" }, { key: "results", label: "结果" }] as const;
 const NOTIFY_PAGE_SIZE = 20;
 type UploadItem = { name: string; progress: number; status: string; file?: File; projectId?: string; retryable?: boolean };
-type TimelineRow = { key: string; stage: string; status: string; progress: number; message?: string | null; metrics: Record<string, unknown> };
+type UploadBatch = { items: UploadItem[]; busy: boolean };
+type TimelineRow = { key: string; jobId: string; stage: string; status: string; progress: number; message?: string | null; metrics: Record<string, unknown> };
+type RefreshFailure = { message: string; at: number };
+
+/** Dedupe replayed stage events by their full content so same-stage reruns stay visible. */
+function stageSignature(row: Pick<TimelineRow, "stage" | "status" | "progress" | "message" | "metrics">): string {
+  const metrics = Object.keys(row.metrics).sort().map((key) => [key, row.metrics[key]]);
+  return JSON.stringify([row.stage, row.status, row.progress, row.message ?? null, metrics]);
+}
+
+function formatClock(value: number): string {
+  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
 type SharePreset = "never" | "1d" | "7d" | "30d";
 type NotifyFilter = "unread" | "all";
 type LogLevel = "" | "info" | "warning" | "error";
@@ -67,7 +79,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [token, setToken] = useState(client.getToken() ?? "");
   const [sessionReady, setSessionReady] = useState(false);
   const [me, setMe] = useState<User | null>(null);
-  const [projects, setProjects] = useState<Project[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [selected, setSelected] = useState("");
   const [selectedJob, setSelectedJob] = useState("");
   const [detail, setDetail] = useState<ProjectWorkspace | null>(null);
@@ -82,8 +94,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [profile, setProfile] = useState<Profile>("balanced");
   const [selectedAssets, setSelectedAssets] = useState<Asset[]>([]);
   const [liveJob, setLiveJob] = useState<Job | null>(null);
-  const [uploads, setUploads] = useState<UploadItem[]>([]);
-  const [uploading, setUploading] = useState(false);
+  const [uploadBatches, setUploadBatches] = useState<Record<string, UploadBatch>>({});
   const [creating, setCreating] = useState(false);
   const createLock = useRef(false);
   const projectAttempt = useRef<{ name: string; key: string } | null>(null);
@@ -98,6 +109,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [showPassword, setShowPassword] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [timeline, setTimeline] = useState<TimelineRow[]>([]);
+  const liveEventKey = useRef(0);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [invitations, setInvitations] = useState<ProjectInvitation[]>([]);
   const [issuedInvitation, setIssuedInvitation] = useState<{ projectId: string; email: string; code: string } | null>(null);
@@ -110,6 +122,8 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [navigatorOnline, setNavigatorOnline] = useState(() => (typeof navigator === "undefined" ? true : navigator.onLine));
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
+  const [staleRefresh, setStaleRefresh] = useState<RefreshFailure | null>(null);
+  const [detailFetchedAt, setDetailFetchedAt] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [view, setView] = useState<"project" | "admin">("project");
   const [navOpen, setNavOpen] = useState(false);
@@ -126,10 +140,15 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [logs, setLogs] = useState<JobLog[]>([]);
   const [logLevel, setLogLevel] = useState<LogLevel>("");
   const [logsLoading, setLogsLoading] = useState(false);
+  const [loadingEarlierJob, setLoadingEarlierJob] = useState("");
+  const logsGeneration = useRef(0);
+  const earlierJob = useRef("");
   const notifyFilterRef = useRef<NotifyFilter>(notifyFilter);
   notifyFilterRef.current = notifyFilter;
   const notifyRequest = useRef(0);
   const notifyLoaded = useRef(false);
+  const notifyOpen = useRef(false);
+  const previousUnreadCount = useRef<number | null>(null);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const detailRef = useRef(detail);
@@ -202,24 +221,40 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     setSessionReady(true);
   }, [client, tokenStore]);
   const expire = useCallback(() => { client.setToken(null); tokenStore.remove(TOKEN_KEY); setToken(""); setMe(null); setMessage("登录已过期，请重新登录。"); }, [client, tokenStore]);
-  const loadNotifications = useCallback(async (filter: NotifyFilter = notifyFilterRef.current, offset = 0): Promise<AppNotification[]> => {
+  const loadNotifications = useCallback(async (filter: NotifyFilter = notifyFilterRef.current, offset = 0, mode: "replace" | "merge" = "replace"): Promise<AppNotification[]> => {
     const request = ++notifyRequest.current;
     setNotifyLoading(true);
     try {
       const list = await client.listNotifications(filter === "unread", NOTIFY_PAGE_SIZE, offset);
       if (request !== notifyRequest.current) return list;
       setNotifications((current) => {
-        if (offset === 0) { notifyLoaded.current = true; return list; }
+        if (offset === 0) {
+          notifyLoaded.current = true;
+          const seen = new Set(list.map((item) => item.id));
+          if (mode === "replace") return [...new Map(list.map((item) => [item.id, item])).values()];
+          return [...list, ...current.filter((item) => !seen.has(item.id))];
+        }
         const seen = new Set(current.map((item) => item.id));
         return [...current, ...list.filter((item) => !seen.has(item.id))];
       });
-      setNotifyOffset(offset);
-      setNotifyHasMore(list.length >= NOTIFY_PAGE_SIZE);
+      if (offset === 0 && mode === "merge") {
+        // Keep the loaded pages and paging cursor; a refreshed first page must not reset them.
+        setNotifyHasMore((current) => current || list.length >= NOTIFY_PAGE_SIZE);
+      } else {
+        setNotifyOffset(offset);
+        setNotifyHasMore(list.length >= NOTIFY_PAGE_SIZE);
+      }
       return list;
     } finally {
       if (request === notifyRequest.current) setNotifyLoading(false);
     }
   }, [client]);
+  const reloadNotifications = useCallback(() => {
+    void loadNotifications(notifyFilterRef.current, 0, "merge").catch((error: unknown) => {
+      if (error instanceof ResceneApiError && error.status === 401) expire();
+      else setMessage(explainError(error, "无法加载通知"));
+    });
+  }, [expire, loadNotifications]);
   const loadUnread = useCallback(async () => {
     try {
       setUnreadCount(await client.notificationCount());
@@ -233,7 +268,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     const request = ++workspaceRequest.current;
     try {
       const [user, list, worker] = await Promise.all([
-        client.getMe(), client.listProjects(), client.getWorkerStatus().catch((error: unknown) => {
+        client.getMe(), client.listProjectSummaries(), client.getWorkerStatus().catch((error: unknown) => {
           if (error instanceof ResceneApiError && error.status === 401) throw error;
           return null;
         }),
@@ -250,14 +285,25 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
             setDetail(project);
             setSelectedAssets((current) => reconcileWorkspaceSelection(current, project.assets));
             setDetailError("");
+            setStaleRefresh(null);
+            setDetailFetchedAt(Date.now());
           }
         } catch (error) {
           if (error instanceof ResceneApiError && error.status === 401) throw error;
           if (selectedRef.current === selected && request === workspaceRequest.current) {
-            if (error instanceof ResceneApiError && [403, 404].includes(error.status)) setDetail(null);
-            setDetailError(error instanceof ResceneApiError && error.status === 403
+            const text = error instanceof ResceneApiError && error.status === 403
               ? "当前账号无权访问该项目。"
-              : error instanceof Error ? error.message : "无法加载项目。");
+              : error instanceof Error ? error.message : "无法加载项目。";
+            if (error instanceof ResceneApiError && [403, 404].includes(error.status)) {
+              setDetail(null);
+              setDetailError(text);
+              setStaleRefresh(null);
+            } else if (detailRef.current) {
+              // Keep the last snapshot on screen, but say clearly that it is stale.
+              setStaleRefresh({ message: text, at: Date.now() });
+            } else {
+              setDetailError(text);
+            }
           }
         } finally {
           if (request === workspaceRequest.current) setDetailLoading(false);
@@ -271,12 +317,24 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       else setMessage(error instanceof Error ? error.message : "请求失败，请重试");
     }
   }, [assetPages, client, expire, jobPages, loadNotifications, loadUnread, selected, token]);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
   useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 15000); return () => clearInterval(timer); }, [refresh]);
+  useEffect(() => {
+    const previous = previousUnreadCount.current;
+    previousUnreadCount.current = unreadCount;
+    if (!notifyOpen.current || unreadCount === null || previous === null || unreadCount <= previous) return;
+    // The badge found new notifications while the panel was already open.
+    reloadNotifications();
+  }, [reloadNotifications, unreadCount]);
   useEffect(() => {
     if (token) return;
     notifyRequest.current += 1;
     notifyLoaded.current = false;
+    notifyOpen.current = false;
+    previousUnreadCount.current = null;
     setNotifications([]); setUnreadCount(null); setNotifyHasMore(false); setNotifyOffset(0); setNotifyLoading(false);
+    setUploadBatches({});
   }, [token]);
   useEffect(() => {
     if (!token) return;
@@ -295,7 +353,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   useEffect(() => {
     if (previousSelection.current === selected) return;
     previousSelection.current = selected;
-    setSelectedAssets([]); setDetail(null); setLiveJob(null); setScene(null); setArtifacts([]); setMembers([]); setSharesState({ reconstructionId: "", items: [] }); setCreatedShare(null); setTimeline([]); setUploads([]); setInvitations([]); setAudit([]);
+    setSelectedAssets([]); setDetail(null); setLiveJob(null); setScene(null); setArtifacts([]); setMembers([]); setSharesState({ reconstructionId: "", items: [] }); setCreatedShare(null); setTimeline([]); setInvitations([]); setAudit([]); setStaleRefresh(null); setDetailFetchedAt(null);
   }, [selected]);
   const listedJob = detail?.jobs.find((job) => job.id === selectedJob);
   const currentJob = listedJob ?? (selectedJob ? undefined : detail?.jobs[0]);
@@ -328,10 +386,12 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   useEffect(() => {
     if (!token || !activeJobId) return;
     const id = activeJobId;
+    // `refresh` changes identity with pagination and tokens; keeping it in a ref avoids resubscribing (and replaying stages) on every page change.
     return client.subscribeJob(id, (event: JobEvent) => {
       if ("stage" in event) {
-        const row: TimelineRow = { key: `live-${Date.now()}-${event.stage}`, stage: event.stage, status: event.status, progress: event.progress, message: event.message, metrics: event.metrics };
-        setTimeline((rows) => [...rows, row].slice(-100));
+        const row: TimelineRow = { key: `live-${++liveEventKey.current}`, jobId: id, stage: event.stage, status: event.status, progress: event.progress, message: event.message, metrics: event.metrics };
+        const signature = stageSignature(row);
+        setTimeline((rows) => rows.some((existing) => stageSignature(existing) === signature) ? rows : [...rows, row].slice(-100));
         setLiveJob((job) => {
           const base = job && job.id === id ? job : latestRef.current;
           if (!base || base.id !== id || base.project_id !== detailRef.current?.id) return job;
@@ -341,20 +401,26 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       else {
         if (event.id !== id || event.project_id !== detailRef.current?.id) return;
         setLiveJob(event);
-        if (!ACTIVE[event.status]) void refresh();
+        if (!ACTIVE[event.status]) void refreshRef.current();
       }
     }, (error) => {
       if (error instanceof ResceneApiError && error.status === 401) expire();
       else setMessage(`进度流中断：${error.message}`);
     });
-  }, [activeJobId, client, expire, refresh, token]);
+  }, [activeJobId, client, expire, token]);
   useEffect(() => {
     const id = latest?.id;
     if (!id) { setTimeline([]); return; }
     let cancelled = false;
     void client.getJobStages(id).then((rows: JobStage[]) => {
       if (cancelled) return;
-      setTimeline(rows.map((row) => ({ key: row.id, stage: row.stage, status: row.status, progress: row.progress, message: row.message, metrics: row.metrics })));
+      setTimeline((current) => {
+        const loaded: TimelineRow[] = rows.map((row) => ({ key: row.id, jobId: id, stage: row.stage, status: row.status, progress: row.progress, message: row.message, metrics: row.metrics }));
+        const signatures = new Set(loaded.map(stageSignature));
+        // Events that arrived while history was loading are newer than the replay; keep them once.
+        const live = current.filter((row) => row.jobId === id && row.key.startsWith("live-") && !signatures.has(stageSignature(row)));
+        return [...loaded, ...live].slice(-100);
+      });
     }).catch((error: unknown) => { if (!cancelled) setMessage(explainError(error, "无法加载阶段记录")); });
     return () => { cancelled = true; };
   }, [client, latest?.id]);
@@ -362,6 +428,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     const id = latest?.id;
     const status = latest?.status ?? "";
     const level = logLevel || undefined;
+    logsGeneration.current += 1;
     setLogs([]);
     if (!id) return;
     let cancelled = false;
@@ -496,6 +563,8 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     setPane("materials");
     setDetail(null);
     setDetailError("");
+    setStaleRefresh(null);
+    setDetailFetchedAt(null);
     tokenStore.remove(JOB_KEY);
     if (id) tokenStore.set(PROJECT_KEY, id);
     else tokenStore.remove(PROJECT_KEY);
@@ -571,19 +640,27 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     selectProject(project.id);
     await refresh();
   }
-  async function transfer(file: File, index: number, projectId: string) {
-    setUploads((items) => items.map((item, n) => n === index ? { ...item, status: "上传中", retryable: false } : item));
+  function patchUpload(projectId: string, index: number, patch: Partial<UploadItem>) {
+    setUploadBatches((batches) => {
+      const batch = batches[projectId];
+      if (!batch?.items[index]) return batches;
+      return { ...batches, [projectId]: { ...batch, items: batch.items.map((item, n) => n === index ? { ...item, ...patch } : item) } };
+    });
+  }
+  async function transfer(file: File, projectId: string, index: number) {
+    patchUpload(projectId, index, { status: "上传中", retryable: false });
     try {
-      await uploader.upload({ projectId, file }, (progress) => setUploads((items) => items.map((item, n) => n === index ? { ...item, progress, status: "上传中" } : item)));
-      setUploads((items) => items.map((item, n) => n === index ? { ...item, progress: 100, status: "完成" } : item));
+      await uploader.upload({ projectId, file }, (progress) => patchUpload(projectId, index, { progress, status: "上传中" }));
+      patchUpload(projectId, index, { progress: 100, status: "完成" });
     } catch (error) {
-      setUploads((items) => items.map((item, n) => n === index ? { ...item, status: `失败：${error instanceof Error ? error.message : "上传失败"}`, retryable: true } : item));
+      patchUpload(projectId, index, { status: `失败：${error instanceof Error ? error.message : "上传失败"}`, retryable: true });
     }
   }
   async function upload(files: FileList | null) {
-    if (!files?.length || !selected || uploading || !canWrite) return;
+    const projectId = selected;
+    if (!files?.length || !projectId || uploadBatches[projectId]?.busy || !canWrite) return;
     const list = Array.from(files);
-    setUploading(true);
+    setUploadBatches((batches) => ({ ...batches, [projectId]: { busy: true, items: [] } }));
     try {
       setMessage("正在检查素材…");
       const warnings = await inspectMedia(list, async (file) => new Uint8Array(await file.slice(0, 16).arrayBuffer()), async (file) => {
@@ -600,24 +677,26 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       });
       setMessage("");
       if (warnings.length && !window.confirm(`素材检查提示\n${summarizeMediaWarnings(warnings)}\n仍然上传？`)) return;
-      setUploads(list.map((file) => ({ name: file.name, progress: 0, status: "等待上传", file, projectId: selected })));
-      for (let index = 0; index < list.length; index++) await transfer(list[index], index, selected);
-      await refresh();
+      setUploadBatches((batches) => ({ ...batches, [projectId]: { busy: true, items: list.map((file) => ({ name: file.name, progress: 0, status: "等待上传", file, projectId })) } }));
+      for (let index = 0; index < list.length; index++) await transfer(list[index], projectId, index);
+      if (selectedRef.current === projectId) await refresh();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "素材检查失败");
+      if (selectedRef.current === projectId) setMessage(error instanceof Error ? error.message : "素材检查失败");
     } finally {
-      setUploading(false);
+      setUploadBatches((batches) => batches[projectId] ? { ...batches, [projectId]: { ...batches[projectId], busy: false } } : batches);
     }
   }
   async function retryUpload(index: number) {
-    const item = uploads[index];
-    if (!item?.file || !item.projectId || uploading) return;
-    setUploading(true);
+    const projectId = selected;
+    const batch = uploadBatches[projectId];
+    const item = batch?.items[index];
+    if (!item?.file || !item.projectId || batch?.busy) return;
+    setUploadBatches((batches) => batches[projectId] ? { ...batches, [projectId]: { ...batches[projectId], busy: true } } : batches);
     try {
-      await transfer(item.file, index, item.projectId);
-      await refresh();
+      await transfer(item.file, item.projectId, index);
+      if (selectedRef.current === projectId) await refresh();
     } finally {
-      setUploading(false);
+      setUploadBatches((batches) => batches[projectId] ? { ...batches, [projectId]: { ...batches[projectId], busy: false } } : batches);
     }
   }
   async function createJob() {
@@ -645,15 +724,25 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   }
   async function refreshArtifacts(id: string) { const manifest = await client.getManifest(id); if (activeReconstruction.current === id) setArtifacts(manifest.artifacts); }
   async function loadEarlierLogs() {
-    const id = latest?.id;
+    const jobId = latest?.id;
     const first = logs[0];
-    if (!id || !first) return;
-    const older = await client.listJobLogs(id, { beforeId: first.id, limit: 200, level: logLevel || undefined });
-    if (older.length === 0) { setMessage("没有更早的日志"); return; }
-    setLogs((current) => {
-      const seen = new Set(current.map((line) => line.id));
-      return [...older.filter((line) => !seen.has(line.id)), ...current];
-    });
+    if (!jobId || !first || earlierJob.current === jobId) return;
+    const generation = logsGeneration.current;
+    earlierJob.current = jobId;
+    setLoadingEarlierJob(jobId);
+    try {
+      const older = await client.listJobLogs(jobId, { beforeId: first.id, limit: 200, level: logLevel || undefined });
+      // A page for a job the user already left (or a reset log list) must never leak into the new task.
+      if (jobId !== latestRef.current?.id || generation !== logsGeneration.current) return;
+      if (older.length === 0) { setMessage("没有更早的日志"); return; }
+      setLogs((current) => {
+        const seen = new Set(current.map((line) => line.id));
+        return [...older.filter((line) => !seen.has(line.id)), ...current];
+      });
+    } finally {
+      if (earlierJob.current === jobId) earlierJob.current = "";
+      setLoadingEarlierJob((current) => current === jobId ? "" : current);
+    }
   }
   function trapDrawerFocus(event: ReactKeyboardEvent<HTMLElement>) {
     if (!narrow || event.key !== "Tab") return;
@@ -666,6 +755,9 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   }
   const artifact = scene && artifacts.find((item) => item.kind === scene.kind);
+  const uploadBatch = uploadBatches[selected];
+  const uploads = uploadBatch?.items ?? [];
+  const uploading = uploadBatch?.busy ?? false;
   const derivedUnread = notifications.filter((item) => item.read_at === null).length;
   const unread = unreadCount ?? derivedUnread;
   const workerName = workerStatus?.workers.find((item) => item.online)?.gpu_name ?? "GPU Worker";
@@ -724,7 +816,14 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
           <strong>ReScene</strong>
         </div>
         <div className={`worker ${online ? "online" : ""}`}><i />{workerName} {online === true ? "在线" : online === false ? "离线" : "状态未知"}</div>
-        <details className="notify">
+        <details
+          className="notify"
+          onToggle={(event) => {
+            notifyOpen.current = event.currentTarget.open;
+            // The badge poll only refreshes the count; pull the list when the user asks to see it.
+            if (event.currentTarget.open) reloadNotifications();
+          }}
+        >
           <summary>通知{unread > 0 ? `（${unread}）` : ""}</summary>
           <div className="notify-tools">
             <button type="button" onClick={() => runAction(async () => { await client.markNotificationsRead(); await loadNotifications(); await loadUnread(); })}>全部已读</button>
@@ -821,7 +920,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                   <p className="muted">把拍摄素材整理成项目，重建并分享你的三维场景。</p>
                   {projects.length === 0 ? <div className="empty"><h2>开始第一个项目</h2><p>在导航中输入项目名称，再上传围绕目标拍摄的照片或视频。</p></div> : null}
                   <div className="project-gallery">
-                    {projects.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((project) => <ProjectCard key={project.id} client={client} project={project} onOpen={() => selectProject(project.id)} />)}
+                    {projects.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((project) => <ProjectCard key={project.id} client={client} project={project} summary={project} onOpen={() => selectProject(project.id)} />)}
                   </div>
                 </section>
               )
@@ -834,6 +933,14 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                   </div>
                   <p className="project-summary">{detail.asset_count} 个素材 · {detail.job_count} 个任务</p>
                 </header>
+                {staleRefresh && (
+                  <div className="offline-banner" role="alert">
+                    <strong>刷新失败：显示的是 {formatClock(detailFetchedAt ?? staleRefresh.at)} 的数据。</strong>{" "}
+                    <span>{staleRefresh.message}</span>{" "}
+                    <button type="button" onClick={() => void refresh()}>重试</button>
+                    <button type="button" aria-label="关闭刷新提示" onClick={() => setStaleRefresh(null)}>×</button>
+                  </div>
+                )}
                 {!canWrite && <p>只读访问：您可以查看素材、任务和结果。</p>}
                 {canManage && (
                   <details>
@@ -847,7 +954,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                       title={detail.has_active_jobs ? "存在进行中的任务，需先取消" : undefined}
                       onClick={() => {
                         if (!window.confirm(`确定删除项目“${detail.name}”？此操作不可撤销。`)) return;
-                        runAction(async () => { await client.deleteProject(selected); selectProject(""); setDetail(null); setProjects(await client.listProjects()); setMessage("项目已删除"); });
+                        runAction(async () => { await client.deleteProject(selected); selectProject(""); setDetail(null); setProjects(await client.listProjectSummaries()); setMessage("项目已删除"); });
                       }}
                     >删除项目</button>
                     <details onToggle={(event) => { if (event.currentTarget.open) runAction(async () => { setAudit((await client.listProjectAudit(selected)).items); }); }}>
@@ -995,7 +1102,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                               ))}
                             </ol>
                           )}
-                          {logs.length > 0 && <button onClick={() => runAction(loadEarlierLogs)}>加载更早</button>}
+                          {logs.length > 0 && <button disabled={loadingEarlierJob === latest.id} onClick={() => runAction(loadEarlierLogs)}>{loadingEarlierJob === latest.id ? "正在加载…" : "加载更早"}</button>}
                         </details>
                         {canWrite && ACTIVE[latest.status] && <button className="task-action" disabled={latest.cancel_requested} onClick={() => runAction(async () => { setLiveJob(await client.cancelJob(latest.id)); await refresh(); })}>取消任务</button>}
                         {canWrite && latest.error_code === "INVALID_INPUT" && <button className="task-action" onClick={() => setPane("materials")}>更换素材</button>}

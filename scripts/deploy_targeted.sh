@@ -87,6 +87,22 @@ wait_healthy() {
   return 1
 }
 
+# These headers are added by Caddy, not by the images. Assert the deployed edge
+# so a repo-only Caddyfile change cannot pass as a successful deploy.
+assert_header() {
+  local url=$1 name=$2 expected=$3 value
+  value=$(curl --fail --silent --show-error --max-time 20 --head "$url" |
+    tr -d '\r' | sed -n "s/^$name:[[:space:]]*//Ip") || {
+    echo "Could not read response headers from $url" >&2
+    return 1
+  }
+  if [[ "$value" != *"$expected"* ]]; then
+    printf 'Security header %s on %s is %q, expected to contain %q\n' \
+      "$name" "$url" "$value" "$expected" >&2
+    return 1
+  fi
+}
+
 # Installed before the first command that could change the host, so every
 # failure reports its phase; rollback() only restores services this run changed.
 trap rollback ERR
@@ -108,11 +124,30 @@ web_digest=$(docker image inspect --format '{{.Id}}' "rescene-web:$VERSION")
 echo "Exporting images for transfer"
 docker save "rescene-api:$VERSION" "rescene-web:$VERSION" | gzip -1 >"$STAGE/images.tar.gz"
 
-"${SSH[@]}" "set -eu; cd '$REMOTE_ROOT'; mkdir -p 'releases/$VERSION' infra/backups
+"${SSH[@]}" "set -eu; cd '$REMOTE_ROOT'; mkdir -p 'releases/$VERSION'
+  install -d -m 750 -o root -g 65532 infra/backups
   free=\$(df --output=avail -B1 . | tail -n1); need=\$(( $(stat -c %s "$STAGE/images.tar.gz") * 3 ))
   [ \"\$free\" -ge \"\$need\" ] || { echo \"Insufficient remote disk: free=\$free need=\$need\" >&2; exit 3; }
-  $COMPOSE exec -T db pg_dump -U rescene -Fc rescene > 'infra/backups/pre-deploy-$VERSION.dump'
-  test -s 'infra/backups/pre-deploy-$VERSION.dump'
+  # Publish atomically after verification. The rescene-*.dump name also enters
+  # the daily backup's 14-day retention; 640/65532 matches infra/deploy/backup.sh
+  # so the weekly upload container can read the snapshot.
+  stamp=\$(date -u +%Y%m%dT%H%M%SZ)
+  dump=\"infra/backups/rescene-pre-deploy-$VERSION-\$stamp.dump\"
+  [ ! -e \"\$dump\" ] || { echo \"Pre-deploy dump already exists: \$dump\" >&2; exit 4; }
+  umask 077
+  partial=\$(mktemp 'infra/backups/.rescene-pre-deploy-XXXXXXXX.dump')
+  trap 'rm -f -- \"\$partial\"' 0
+  $COMPOSE exec -T db pg_dump -U rescene -Fc rescene > \"\$partial\"
+  test -s \"\$partial\"
+  $COMPOSE exec -T db pg_restore --list < \"\$partial\" > /dev/null
+  chgrp 65532 \"\$partial\"
+  chmod 640 \"\$partial\"
+  [ \"\$(stat -c %a \"\$partial\")\" = 640 ] || { echo 'Pre-deploy dump mode is not 640' >&2; exit 4; }
+  mv \"\$partial\" \"\$dump\"
+  trap - 0
+  umask 022
+  printf '%s\n' \"\$dump\" > 'releases/$VERSION/pre-deploy-dump.txt'
+  echo \"Pre-deploy snapshot: \$dump (mode \$(stat -c %a \"\$dump\"), \$(stat -c %s \"\$dump\") bytes)\"
   cp -a infra/compose.yaml 'releases/$VERSION/compose.yaml'
   { docker inspect --format '{{.Name}} {{.Image}}' rescene-api rescene-web rescene-db; } > 'releases/$VERSION/before-images.txt'
   cat 'releases/$VERSION/before-images.txt'"
@@ -143,6 +178,17 @@ wait_healthy web || { echo "Web did not become healthy" >&2; false; }
 phase verify
 curl --fail --silent --max-time 20 "$API_URL/health/ready" >/dev/null
 curl --fail --silent --max-time 20 -o /dev/null "$WEB_URL/"
+
+assert_header "$API_URL/health/ready" X-Content-Type-Options nosniff
+assert_header "$API_URL/health/ready" X-Frame-Options DENY
+assert_header "$API_URL/health/ready" Strict-Transport-Security "max-age="
+assert_header "$WEB_URL/" X-Content-Type-Options nosniff
+assert_header "$WEB_URL/" X-Frame-Options DENY
+assert_header "$WEB_URL/" Referrer-Policy strict-origin-when-cross-origin
+assert_header "$WEB_URL/" Strict-Transport-Security "max-age="
+assert_header "$WEB_URL/" Content-Security-Policy "frame-ancestors 'none'"
+assert_header "$WEB_URL/" Content-Security-Policy "connect-src 'self' https://api.rescene.xyz"
+assert_header "$WEB_URL/" Content-Security-Policy "worker-src 'self' blob:"
 trap - ERR
 
 record "ok phase=verify api=$CHANGED_API web=$CHANGED_WEB"

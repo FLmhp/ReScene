@@ -240,6 +240,245 @@ def test_report_reuses_evaluation_only_for_unchanged_artifacts(tmp_path, monkeyp
     assert stale["timings"] == {"training": 2.0}
 
 
+def _completed_resume_run(tmp_path):
+    run = tmp_path / "runs" / "resume"
+    run.mkdir(parents=True)
+    (run / "scene.spz").write_bytes(b"scene")
+    (run / "stages").mkdir()
+    for name in ("preprocess", "geometry", "training", "export"):
+        (run / "stages" / f"{name}.json").write_text('{"status":"success"}', encoding="utf-8")
+    (run / "input_manifest.json").write_text(
+        json.dumps({"settings": {"seed": 42}, "counts": {}, "frames": []}), encoding="utf-8"
+    )
+    (run / "images").mkdir()
+    (run / "images" / "000000.jpg").write_bytes(b"image")
+    (run / "photometric_selection.json").write_text("{}", encoding="utf-8")
+    (run / "sparse" / "0").mkdir(parents=True)
+    (run / "sparse" / "0" / "points3D.bin").write_bytes(b"\0" * 9)
+    (run / "gsplat").mkdir()
+    (run / "gsplat" / "photometric_views.json").write_text("{}", encoding="utf-8")
+    (run / "gsplat" / "run.json").write_text("{}", encoding="utf-8")
+    for name in ("photometric_split.json", "geometry_frames.json"):
+        (run / name).write_text("{}", encoding="utf-8")
+    return run
+
+
+def test_resume_preserves_timings_and_evaluation_evidence(tmp_path, monkeypatch):
+    from rescene.metrics import evaluation_artifacts
+
+    run = _completed_resume_run(tmp_path)
+    evidence = {
+        "schema_version": 1,
+        "artifacts": evaluation_artifacts(run),
+        "fields": {"pose_ate": 0.25, "point_fscore": 0.9},
+    }
+    (run / "metrics.json").write_text(
+        json.dumps(
+            {
+                "timings": {"preprocess": 3.0, "training": 12.0},
+                "pose_ate": 0.25,
+                "point_fscore": 0.9,
+                "evaluation_evidence": evidence,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pipeline, "_environment", lambda root: {})
+    monkeypatch.setattr(pipeline, "collect_metrics", lambda *args: {"total_seconds": 5.0})
+
+    pipeline.run_pipeline("balanced", tmp_path / "input", "resume", resume=True, output_dir=run)
+    metrics = json.loads((run / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["pose_ate"] == 0.25
+    assert metrics["point_fscore"] == 0.9
+    assert "evaluation_needs_recompute" not in metrics
+    assert metrics["timings"]["preprocess"] == 3.0
+    assert metrics["timings"]["training"] == 12.0
+    assert "evaluation" in metrics["timings"]
+
+    (run / "scene.spz").write_bytes(b"regenerated")
+    pipeline.run_pipeline("balanced", tmp_path / "input", "resume", resume=True, output_dir=run)
+    stale = json.loads((run / "metrics.json").read_text(encoding="utf-8"))
+    assert "pose_ate" not in stale
+    assert "point_fscore" not in stale
+    assert stale["evaluation_needs_recompute"] is True
+    assert stale["timings"]["preprocess"] == 3.0
+
+
+def test_resume_uses_recorded_training_oom_fallback(tmp_path, monkeypatch):
+    run = tmp_path / "run"
+    (run / "stages").mkdir(parents=True)
+    (run / "stages" / "preprocess.json").write_text('{"status":"success"}', encoding="utf-8")
+    (run / "stages" / "geometry.json").write_text('{"status":"success"}', encoding="utf-8")
+    (run / "input_manifest.json").write_text(
+        json.dumps({"settings": {"seed": 42}, "counts": {}, "frames": []}), encoding="utf-8"
+    )
+    (run / "images").mkdir()
+    (run / "photometric_selection.json").write_text("{}", encoding="utf-8")
+    (run / "sparse" / "0").mkdir(parents=True)
+    (run / "sparse" / "0" / "points3D.bin").write_bytes(b"\0" * 9)
+    config = pipeline.profile_config("balanced")
+    fallback = config.degraded()
+    (run / "degradation.json").write_text(
+        json.dumps({"stage": "training", "reason": "cuda_oom", "config": fallback.to_dict()}),
+        encoding="utf-8",
+    )
+    trained = []
+
+    def gsplat(_root, _scene, _output, effective, *, seed):
+        trained.append(effective)
+        return ["gsplat"]
+
+    monkeypatch.setattr(pipeline, "gsplat_command", gsplat)
+    monkeypatch.setattr(pipeline, "run_command", lambda command, log_path, *, cwd: None)
+    monkeypatch.setattr(pipeline, "_ensure_downsampled_images", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline, "_find_ply", lambda run_dir: run_dir / "unused.ply")
+    monkeypatch.setattr(pipeline, "_environment", lambda root: {})
+    monkeypatch.setattr(
+        pipeline,
+        "collect_metrics",
+        lambda run_dir, degraded=None: {"total_seconds": 1.0, "degraded": degraded},
+    )
+    monkeypatch.setattr(pipeline, "write_report", lambda *args: None)
+
+    pipeline.run_pipeline("balanced", tmp_path / "input", "oom", resume=True, output_dir=run)
+
+    assert len(trained) == 1
+    assert trained[0] == fallback
+    assert trained[0].gsplat_data_factor == config.gsplat_data_factor * 2
+    assert trained[0].gsplat_packed
+    assert trained[0].max_frames == config.max_frames // 2
+    degradation = json.loads((run / "degradation.json").read_text(encoding="utf-8"))
+    assert degradation["effective"] is True
+    assert degradation["config"] == fallback.to_dict()
+    metrics = json.loads((run / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["degraded"]["stage"] == "training"
+
+
+def test_recorded_training_fallback_accepts_repeated_degradation():
+    config = pipeline.profile_config("balanced")
+    twice = config.degraded().degraded()
+
+    assert pipeline._recorded_training_fallback(config, {"stage": "training", "config": twice.to_dict()}) == twice
+    assert pipeline._recorded_training_fallback(config, {"stage": "geometry", "config": twice.to_dict()}) is None
+    assert (
+        pipeline._recorded_training_fallback(
+            config, {"stage": "training", "config": {**twice.to_dict(), "geometry_backend": "colmap"}}
+        )
+        is None
+    )
+    assert pipeline._recorded_training_fallback(config, {"stage": "training", "config": config.to_dict()}) is None
+    assert pipeline._recorded_training_fallback(config, {"stage": "training", "config": {}}) is None
+
+
+def _failing_geometry_run(tmp_path, monkeypatch, failure):
+    source = tmp_path / "input"
+    source.mkdir()
+    (source / "frame.jpg").touch()
+    output = tmp_path / "output"
+    commands = []
+    monkeypatch.setattr(pipeline, "_environment", lambda root: {})
+    monkeypatch.setattr(
+        pipeline,
+        "preprocess_input",
+        lambda path, dest, **kwargs: (dest / "input_manifest.json").write_text('{"settings":{"seed":42}}'),
+    )
+
+    def fail(command, log, *, cwd):
+        commands.append(command)
+        failure(output)
+        raise RuntimeError("geometry failed")
+
+    monkeypatch.setattr(pipeline, "run_command", fail)
+    return source, output, commands
+
+
+def test_dense_failure_keeps_sparse_model_without_matcher_retry(tmp_path, monkeypatch):
+    def produce_sparse(output):
+        sparse = output / "sparse" / "0"
+        sparse.mkdir(parents=True, exist_ok=True)
+        (sparse / "points3D.bin").write_bytes(b"\0" * 9)
+
+    source, output, commands = _failing_geometry_run(tmp_path, monkeypatch, produce_sparse)
+    config = pipeline.profile_config("quality")
+    with pytest.raises(RuntimeError, match="geometry failed"):
+        pipeline.run_pipeline("quality", source, "dense", config_override=config, output_dir=output)
+    assert len(commands) == 1
+    degradation = json.loads((output / "degradation.json").read_text(encoding="utf-8"))
+    assert degradation["reason"] == "geometry_dense_failed"
+    assert (output / "sparse" / "0" / "points3D.bin").is_file()
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "matchers"), [("video", ["sequential", "exhaustive"]), ("images", ["exhaustive", "sequential"])]
+)
+def test_matching_failure_retries_the_other_matcher(tmp_path, monkeypatch, source_kind, matchers):
+    source, output, commands = _failing_geometry_run(tmp_path, monkeypatch, lambda output: None)
+    monkeypatch.setattr(pipeline, "classify_input", lambda path: source_kind)
+    config = pipeline.profile_config("quality")
+    with pytest.raises(RuntimeError, match="geometry failed"):
+        pipeline.run_pipeline("quality", source, "matching", config_override=config, output_dir=output)
+    assert len(commands) == 2
+    assert [command[command.index("--matcher") + 1] for command in commands] == matchers
+    degradation = json.loads((output / "degradation.json").read_text(encoding="utf-8"))
+    assert degradation["reason"] == "matcher_retry"
+
+
+def test_environment_hashes_are_cached_and_force_rehash(tmp_path, monkeypatch):
+    root = tmp_path
+    (root / "src" / "rescene").mkdir(parents=True)
+    (root / "src" / "rescene" / "module.py").write_text("value = 1\n", encoding="utf-8")
+    for name in ("vggt", "gsplat", "spz", "dinov2"):
+        (root / "third_party" / name).mkdir(parents=True)
+        (root / "third_party" / name / ".revision").write_text(name, encoding="utf-8")
+        (root / "third_party" / name / "source.py").write_text(name, encoding="utf-8")
+    model = root / ".cache" / "models" / "VGGT-1B"
+    model.mkdir(parents=True)
+    (model / "model.safetensors").write_bytes(b"weights")
+    (root / ".cache" / "models" / "VGGSfM").mkdir(parents=True)
+    (root / ".cache" / "models" / "VGGSfM" / "vggsfm_v2_tracker.pt").write_bytes(b"tracker")
+    (root / ".cache" / "torch" / "hub" / "checkpoints").mkdir(parents=True)
+    (root / ".cache" / "torch" / "hub" / "checkpoints" / "dinov2_vitb14_reg4_pretrain.pth").write_bytes(b"dinov2")
+
+    original = pipeline.sha256_file
+    hashed: list = []
+
+    def counting(path):
+        hashed.append(path)
+        return original(path)
+
+    monkeypatch.setattr(pipeline, "sha256_file", counting)
+    first = pipeline._environment(root)
+    assert len(hashed) == 8
+    cache_path = root / pipeline.ENVIRONMENT_HASH_CACHE
+    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert cache["schema_version"] == 1 and len(cache["hashes"]) == 8
+    entry = cache["hashes"][str((root / "src" / "rescene" / "module.py").resolve())]
+    stat = (root / "src" / "rescene" / "module.py").stat()
+    assert entry == {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "sha256": entry["sha256"]}
+
+    hashed.clear()
+    second = pipeline._environment(root)
+    assert hashed == []
+    assert second == first
+
+    (root / "src" / "rescene" / "module.py").write_text("value = 2 changed\n", encoding="utf-8")
+    hashed.clear()
+    changed = pipeline._environment(root)
+    assert len(hashed) == 1
+    assert changed["source_tree_sha256"] != first["source_tree_sha256"]
+
+    hashed.clear()
+    rehashed = pipeline._environment(root, rehash=True)
+    assert len(hashed) == 8
+    assert rehashed == changed
+
+    cache_path.unlink()
+    hashed.clear()
+    rebuilt = pipeline._environment(root)
+    assert len(hashed) == 8
+    assert rebuilt == changed
+
+
 def test_reuse_forbids_overlap_and_resume(tmp_path):
     source = _source_run(tmp_path)
     with pytest.raises(ValueError, match="separate"):

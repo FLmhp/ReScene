@@ -5,6 +5,7 @@ import csv
 import hashlib
 import hmac
 import io
+import ipaddress
 import json
 import logging
 import math
@@ -26,13 +27,14 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import and_, delete, func, or_, select, text, tuple_, update
+from sqlalchemy import and_, case, delete, func, or_, select, text, tuple_, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from rescene.preprocess import IMAGE_SUFFIXES, VIDEO_SUFFIXES
 from rescene_api.access_logging import LOGGING_CONFIG
 from rescene_api.auth import decode_token, hash_password, issue_token, verify_password
+from rescene_api.bodylimit import RequestBodyLimitMiddleware
 from rescene_api.config import settings
 from rescene_api.db import SessionLocal, init_db
 from rescene_api.models import (
@@ -85,15 +87,39 @@ bearer = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
 
 
-def fail(status_code: int, detail: str, code: str, headers: dict[str, str] | None = None) -> NoReturn:
+def fail(
+    status_code: int,
+    detail: str,
+    code: str,
+    headers: dict[str, str] | None = None,
+    cause: BaseException | None = None,
+) -> NoReturn:
     """Raise an HTTP error carrying a stable machine code for client mapping."""
-    raise HTTPException(status_code, detail, headers={**(headers or {}), "X-Error-Code": code})
+    error = HTTPException(status_code, detail, headers={**(headers or {}), "X-Error-Code": code})
+    if cause is not None:
+        raise error from cause
+    raise error
+
+
+def client_address(request: Request) -> str:
+    """Rate-limit identity from the hop Caddy vouches for, never the XFF chain.
+
+    Caddy overwrites `X-Real-IP` with the socket peer before proxying, so the
+    value cannot be chosen by the caller. Direct API exposure is unsupported.
+    """
+    forwarded = request.headers.get("x-real-ip", "").strip()
+    if forwarded:
+        try:
+            return ipaddress.ip_address(forwarded).compressed
+        except ValueError:
+            logger.warning("Ignoring malformed X-Real-IP %r", forwarded[:64])
+    return request.client.host if request.client else "unknown"
 
 
 def rate_limit(request: Request) -> None:
     """Cap credential attempts per client and route."""
     config = settings()
-    key = f"{request.client.host if request.client else 'unknown'}:{request.url.path}"
+    key = f"{client_address(request)}:{request.url.path}"
     retry = limiter.allow(key, config.auth_rate_limit, 60)
     if retry is not None:
         fail(429, "Too many requests", "auth.rate_limited", {"Retry-After": str(math.ceil(retry))})
@@ -271,6 +297,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="ReScene API", version=package_version("rescene"), lifespan=lifespan)
+app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings().cors_origins),
@@ -295,7 +322,7 @@ def ready(db: Db) -> dict[str, str]:
 @app.post("/v1/auth/register", status_code=201)
 def register(payload: RegisterRequest, db: Db, _: Annotated[None, Depends(rate_limit)] = None) -> dict[str, str]:
     """Create a self-service account and sign it in."""
-    email = payload.email.strip().lower()
+    email = payload.email
     if db.scalar(select(User).where(User.email == email)):
         fail(status.HTTP_409_CONFLICT, "Email already registered", "auth.email_taken")
     user = User(email=email, password_hash=hash_password(payload.password))
@@ -336,7 +363,7 @@ def change_password(
 
 @app.post("/v1/auth/login")
 def login(payload: LoginRequest, db: Db, _: Annotated[None, Depends(rate_limit)] = None) -> dict[str, str]:
-    user = db.scalar(select(User).where(User.email == payload.email.strip().lower()))
+    user = db.scalar(select(User).where(User.email == payload.email))
     if not user or not verify_password(payload.password, user.password_hash) or not user.active:
         fail(status.HTTP_401_UNAUTHORIZED, "Invalid credentials", "auth.invalid_credentials")
     return {"access_token": issue_token(user.id, user.token_version), "token_type": "bearer"}
@@ -361,7 +388,7 @@ def logout(user: UserDep, db: Db) -> None:
 
 @app.post("/v1/users", status_code=201)
 def create_user(payload: CreateUserRequest, db: Db, admin: AdminDep) -> dict[str, object]:
-    email = payload.email.lower()
+    email = payload.email
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(status.HTTP_409_CONFLICT, "User already exists")
     user = User(email=email, password_hash=hash_password(payload.password), is_admin=payload.is_admin)
@@ -450,8 +477,127 @@ def reset_user_password(user_id: str, payload: ResetPasswordRequest, db: Db, adm
     db.commit()
 
 
+ACTIVE_JOB_STATUSES = ("QUEUED", "LEASED", "RUNNING")
+_COVER_SUFFIXES = tuple(sorted(IMAGE_SUFFIXES))
+
+
+def project_summaries(db: Session, user: User) -> list[dict[str, object]]:
+    """One fixed set of aggregate queries for every project the user can see.
+
+    Counts, active flags, covers and latest jobs are resolved in batches so the
+    project library stays flat as the number of cards grows.
+    """
+    membership_role = aliased(ProjectMember)
+    query = (
+        select(Project, membership_role.role)
+        .outerjoin(
+            membership_role,
+            and_(membership_role.project_id == Project.id, membership_role.user_id == user.id),
+        )
+        .where(Project.deleted_at.is_(None))
+    )
+    if not user.is_admin:
+        query = query.where(or_(Project.owner_id == user.id, membership_role.role.in_(["member", "viewer"])))
+    rows = db.execute(query.order_by(Project.created_at.desc())).all()
+    ids = [project.id for project, _ in rows]
+    if not ids:
+        return []
+
+    asset_counts = dict(
+        db.execute(
+            select(Asset.project_id, func.count()).where(Asset.project_id.in_(ids)).group_by(Asset.project_id)
+        ).all()
+    )
+    job_stats = {
+        project_id: (count, bool(active))
+        for project_id, count, active in db.execute(
+            select(
+                ReconstructionJob.project_id,
+                func.count(),
+                func.coalesce(func.sum(case((ReconstructionJob.status.in_(ACTIVE_JOB_STATUSES), 1), else_=0)), 0),
+            )
+            .where(ReconstructionJob.project_id.in_(ids))
+            .group_by(ReconstructionJob.project_id)
+        ).all()
+    }
+
+    cover_candidates = (
+        select(
+            Asset,
+            func.row_number()
+            .over(
+                partition_by=Asset.project_id,
+                order_by=(Asset.created_at.desc(), Asset.id.desc()),
+            )
+            .label("cover_rank"),
+        )
+        .where(
+            Asset.project_id.in_(ids),
+            Asset.status == "READY",
+            or_(*(func.lower(Asset.filename).endswith(suffix) for suffix in _COVER_SUFFIXES)),
+        )
+        .subquery()
+    )
+    cover_asset = aliased(Asset, cover_candidates)
+    covers = {
+        asset.project_id: asset
+        for asset in db.scalars(select(cover_asset).where(cover_candidates.c.cover_rank == 1)).all()
+    }
+
+    job_candidates = (
+        select(
+            ReconstructionJob,
+            Reconstruction.id.label("reconstruction_id"),
+            func.row_number()
+            .over(
+                partition_by=ReconstructionJob.project_id,
+                order_by=(ReconstructionJob.created_at.desc(), ReconstructionJob.id.desc()),
+            )
+            .label("latest_rank"),
+        )
+        .outerjoin(Reconstruction, Reconstruction.job_id == ReconstructionJob.id)
+        .where(ReconstructionJob.project_id.in_(ids))
+        .subquery()
+    )
+    latest_job = aliased(ReconstructionJob, job_candidates)
+    latest_jobs = {
+        job.project_id: (job, reconstruction_id)
+        for job, reconstruction_id in db.execute(
+            select(latest_job, job_candidates.c.reconstruction_id).where(job_candidates.c.latest_rank == 1)
+        ).all()
+    }
+
+    summaries: list[dict[str, object]] = []
+    for project, member_role in rows:
+        if project.owner_id == user.id:
+            role = "owner"
+        elif user.is_admin:
+            role = "admin"
+        else:
+            role = member_role if member_role in {"member", "viewer"} else None
+        job_count, has_active_jobs = job_stats.get(project.id, (0, False))
+        cover = covers.get(project.id)
+        latest = latest_jobs.get(project.id)
+        summaries.append(
+            {
+                "id": project.id,
+                "name": project.name,
+                "owner_id": project.owner_id,
+                "effective_role": role,
+                "asset_count": asset_counts.get(project.id, 0),
+                "job_count": job_count,
+                "has_active_jobs": has_active_jobs,
+                "cover": asset_summary(cover) if cover else None,
+                "latest_job": job_view(latest[0], latest[1]) if latest else None,
+            }
+        )
+    return summaries
+
+
 @app.get("/v1/projects")
-def list_projects(db: Db, user: UserDep) -> list[dict[str, object]]:
+def list_projects(db: Db, user: UserDep, view: Literal["list", "summary"] = "list") -> list[dict[str, object]]:
+    if view == "summary":
+        return project_summaries(db, user)
     membership = select(ProjectMember.project_id).where(
         ProjectMember.user_id == user.id, ProjectMember.role.in_(["member", "viewer"])
     )
@@ -777,7 +923,7 @@ def add_member(
     """Issue a one-time invitation or report the existing membership."""
     project = project_for_user(db, project_id, user, lock=True)
     require_project_manager(project, user)
-    email = payload.email.strip().lower()
+    email = payload.email
     account = db.scalar(select(User).where(User.email == email))
     if account and account.id == project.owner_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot alter the project owner")
@@ -1096,9 +1242,22 @@ def create_upload_session(project_id: str, payload: UploadSessionRequest, db: Db
     db.add(asset)
     db.flush()
     asset.object_key = f"projects/{project_id}/assets/{asset.id}/original/{filename}"
+    try:
+        grant = upload_grant(asset, payload.mode)
+    except (HTTPException, ClientException, ServerException, oss2.exceptions.OssError) as error:
+        # The row only exists to mint its object key: keep it out of the database
+        # until the client actually holds usable credentials.
+        db.rollback()
+        logger.warning("Could not issue upload credentials for project %s (%s)", project_id, type(error).__name__)
+        fail(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Upload credentials are unavailable",
+            "asset.upload_credentials_unavailable",
+            {"Retry-After": "30"},
+        )
     audit(db, user.id, "asset.upload.init", "asset", asset.id, project_id=project_id)
     db.commit()
-    return upload_grant(asset, payload.mode)
+    return grant
 
 
 @app.post("/v1/assets/{asset_id}/complete")
@@ -1112,11 +1271,19 @@ def complete_asset(asset_id: str, payload: CompleteAssetRequest, db: Db, user: U
     try:
         actual_size, content_type = storage().head(asset.object_key)
     except oss2.exceptions.NotFound as error:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Upload is not complete") from error
+        fail(status.HTTP_409_CONFLICT, "Upload is not complete", "asset.upload_incomplete", cause=error)
     if actual_size != payload.size or actual_size != asset.size:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Uploaded object size does not match")
+        fail(
+            status.HTTP_409_CONFLICT,
+            "Uploaded object size does not match",
+            "asset.upload_size_mismatch",
+        )
     if not payload.sha256 or (asset.sha256 and asset.sha256 != payload.sha256):
-        raise HTTPException(status.HTTP_409_CONFLICT, "Uploaded object hash does not match")
+        fail(
+            status.HTTP_409_CONFLICT,
+            "Uploaded object hash does not match",
+            "asset.upload_hash_mismatch",
+        )
     asset.sha256 = payload.sha256
     asset.content_type = content_type or asset.content_type
     asset.status = "READY"
@@ -1134,7 +1301,7 @@ def refresh_upload_session(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Asset not found")
     project_for_user(db, asset.project_id, user, write=True)
     if asset.status != "UPLOADING":
-        raise HTTPException(status.HTTP_409_CONFLICT, "Asset is not awaiting upload")
+        fail(status.HTTP_409_CONFLICT, "Asset is not awaiting upload", "asset.not_awaiting_upload")
     return upload_grant(asset, mode)
 
 
@@ -1487,6 +1654,24 @@ def cancel_job(job_id: str, db: Db, user: UserDep) -> dict[str, object]:
     return job_view(job)
 
 
+def requeue_job(job: ReconstructionJob, *, at: datetime | None = None) -> None:
+    """Return a job to the queue without carrying the previous attempt's state.
+
+    `resume_artifact_key` is intentionally preserved so the worker can resume
+    from its checkpoint; only the fields an observer reads as "current" reset.
+    """
+    job.status = "QUEUED"
+    job.progress = 0.0
+    job.current_stage = None
+    job.leased_by = None
+    job.lease_expires_at = None
+    job.heartbeat_at = None
+    job.error_code = None
+    job.error_message = None
+    if at is not None:
+        job.updated_at = at
+
+
 @app.post("/v1/jobs/{job_id}/retry")
 def retry_job(job_id: str, db: Db, user: UserDep) -> dict[str, object]:
     project_id = db.scalar(select(ReconstructionJob.project_id).where(ReconstructionJob.id == job_id))
@@ -1505,10 +1690,8 @@ def retry_job(job_id: str, db: Db, user: UserDep) -> dict[str, object]:
         raise HTTPException(status.HTTP_409_CONFLICT, "Only failed or cancelled jobs can be retried")
     if job.error_code == "INVALID_INPUT":
         fail(status.HTTP_409_CONFLICT, "Replace the invalid assets and create a new job", "job.invalid_input")
-    job.status = "QUEUED"
     job.max_attempts = job.attempt + 3
-    job.error_code = None
-    job.error_message = None
+    requeue_job(job)
     job.cancel_requested_at = None
     audit(db, user.id, "job.retry", "job", job.id)
     db.commit()
@@ -1587,12 +1770,23 @@ def asset_referenced(db: Session, asset: Asset) -> bool:
     return any(asset.id in queued_asset_ids(db, job_id) for job_id in job_ids)
 
 
-def expire_stale_uploads(db: Session, project: Project) -> None:
-    """Remove expired uploads while holding the same row lock as completion."""
-    project_id = project.id
+STALE_UPLOAD_BATCH = 20
+
+
+def expire_stale_uploads(db: Session, project: Project) -> int:
+    """Queue one bounded batch of abandoned uploads for the cleanup reaper.
+
+    The row lock (and the re-check under it) is the same fence completion uses,
+    so an upload that turns READY before this transaction locks it is skipped.
+    No storage call happens here; the reaper owns deletion and its retries.
+    """
     cutoff = now() - timedelta(seconds=settings().stale_upload_seconds)
-    eligible = (Asset.project_id == project_id, Asset.status == "UPLOADING", Asset.created_at < cutoff)
-    for asset_id in db.scalars(select(Asset.id).where(*eligible)).all():
+    eligible = (Asset.project_id == project.id, Asset.status == "UPLOADING", Asset.created_at < cutoff)
+    candidates = db.scalars(
+        select(Asset.id).where(*eligible).order_by(Asset.created_at, Asset.id).limit(STALE_UPLOAD_BATCH)
+    ).all()
+    expired = 0
+    for asset_id in candidates:
         asset = db.scalar(
             select(Asset)
             .where(Asset.id == asset_id, *eligible)
@@ -1601,16 +1795,19 @@ def expire_stale_uploads(db: Session, project: Project) -> None:
         )
         if asset is None:
             continue
-        try:
-            with suppress(oss2.exceptions.NoSuchKey):
-                storage().delete(asset.object_key)
-        except (HTTPException, ClientException, ServerException, oss2.exceptions.OssError) as error:
-            logger.warning("Could not expire upload %s (%s)", asset_id, type(error).__name__)
-            db.rollback()
-            continue
-        audit(db, None, "asset.expire", "asset", asset_id, project_id=project_id)
+        existing = db.scalar(select(AssetCleanup).where(AssetCleanup.object_key == asset.object_key))
+        if existing is None:
+            db.add(AssetCleanup(object_key=asset.object_key, reason="asset.expire"))
+        else:
+            existing.reason = "asset.expire"
+        audit(db, None, "asset.expire", "asset", asset_id, project_id=project.id)
         db.delete(asset)
+        expired += 1
+    if expired:
         db.commit()
+    else:
+        db.rollback()
+    return expired
 
 
 def recover_expired_leases(db: Session, current_time: datetime) -> None:
@@ -1625,11 +1822,15 @@ def recover_expired_leases(db: Session, current_time: datetime) -> None:
         .with_for_update()
     ).all()
     for job in expired:
-        job.status = (
-            "CANCELLED" if job.cancel_requested_at else "QUEUED" if job.attempt < job.max_attempts else "FAILED"
-        )
-        job.error_code = "WORKER_LEASE_EXPIRED"
-        job.error_message = "Worker heartbeat expired"
+        if job.cancel_requested_at:
+            job.status = "CANCELLED"
+        elif job.attempt < job.max_attempts:
+            requeue_job(job, at=current_time)
+        else:
+            job.status = "FAILED"
+        if job.status != "QUEUED":
+            job.error_code = "WORKER_LEASE_EXPIRED"
+            job.error_message = "Worker heartbeat expired"
         job.leased_by = None
         job.lease_expires_at = None
         job.updated_at = current_time
@@ -1637,19 +1838,21 @@ def recover_expired_leases(db: Session, current_time: datetime) -> None:
 
 CLEANUP_BATCH = 50
 CLEANUP_MAX_BACKOFF = 3600
+CLEANUP_MAX_ATTEMPTS = 10
 
 
 def reap_asset_cleanups(limit: int = CLEANUP_BATCH) -> int:
     """Delete queued objects in their own transaction and return how many finished.
 
     The asset row is already committed as removed, so a failure here only delays
-    the bytes; a missing object means an earlier attempt succeeded.
+    the bytes; a missing object means an earlier attempt succeeded. Records that
+    keep failing stop being retried and stay visible for operators.
     """
     removed = 0
     with SessionLocal() as db:
         due = db.scalars(
             select(AssetCleanup)
-            .where(AssetCleanup.next_attempt_at <= now())
+            .where(AssetCleanup.next_attempt_at <= now(), AssetCleanup.attempts < CLEANUP_MAX_ATTEMPTS)
             .order_by(AssetCleanup.next_attempt_at)
             .limit(limit)
             .with_for_update(skip_locked=True)
@@ -1662,13 +1865,26 @@ def reap_asset_cleanups(limit: int = CLEANUP_BATCH) -> int:
                 record.attempts += 1
                 record.next_attempt_at = now() + timedelta(seconds=min(CLEANUP_MAX_BACKOFF, 60 * 2**record.attempts))
                 record.last_error = f"{type(error).__name__}: {error}"[:500]
-                logger.warning("Could not delete %s yet (%s)", record.object_key, type(error).__name__)
+                if record.attempts >= CLEANUP_MAX_ATTEMPTS:
+                    logger.error(
+                        "Giving up deleting %s after %s attempts (%s)",
+                        record.object_key,
+                        record.attempts,
+                        type(error).__name__,
+                    )
+                else:
+                    logger.warning("Could not delete %s yet (%s)", record.object_key, type(error).__name__)
                 continue
             db.delete(record)
             removed += 1
+        stuck = db.scalar(
+            select(func.count()).select_from(AssetCleanup).where(AssetCleanup.attempts >= CLEANUP_MAX_ATTEMPTS)
+        )
         db.commit()
     if removed:
         logger.info("Removed %s queued objects", removed)
+    if stuck:
+        logger.error("%s object deletions are stuck after %s attempts", stuck, CLEANUP_MAX_ATTEMPTS)
     return removed
 
 
@@ -1850,9 +2066,11 @@ def append_job_logs(job_id: str, payload: WorkerLogsRequest, db: Db, worker_id: 
     db.flush()
     keep = settings().job_log_limit
     if keep > 0:
-        kept = db.scalars(select(JobLog.id).where(JobLog.job_id == job_id).order_by(JobLog.id.desc()).limit(keep)).all()
-        if len(kept) == keep:
-            db.execute(delete(JobLog).where(JobLog.job_id == job_id, JobLog.id < kept[-1]))
+        cutoff = db.scalar(
+            select(JobLog.id).where(JobLog.job_id == job_id).order_by(JobLog.id.desc()).offset(keep - 1).limit(1)
+        )
+        if cutoff is not None:
+            db.execute(delete(JobLog).where(JobLog.job_id == job_id, JobLog.id < cutoff))
     db.commit()
     return {"accepted": len(payload.lines)}
 
@@ -1918,9 +2136,15 @@ def fail_job(
 ) -> dict[str, object]:
     job = leased_job(db, job_id, worker_id, attempt)
     retry = payload.retryable and job.attempt < job.max_attempts and job.cancel_requested_at is None
-    job.status = "CANCELLED" if job.cancel_requested_at else "QUEUED" if retry else "FAILED"
-    job.error_code = payload.error_code
-    job.error_message = payload.error_message
+    if job.cancel_requested_at:
+        job.status = "CANCELLED"
+    elif retry:
+        requeue_job(job)
+    else:
+        job.status = "FAILED"
+    if job.status != "QUEUED":
+        job.error_code = payload.error_code
+        job.error_message = payload.error_message
     job.leased_by = None
     job.lease_expires_at = None
     audit(db, None, "job.fail", "job", job.id, project_id=job.project_id, code=payload.error_code)
@@ -2068,4 +2292,11 @@ def share_qr(token: str, db: Db) -> Response:
 
 
 def run() -> None:
-    uvicorn.run("rescene_api.main:app", host="0.0.0.0", port=8000, workers=2, log_config=LOGGING_CONFIG)
+    uvicorn.run(
+        "rescene_api.main:app",
+        host="0.0.0.0",
+        port=8000,
+        workers=2,
+        proxy_headers=False,
+        log_config=LOGGING_CONFIG,
+    )

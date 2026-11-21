@@ -341,6 +341,11 @@ export class ResceneClient {
     return this.send("/v1/projects", ProjectSchema.array());
   }
 
+  /** Batched card data: one request and one aggregate pass for the whole library. */
+  async listProjectSummaries(): Promise<ProjectSummary[]> {
+    return this.send("/v1/projects?view=summary", ProjectSummarySchema.array());
+  }
+
   async createProject(name: string, idempotencyKey?: string): Promise<Project> {
     return this.send("/v1/projects", ProjectSchema, {
       method: "POST",

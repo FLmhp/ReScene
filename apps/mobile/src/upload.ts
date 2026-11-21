@@ -1,6 +1,6 @@
 import type { ResceneClient } from "@rescene/api-client";
 import { accountQueueKey, inspectMedia, QueuedMediaMissing, SAMPLE_SIDE, type QueueOwner } from "@rescene/uploader";
-import { File, Paths } from "expo-file-system";
+import { Directory, File, Paths } from "expo-file-system";
 import * as FileSystem from "expo-file-system/legacy";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import { decode } from "jpeg-js";
@@ -17,6 +17,56 @@ export type PickedFile = {
 export type JobFile = { uri: string; name: string; type: string };
 
 const MEDIA_ROOT = `${FileSystem.documentDirectory}rescene-media/`;
+
+/** An upload writes a full second copy to the cache, so reserve trailer and metadata overhead. */
+const COPY_HEADROOM = 1024 * 1024;
+const UPLOAD_BODY = /^rescene-.+\.post$/;
+
+/** The device cannot hold the copy this upload needs; retrying cannot help until space is freed. */
+export class StorageShortageError extends Error {
+  constructor() {
+    super("设备存储不足，请清理空间后重试。");
+    this.name = "StorageShortageError";
+  }
+}
+
+export function isStorageShortage(error: unknown): boolean {
+  return error instanceof StorageShortageError;
+}
+
+function requireFreeSpace(bytes: number): void {
+  const available = Paths.availableDiskSpace;
+  if (Number.isFinite(available) && available > 0 && bytes > 0 && available < bytes) throw new StorageShortageError();
+}
+
+/** A native write reports a full disk as a platform message, not a typed error. */
+function isOutOfSpace(reason: unknown): boolean {
+  const text = reason instanceof Error ? reason.message : String(reason ?? "");
+  return /ENOSPC|no space left|not enough space|存储空间不足|磁盘空间不足/i.test(text);
+}
+
+function deleteQuietly(file: File): void {
+  try { if (file.exists) file.delete(); } catch { /* the launch sweep collects an orphaned body */ }
+}
+
+/** The picker's cache copy is redundant once the managed copy is verified. */
+async function removePickerCacheCopy(uri: string): Promise<void> {
+  const cache = FileSystem.cacheDirectory;
+  if (!cache || !uri.startsWith(cache)) return;
+  try { await FileSystem.deleteAsync(uri, { idempotent: true }); } catch { /* locked or already claimed */ }
+}
+
+/**
+ * A crash or a killed process can leave a whole-file body in the cache. Sweep
+ * them at launch so repeated large uploads cannot fill the device.
+ */
+export function clearOrphanUploadBodies(): void {
+  let entries: (Directory | File)[];
+  try { entries = Paths.cache.list(); } catch { return; }
+  for (const entry of entries) {
+    if (entry instanceof File && UPLOAD_BODY.test(entry.name)) deleteQuietly(entry);
+  }
+}
 
 /** Keep the queue-owned copy inside the account's directory, never the picker cache. */
 export function managedMediaDirectory(owner: QueueOwner): string {
@@ -39,6 +89,7 @@ export async function persistPickedFile(
 ): Promise<{ uri: string; size: number }> {
   const directory = managedMediaDirectory(owner);
   await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+  requireFreeSpace(file.size + COPY_HEADROOM);
   const uri = directory + managedMediaName(id, file.name);
   try {
     await FileSystem.copyAsync({ from: file.uri, to: uri });
@@ -47,10 +98,11 @@ export async function persistPickedFile(
     const size = stored.size;
     if (typeof size !== "number" || size <= 0) throw new Error("素材副本不可读，请检查设备存储。");
     if (file.size > 0 && size !== file.size) throw new Error("素材副本不完整，请重新选择该文件。");
+    await removePickerCacheCopy(file.uri);
     return { uri, size };
   } catch (reason) {
     await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
-    throw reason;
+    throw isOutOfSpace(reason) ? new StorageShortageError() : reason;
   }
 }
 
@@ -110,8 +162,11 @@ async function postToOss(
     return `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${value}\r\n`;
   }).join("");
   if (!/^[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+$/.test(file.mimeType)) throw new Error("无效的上传文件类型");
-  body.create();
+  // The body duplicates the whole file in the cache; refuse before writing
+  // rather than failing with ENOSPC after an hour of copying.
+  requireFreeSpace(file.size + COPY_HEADROOM);
   try {
+    body.create();
     const writer = body.open();
     try {
       await writer.writeBytes(encode.encode(
@@ -142,8 +197,10 @@ async function postToOss(
       },
     });
     if (result.status < 200 || result.status >= 300) throw new Error(`OSS 上传失败：HTTP ${result.status}`);
+  } catch (reason) {
+    throw isOutOfSpace(reason) ? new StorageShortageError() : reason;
   } finally {
-    body.delete();
+    deleteQuietly(body);
   }
 }
 
@@ -164,6 +221,8 @@ export async function uploadFile(
   report(0);
   const digest = await sha256Of(file);
   assertQueueOwner(owner);
+  // A refresh 409 means the asset stopped awaiting uploads; the API codes it
+  // so the queue can drop only that duplicate, while any other 409 is retried.
   const grant = options?.assetId
     ? await client.refreshUploadSession(options.assetId, "post")
     : await client.createUploadSession(projectId, {

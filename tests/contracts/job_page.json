@@ -1,0 +1,20 @@
+{
+  "items": [
+    {
+      "attempt": 1,
+      "cancel_requested": false,
+      "created_at": "2026-01-02T03:11:05",
+      "current_stage": null,
+      "error_code": null,
+      "error_message": null,
+      "id": "44444444-4444-4444-8444-444444444442",
+      "profile": "quality",
+      "progress": 1.0,
+      "project_id": "22222222-2222-4222-8222-222222222222",
+      "reconstruction_id": "55555555-5555-4555-8555-555555555551",
+      "status": "SUCCEEDED",
+      "updated_at": "2026-01-02T03:12:05"
+    }
+  ],
+  "next_cursor": "2026-01-02T03:11:05|44444444-4444-4444-8444-444444444442"
+}

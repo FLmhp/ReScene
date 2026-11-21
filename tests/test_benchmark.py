@@ -86,7 +86,7 @@ def test_resume_counts_planned_minutes_against_budget(monkeypatch, tmp_path: Pat
     monkeypatch.setenv("RESCENE_ROOT", str(tmp_path))
     run_dir = tmp_path / "runs" / "budget-fast-baseline-train"
     run_dir.mkdir(parents=True)
-    (run_dir / "metrics.json").write_text(json.dumps({"total_seconds": 3_600}), encoding="utf-8")
+    (run_dir / "metrics.json").write_text(json.dumps({"schema_version": 2, "total_seconds": 3_600}), encoding="utf-8")
     monkeypatch.setattr("rescene.benchmark.run_pipeline", lambda *args, **kwargs: pytest.fail("budget exceeded"))
 
     output = run_dataset_benchmark(manifest, candidates, ["fast"], "budget", 5 / 60, resume=True)
@@ -111,6 +111,7 @@ def test_repeat_expands_run_ids_and_aggregates_medians(monkeypatch, tmp_path: Pa
         (runs / "metrics.json").write_text(
             json.dumps(
                 {
+                    "schema_version": 2,
                     "total_seconds": 60.0 * repeat,
                     "psnr": 20.0 + repeat,
                     "ssim": 0.5,
@@ -188,6 +189,43 @@ def test_disk_preflight_records_disk_usage_errors(monkeypatch, tmp_path: Path) -
     assert "unavailable" in failure["error"]
 
 
+@pytest.mark.parametrize(
+    "metrics_payload",
+    ['{"schema_version": 2, "total_sec', json.dumps({"schema_version": 2, "psnr": 20.0})],
+)
+def test_incomplete_trial_metrics_are_rerun_and_leaderboard_stays_valid(
+    monkeypatch, tmp_path: Path, metrics_payload: str
+) -> None:
+    manifest, candidates = _write_configs(tmp_path)
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    value["scenes"][0]["input"] = str(tmp_path)
+    manifest.write_text(json.dumps(value), encoding="utf-8")
+    monkeypatch.setenv("RESCENE_ROOT", str(tmp_path))
+    run_dir = tmp_path / "runs" / "incomplete-fast-baseline-train"
+    run_dir.mkdir(parents=True)
+    (run_dir / "metrics.json").write_text(metrics_payload, encoding="utf-8")
+    resumed: list[bool] = []
+
+    def fake_run_pipeline(profile, input_path, run_id, **kwargs):
+        resumed.append(kwargs["resume"])
+        output_dir = kwargs["output_dir"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "metrics.json").write_text(
+            json.dumps({"schema_version": 2, "total_seconds": 60.0, "psnr": 20.0}), encoding="utf-8"
+        )
+
+    monkeypatch.setattr("rescene.benchmark.run_pipeline", fake_run_pipeline)
+
+    output = run_dataset_benchmark(manifest, candidates, ["fast"], "incomplete", 24, min_free_disk_bytes=1)
+
+    assert resumed == [True, False]
+    leaderboard = json.loads((output / "leaderboard.json").read_text(encoding="utf-8"))
+    baseline = next(row for row in leaderboard if row["candidate_id"] == "baseline")
+    assert baseline["completed_runs"] == 1
+    assert baseline["median_seconds"] == 60.0
+    assert not list(output.glob(".*.tmp-*"))
+
+
 def test_disk_preflight_checks_each_trial_on_selected_root(monkeypatch, tmp_path: Path) -> None:
     manifest, candidates = _write_configs(tmp_path)
     value = json.loads(manifest.read_text(encoding="utf-8"))
@@ -206,7 +244,9 @@ def test_disk_preflight_checks_each_trial_on_selected_root(monkeypatch, tmp_path
     def run_pipeline(profile, input_path, run_id, **kwargs):
         started.append(kwargs["output_dir"])
         kwargs["output_dir"].mkdir(parents=True)
-        (kwargs["output_dir"] / "metrics.json").write_text("{}", encoding="utf-8")
+        (kwargs["output_dir"] / "metrics.json").write_text(
+            json.dumps({"schema_version": 2, "total_seconds": 1.0}), encoding="utf-8"
+        )
 
     monkeypatch.setattr("rescene.benchmark.shutil.disk_usage", disk_usage)
     monkeypatch.setattr("rescene.benchmark.run_pipeline", run_pipeline)

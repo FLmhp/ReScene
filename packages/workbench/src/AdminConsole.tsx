@@ -2,7 +2,7 @@
 
 import { explainError, type ResceneClient } from "@rescene/api-client";
 import type { AdminUserDetail, AdminUserPage, Announcement, AnnouncementLevel, AuditPage } from "@rescene/schemas";
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 export type AdminConsoleProps = { client: ResceneClient; onMessage: (text: string) => void };
 
@@ -38,11 +38,16 @@ export function AdminConsole({ client, onMessage }: AdminConsoleProps) {
   );
 }
 
+const SEARCH_DEBOUNCE_MS = 250;
+
 function UsersTab({ client, onMessage }: AdminConsoleProps) {
+  const [queryInput, setQueryInput] = useState("");
   const [query, setQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>("all");
   const [page, setPage] = useState(0);
   const [directory, setDirectory] = useState<AdminUserPage | null>(null);
+  const [busy, setBusy] = useState(false);
+  const request = useRef(0);
   const [detailId, setDetailId] = useState("");
   const [detail, setDetail] = useState<AdminUserDetail | null>(null);
   const [passwordFor, setPasswordFor] = useState("");
@@ -51,23 +56,35 @@ function UsersTab({ client, onMessage }: AdminConsoleProps) {
   const [createPassword, setCreatePassword] = useState("");
   const [createAdmin, setCreateAdmin] = useState(false);
 
+  useEffect(() => {
+    if (queryInput.trim() === query) return;
+    const timer = setTimeout(() => setQuery(queryInput.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [query, queryInput]);
+
   const load = useCallback(async () => {
+    const id = ++request.current;
+    setBusy(true);
     try {
-      setDirectory(
-        await client.listUsers({
-          query,
-          active: activeFilter === "all" ? undefined : activeFilter === "active",
-          offset: page * PAGE_SIZE,
-          limit: PAGE_SIZE,
-        }),
-      );
+      const next = await client.listUsers({
+        query,
+        active: activeFilter === "all" ? undefined : activeFilter === "active",
+        offset: page * PAGE_SIZE,
+        limit: PAGE_SIZE,
+      });
+      // Only the newest request may replace the table; stale rows must not be actionable.
+      if (id !== request.current) return;
+      setDirectory(next);
     } catch (error) {
-      onMessage(explainError(error, "无法加载账号列表"));
+      if (id === request.current) onMessage(explainError(error, "无法加载账号列表"));
+    } finally {
+      if (id === request.current) setBusy(false);
     }
   }, [activeFilter, client, onMessage, page, query]);
 
   useEffect(() => {
     void load();
+    return () => { request.current += 1; };
   }, [load]);
 
   function run(action: () => Promise<void>) {
@@ -87,11 +104,13 @@ function UsersTab({ client, onMessage }: AdminConsoleProps) {
   }
 
   const pageCount = directory ? Math.max(1, Math.ceil(directory.total / PAGE_SIZE)) : 1;
+  // Rows shown before the debounced query lands are stale, so their actions stay disabled.
+  const stale = busy || queryInput.trim() !== query;
 
   return (
-    <section className="admin-section">
+    <section className="admin-section" aria-busy={stale}>
       <div className="admin-filters">
-        <label>搜索邮箱<input value={query} placeholder="user@example.com" onChange={(event) => { setQuery(event.target.value); setPage(0); }} /></label>
+        <label>搜索邮箱<input value={queryInput} placeholder="user@example.com" onChange={(event) => { setQueryInput(event.target.value); setPage(0); }} /></label>
         <label>状态
           <select value={activeFilter} onChange={(event) => { setActiveFilter(event.target.value as ActiveFilter); setPage(0); }}>
             <option value="all">全部</option>
@@ -100,7 +119,7 @@ function UsersTab({ client, onMessage }: AdminConsoleProps) {
           </select>
         </label>
       </div>
-      {!directory ? <p className="muted">正在加载账号…</p> : null}
+      {stale ? <p className="muted" role="status">正在加载账号…</p> : null}
       <div className="user-list">
         {directory?.items.map((user) => (
           <div className="user-row" key={user.id}>
@@ -117,25 +136,25 @@ function UsersTab({ client, onMessage }: AdminConsoleProps) {
               ) : null}
             </div>
             <div className="user-actions">
-              <button type="button" onClick={() => run(async () => { await client.updateUser(user.id, { active: !user.active }); await load(); })}>{user.active ? "停用" : "启用"}</button>
-              <button type="button" onClick={() => { setPasswordFor(passwordFor === user.id ? "" : user.id); setPassword(""); }}>重置密码</button>
-              <button type="button" onClick={() => run(async () => { if (detailId === user.id) { setDetailId(""); setDetail(null); return; } setDetail(await client.getUser(user.id)); setDetailId(user.id); })}>{detailId === user.id ? "收起详情" : "详情"}</button>
+              <button type="button" disabled={stale} onClick={() => run(async () => { await client.updateUser(user.id, { active: !user.active }); await load(); })}>{user.active ? "停用" : "启用"}</button>
+              <button type="button" disabled={stale} onClick={() => { setPasswordFor(passwordFor === user.id ? "" : user.id); setPassword(""); }}>重置密码</button>
+              <button type="button" disabled={stale} onClick={() => run(async () => { if (detailId === user.id) { setDetailId(""); setDetail(null); return; } setDetail(await client.getUser(user.id)); setDetailId(user.id); })}>{detailId === user.id ? "收起详情" : "详情"}</button>
             </div>
             {passwordFor === user.id ? (
               <div className="admin-inline">
                 <input aria-label={`${user.email} 的新密码`} type="password" minLength={12} placeholder="新密码（至少 12 位）" value={password} onChange={(event) => setPassword(event.target.value)} />
-                <button type="button" disabled={password.length < 12} onClick={() => run(async () => { await client.resetUserPassword(user.id, password); setPassword(""); setPasswordFor(""); onMessage("密码已重置"); })}>确认重置</button>
+                <button type="button" disabled={stale || password.length < 12} onClick={() => run(async () => { await client.resetUserPassword(user.id, password); setPassword(""); setPasswordFor(""); onMessage("密码已重置"); })}>确认重置</button>
                 <button type="button" onClick={() => { setPasswordFor(""); setPassword(""); }}>取消</button>
               </div>
             ) : null}
           </div>
         ))}
-        {directory && directory.items.length === 0 ? <p className="muted">没有匹配的账号。</p> : null}
+        {directory && directory.items.length === 0 && !stale ? <p className="muted">没有匹配的账号。</p> : null}
       </div>
       <div className="pager">
-        <button type="button" disabled={page === 0} onClick={() => setPage((current) => Math.max(0, current - 1))}>上一页</button>
+        <button type="button" disabled={stale || page === 0} onClick={() => setPage((current) => Math.max(0, current - 1))}>上一页</button>
         <span className="quota">第 {page + 1} / {pageCount} 页 · 共 {directory?.total ?? 0} 个账号</span>
-        <button type="button" disabled={!directory || (page + 1) * PAGE_SIZE >= directory.total} onClick={() => setPage((current) => current + 1)}>下一页</button>
+        <button type="button" disabled={stale || !directory || (page + 1) * PAGE_SIZE >= directory.total} onClick={() => setPage((current) => current + 1)}>下一页</button>
       </div>
       <details>
         <summary>创建账号</summary>

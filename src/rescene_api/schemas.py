@@ -1,14 +1,32 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
+
+# Login must still accept accounts created before strict validation existed;
+# new accounts/invitations use StrictEmail.
+LoginEmail = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, to_lower=True, min_length=1, max_length=320),
+]
+StrictEmail = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        to_lower=True,
+        min_length=3,
+        max_length=320,
+        pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+    ),
+]
 
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    email: LoginEmail
+    # Far above any legitimate password; keeps scrypt off arbitrarily long inputs.
+    password: str = Field(min_length=1, max_length=1024)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -32,17 +50,13 @@ class ResetPasswordRequest(BaseModel):
 
 
 class RegisterRequest(BaseModel):
-    email: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    email: StrictEmail
     password: str = Field(min_length=12, max_length=128)
-
-    @field_validator("email", mode="before")
-    @classmethod
-    def strip_email(cls, value: object) -> object:
-        return value.strip() if isinstance(value, str) else value
 
 
 class CreateUserRequest(LoginRequest):
-    password: str = Field(min_length=12)
+    email: StrictEmail
+    password: str = Field(min_length=12, max_length=128)
     is_admin: bool = False
 
 
@@ -56,7 +70,7 @@ class CreateProjectRequest(BaseModel):
 
 
 class AddMemberRequest(BaseModel):
-    email: str
+    email: StrictEmail
     role: Literal["member", "viewer"] = "member"
 
 

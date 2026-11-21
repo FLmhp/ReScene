@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  accountQueueKey, createNativeQueue, createQueueSession, isQueuedMediaMissing, parseQueue, QueuedMediaMissing,
-  readQueueCredential, replayQueue, serializeQueue, sessionExpiry, type QueuedEntry, type QueuedUpload, type QueueOwner,
+  accountQueueKey, createNativeQueue, createQueueSession, isDuplicateUploadError, isQueuedMediaMissing, parseQueue,
+  QueuedMediaMissing, readQueueCredential, replayQueue, serializeQueue, sessionExpiry, uploadErrorCode,
+  type QueuedEntry, type QueuedUpload, type QueueOwner,
 } from "./queue";
 
 function upload(overrides: Partial<QueuedUpload> = {}): QueuedUpload {
@@ -58,10 +59,45 @@ describe("replayQueue", () => {
     const result = await replayQueue([upload()], {
       createProject: vi.fn(),
       upload: async () => {
-        throw { status: 409, detail: "Asset is not awaiting upload" };
+        throw { status: 409, detail: "Asset is not awaiting upload", code: "asset.not_awaiting_upload" };
       },
     });
     expect(result).toMatchObject({ remaining: [], uploaded: 0, dropped: 1 });
+  });
+
+  it.each(["asset.upload_incomplete", "asset.upload_size_mismatch", "asset.upload_hash_mismatch"])(
+    "keeps an upload that complete rejected with %s",
+    async (code) => {
+      const pending = upload();
+      const result = await replayQueue([pending], {
+        createProject: vi.fn(),
+        upload: async () => {
+          throw { status: 409, detail: "conflict", code };
+        },
+      });
+      expect(result).toMatchObject({ remaining: [pending], uploaded: 0, dropped: 0 });
+    },
+  );
+
+  it("keeps an uncoded 409 from an older server", async () => {
+    const pending = upload();
+    const result = await replayQueue([pending], {
+      createProject: vi.fn(),
+      upload: async () => {
+        throw { status: 409, detail: "Upload is not complete" };
+      },
+    });
+    expect(result).toMatchObject({ remaining: [pending], uploaded: 0, dropped: 0 });
+  });
+
+  it("classifies only the duplicate asset code as terminal", () => {
+    expect(isDuplicateUploadError({ status: 409, code: "asset.not_awaiting_upload" })).toBe(true);
+    expect(isDuplicateUploadError({ status: 409 })).toBe(false);
+    expect(isDuplicateUploadError({ status: 409, code: "asset.upload_incomplete" })).toBe(false);
+    expect(isDuplicateUploadError({ status: 500, code: "asset.not_awaiting_upload" })).toBe(false);
+    expect(isDuplicateUploadError(new TypeError("Network request failed"))).toBe(false);
+    expect(uploadErrorCode({ status: 409, code: "asset.upload_hash_mismatch" })).toBe("asset.upload_hash_mismatch");
+    expect(uploadErrorCode(new Error("plain"))).toBeUndefined();
   });
 
   it("keeps an upload that failed for network reasons", async () => {
@@ -377,7 +413,7 @@ describe("native queue concurrency", () => {
     switchTo(other);
     await queue.enqueue(other, item);
     await queue.enqueue(other, project);
-    const conflict = vi.fn().mockRejectedValue({ status: 409 });
+    const conflict = vi.fn().mockRejectedValue({ status: 409, code: "asset.not_awaiting_upload" });
     await expect(queue.upload(other, item.id, conflict)).resolves.toBe("dropped");
     await queue.enqueue(other, item);
     finish.resolve();
@@ -385,5 +421,36 @@ describe("native queue concurrency", () => {
     await expect(old).resolves.toBe("uploaded");
     expect(await queue.load(owner)).toEqual([]);
     expect(await queue.load(other)).toEqual([project, item]);
+  });
+
+  it("keeps a queued upload whose 409 is not the duplicate code", async () => {
+    const { owner, queue } = queueFixture();
+    const item = upload();
+    await queue.enqueue(owner, item);
+    const rejected = { status: 409, code: "asset.upload_size_mismatch" };
+
+    await expect(queue.upload(owner, item.id, async () => { throw rejected; })).rejects.toBe(rejected);
+    expect(await queue.load(owner)).toEqual([item]);
+
+    await expect(queue.replay(owner, {
+      createProject: vi.fn(),
+      upload: async () => { throw rejected; },
+    })).resolves.toEqual({ created: 0, uploaded: 0, dropped: 0 });
+    expect(await queue.load(owner)).toEqual([item]);
+
+    // Once the bytes do land, the retained entry uploads instead of vanishing.
+    await expect(queue.replay(owner, { createProject: vi.fn(), upload: async () => undefined }))
+      .resolves.toEqual({ created: 0, uploaded: 1, dropped: 0 });
+    expect(await queue.load(owner)).toEqual([]);
+  });
+
+  it("keeps a queued upload when an older server sends 409 without a code", async () => {
+    const { owner, queue } = queueFixture();
+    const item = upload();
+    await queue.enqueue(owner, item);
+
+    await expect(queue.upload(owner, item.id, async () => { throw { status: 409, detail: "Upload is not complete" }; }))
+      .rejects.toMatchObject({ status: 409 });
+    expect(await queue.load(owner)).toEqual([item]);
   });
 });

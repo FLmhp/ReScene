@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -347,6 +348,41 @@ def merge_evaluation_evidence(metrics: dict[str, object], previous: dict[str, ob
     metrics["evaluation_evidence"] = evidence
 
 
+def load_and_merge_metrics(run_dir: Path, metrics: dict[str, object]) -> dict[str, object]:
+    """Keep previous timings and verified evaluation evidence before overwriting metrics.
+
+    A resumed run only records the stages it actually executed, so previous
+    timings fill the gaps. Evaluation evidence is restored only for artifacts
+    whose digests still match; anything else requests a recompute.
+    """
+    path = run_dir / "metrics.json"
+    previous: dict[str, object] | None = None
+    corrupt = False
+    if path.is_file():
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            corrupt = True
+        else:
+            if isinstance(value, dict):
+                previous = value
+            else:
+                corrupt = True
+    if previous is None:
+        if corrupt:
+            metrics["evaluation_needs_recompute"] = True
+        return metrics
+    previous_timings = previous.get("timings")
+    if isinstance(previous_timings, dict):
+        merged_timings = dict(previous_timings)
+        current_timings = metrics.get("timings")
+        if isinstance(current_timings, dict):
+            merged_timings.update(current_timings)
+        metrics["timings"] = merged_timings
+    merge_evaluation_evidence(metrics, previous, run_dir)
+    return metrics
+
+
 def write_report(run_dir: Path, metrics: dict[str, object]) -> Path:
     profile = "unknown"
     config_path = run_dir / "config.json"
@@ -355,5 +391,7 @@ def write_report(run_dir: Path, metrics: dict[str, object]) -> Path:
     rows = "\n".join(f"| {key} | {value} |" for key, value in metrics.items())
     report = f"# ReScene run `{run_dir.name}`\n\nProfile: `{profile}`\n\n| Metric | Value |\n|---|---|\n{rows}\n"
     path = run_dir / "report.md"
-    path.write_text(report, encoding="utf-8")
+    staging = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    staging.write_text(report, encoding="utf-8")
+    os.replace(staging, path)
     return path

@@ -10,8 +10,8 @@ import { AssetThumbnail } from "../AssetThumbnail";
 import { discardQueued, enqueue, replayQueued, uploadQueued } from "../queue";
 import { useAppearance } from "../appearance";
 import type { Palette } from "@rescene/design-tokens";
-import { isQueuedMediaMissing, MediaPreflightError, mediaType, newIdempotencyKey, QUEUE_PAUSED, summarizeMediaWarnings, type QueueOwner } from "@rescene/uploader";
-import { inspectPickedFiles, persistPickedFile, removeManagedMedia, type PickedFile } from "../upload";
+import { isQueuedMediaMissing, MediaPreflightError, mediaType, newIdempotencyKey, QUEUE_PAUSED, summarizeMediaWarnings, uploadErrorCode, type QueueOwner } from "@rescene/uploader";
+import { inspectPickedFiles, isStorageShortage, persistPickedFile, removeManagedMedia, type PickedFile } from "../upload";
 import { Button, Card, ErrorText, Field, Screen, useTextStyles } from "../ui";
 
 const PROFILES: Profile[] = ["fast", "balanced", "quality"];
@@ -51,7 +51,9 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
   const jobAttempt = useRef<{ signature: string; key: string } | null>(null);
   const uploadSequence = useRef(0);
   const picking = useRef(false);
+  const uploadLock = useRef(false);
   const [checkingMedia, setCheckingMedia] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const replayed = useRef(false);
   const [timeline, setTimeline] = useState<TimelineRow[]>([]);
   const [inviteNotice, setInviteNotice] = useState("");
@@ -144,8 +146,30 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
       if (!isQueueOwnerCurrent(owner)) return;
       const error = isQueuedMediaMissing(reason)
         ? "本地素材副本已丢失，请移除后重新选择。"
-        : isOfflineError(reason) ? "已保存，联网后自动重试。" : explainError(reason, "上传失败");
+        : isStorageShortage(reason) ? "设备存储不足，请清理空间后重试。"
+        : uploadErrorCode(reason) === "asset.upload_hash_mismatch"
+          ? "本地文件与已上传内容不一致，请移除后重新选择该文件。"
+          : isOfflineError(reason) ? "已保存，联网后自动重试。" : explainError(reason, "上传失败");
       setUploads((current) => current.map((item) => item.id === id ? { ...item, status: "failed", error } : item));
+    }
+  }
+
+  /**
+   * One whole-file body is built per upload, so a batch must not start them
+   * together: 50 selected videos would need 50x the file size in cache.
+   */
+  async function runUploads(owner: QueueOwner, ids: string[]) {
+    if (uploadLock.current || !isQueueOwnerCurrent(owner)) return;
+    uploadLock.current = true;
+    setUploading(true);
+    try {
+      for (const id of ids) {
+        if (!isQueueOwnerCurrent(owner)) return;
+        await runUpload(owner, id);
+      }
+    } finally {
+      uploadLock.current = false;
+      setUploading(false);
     }
   }
 
@@ -157,11 +181,12 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
   }
 
   async function pickAndUpload() {
-    if (picking.current || !canWrite) return;
+    if (picking.current || uploadLock.current || !canWrite) return;
     const owner = currentQueueOwner();
     if (!owner) { setError(QUEUE_PAUSED); return; }
     picking.current = true;
     setCheckingMedia(true);
+    const queuedIds: string[] = [];
     try {
       setError("");
       const result = await DocumentPicker.getDocumentAsync({ multiple: true, type: ["image/*", "video/*"], copyToCacheDirectory: true });
@@ -195,7 +220,11 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
         }
         if (!isQueueOwnerCurrent(owner)) return;
         setUploads((current) => [...current, { owner, id, file: { ...file, uri: stored.uri, size: stored.size }, progress: 0, status: "uploading" }]);
-        void runUpload(owner, id);
+        queuedIds.push(id);
+      }
+      if (queuedIds.length) {
+        setCheckingMedia(false);
+        await runUploads(owner, queuedIds);
       }
     } catch (reason) { if (isQueueOwnerCurrent(owner)) setError(reason instanceof MediaPreflightError ? reason.message : explainError(reason, "选择文件失败")); }
     finally { picking.current = false; setCheckingMedia(false); }
@@ -302,13 +331,13 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
             <Button tone="ghost" disabled={!selected.length} label="清空选择" onPress={() => setSelected([])} />
           </View> : null}
           {canWrite ? <>
-            <Button disabled={checkingMedia} label={checkingMedia ? "正在检查素材…" : "选择图片或视频上传"} onPress={pickAndUpload} />
+            <Button disabled={checkingMedia || uploading} label={checkingMedia ? "正在检查素材…" : uploading ? "正在上传…" : "选择图片或视频上传"} onPress={pickAndUpload} />
             <Text style={textStyles.muted}>一组 JPG / PNG 图片或一个视频。单文件 ≤ 5 GiB，单任务 ≤ 8 GiB。</Text>
           </> : null}
           {uploads.map((item) => <View key={item.id}>
             <Text style={textStyles.muted}>{item.file.name} · {item.progress}% · {item.status === "failed" ? "失败" : item.status === "done" ? "完成" : "上传中"}</Text>
             {item.error ? <Text style={textStyles.error}>{item.error}</Text> : null}
-            {item.status === "failed" ? <Button label="重试上传" onPress={() => void runUpload(item.owner, item.id)} tone="ghost" /> : null}
+            {item.status === "failed" ? <Button disabled={uploading} label="重试上传" onPress={() => void runUploads(item.owner, [item.id])} tone="ghost" /> : null}
             {item.status === "failed" ? <Button label="移除此项" onPress={() => void abandonUpload(item)} tone="ghost" /> : null}
           </View>)}
           {!detail.assets.length && !uploads.length ? <Text style={textStyles.muted}>暂无素材</Text> : null}

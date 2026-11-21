@@ -78,10 +78,12 @@ export class UploadError extends Error {
     message: string,
     readonly file: ChosenFile,
     readonly stage: "hash" | "session" | "transfer" | "complete",
-    /** HTTP status of the failed step, so the queue can drop a 409 duplicate. */
+    /** HTTP status of the failed step, so the queue can inspect a 409. */
     readonly status?: number,
     /** No response arrived; the queue keeps the entry for a later replay. */
     readonly offline = false,
+    /** The API's stable error code; only `asset.not_awaiting_upload` is a duplicate. */
+    readonly code?: string,
   ) {
     super(message);
     this.name = "UploadError";
@@ -256,6 +258,7 @@ export async function uploadFile(
       "session",
       reason instanceof ResceneApiError ? reason.status : undefined,
       isOfflineError(reason),
+      reason instanceof ResceneApiError ? reason.code : undefined,
     );
   }
   await options?.onAsset?.(grant.asset_id);
@@ -294,6 +297,7 @@ export async function uploadFile(
       "complete",
       reason instanceof ResceneApiError ? reason.status : undefined,
       isOfflineError(reason),
+      reason instanceof ResceneApiError ? reason.code : undefined,
     );
   }
   report(100);

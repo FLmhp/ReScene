@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -9,7 +10,7 @@ import oss2
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, event, select, update
+from sqlalchemy import delete, event, func, select, update
 
 from rescene_api import main
 from rescene_api.auth import hash_password, issue_token, verify_password
@@ -30,6 +31,7 @@ from rescene_api.models import (
     User,
     now,
 )
+from rescene_api.ratelimit import limiter
 from rescene_api.schemas import ChangePasswordRequest
 from rescene_api.storage import OssStorage, TemporaryCredentials
 
@@ -351,10 +353,15 @@ def test_asset_delete_and_stale_upload_expiry(monkeypatch) -> None:
         main.settings.cache_clear()
         detail = client.get(f"/v1/projects/{project_id}", headers=headers).json()
         assert [item["filename"] for item in detail["assets"]] == ["frame.jpg"]
-        assert stale_key not in store.deleted
+        assert store.deleted == [grant["object_key"]]
         with SessionLocal() as db:
             assert db.get(Asset, stale_id) is None
             assert db.scalar(select(AuditLog).where(AuditLog.target_id == stale_id)).action == "asset.expire"
+            queued = db.scalars(select(AssetCleanup)).all()
+            assert [(row.object_key, row.reason) for row in queued] == [(stale_key, "asset.expire")]
+        assert main.reap_once() is None
+        with SessionLocal() as db:
+            assert db.scalars(select(AssetCleanup)).all() == []
 
         job = client.post(f"/v1/projects/{project_id}/jobs", headers=headers, json={"asset_ids": [ready_id]})
         assert job.status_code == 201
@@ -363,7 +370,7 @@ def test_asset_delete_and_stale_upload_expiry(monkeypatch) -> None:
         assert refused.headers["x-error-code"] == "asset.in_use"
 
 
-def test_stale_upload_expiry_retries_storage_failures(monkeypatch) -> None:
+def test_stale_upload_expiry_queues_bytes_for_the_reaper(monkeypatch) -> None:
     store = RecordingStore()
 
     def unavailable_storage():
@@ -406,40 +413,47 @@ def test_stale_upload_expiry_retries_storage_failures(monkeypatch) -> None:
         assert client.get(f"{detail_route}?view=summary", headers=headers).json()["asset_count"] == 4
         assert store.deleted == []
 
+        # Expiry is a database-only step now: storage being down neither blocks
+        # the listing nor leaves the abandoned rows behind.
         monkeypatch.setattr(main, "storage", unavailable_storage)
         unavailable = client.get(route, headers=headers)
         assert unavailable.status_code == 200
-        assert {item["id"] for item in unavailable.json()["items"]} == {asset.id for asset in assets.values()}
+        remaining = {assets[key].id for key in ("ready", "young")}
+        assert {item["id"] for item in unavailable.json()["items"]} == remaining
         with SessionLocal() as db:
-            assert db.scalars(select(AuditLog).where(AuditLog.action == "asset.expire")).all() == []
+            assert sorted(
+                db.scalars(select(AuditLog.target_id).where(AuditLog.action == "asset.expire")).all()
+            ) == sorted([assets["expired"].id, assets["retry"].id])
+            queued = db.scalars(select(AssetCleanup)).all()
+            assert sorted(row.object_key for row in queued) == sorted(
+                [assets["expired"].object_key, assets["retry"].object_key]
+            )
 
+        # The reaper applies backoff per record instead of retrying every GET.
         monkeypatch.setattr(main, "storage", lambda: store)
-        retry_key = assets["retry"].object_key
-        store.errors[retry_key] = oss2.exceptions.RequestError(TimeoutError())
-        partial = client.get(route, headers=headers)
-        assert partial.status_code == 200
-        remaining = {assets[key].id for key in ("retry", "young", "ready")}
-        assert {item["id"] for item in partial.json()["items"]} == remaining
-        assert store.deleted == [assets["expired"].object_key]
+        store.errors[assets["expired"].object_key] = oss2.exceptions.OssError(503, {}, "ServiceUnavailable", {})
+        store.errors[assets["retry"].object_key] = oss2.exceptions.RequestError(TimeoutError())
+        assert main.reap_asset_cleanups() == 0
+        assert main.reap_asset_cleanups() == 0
+        assert store.deleted == []
         with SessionLocal() as db:
-            assert db.scalars(select(AuditLog.target_id).where(AuditLog.action == "asset.expire")).all() == [
-                assets["expired"].id
-            ]
+            records = db.scalars(select(AssetCleanup)).all()
+            assert len(records) == 2
+            assert {record.attempts for record in records} == {1}
+            assert all(record.next_attempt_at.replace(tzinfo=UTC) > now() + timedelta(seconds=60) for record in records)
+            for record in records:
+                record.next_attempt_at = now() - timedelta(seconds=1)
+            db.commit()
 
-        store.errors[retry_key] = oss2.exceptions.NoSuchBucket(404, {}, "", {"Code": "NoSuchBucket"})
-        wrong_bucket = client.get(route, headers=headers)
-        assert wrong_bucket.status_code == 200
-        assert {item["id"] for item in wrong_bucket.json()["items"]} == remaining
-
-        del store.errors[retry_key]
+        store.errors.clear()
         detail = client.get(detail_route, headers=headers)
         assert detail.status_code == 200
-        assert {item["id"] for item in detail.json()["assets"]} == remaining - {assets["retry"].id}
-        assert store.deleted == [assets["expired"].object_key, retry_key]
+        assert {item["id"] for item in detail.json()["assets"]} == remaining
+        assert main.reap_asset_cleanups() == 2
+        assert sorted(store.deleted) == sorted([assets["expired"].object_key, assets["retry"].object_key])
         with SessionLocal() as db:
+            assert db.scalars(select(AssetCleanup)).all() == []
             assert db.get(Asset, assets["retry"].id) is None
-            audit_ids = db.scalars(select(AuditLog.target_id).where(AuditLog.action == "asset.expire")).all()
-            assert sorted(audit_ids) == sorted([assets["expired"].id, assets["retry"].id])
 
 
 def register_asset(client, email: str) -> tuple[dict[str, str], str, dict[str, object]]:
@@ -766,6 +780,63 @@ def test_project_list_resolves_roles_in_one_batch() -> None:
         assert [item["name"] for item in client.get("/v1/projects", headers=headers).json()] == ["Owned"]
 
 
+def test_project_summary_list_has_bounded_query_count() -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            owner = User(email="library@example.com", password_hash=hash_password("correct-horse"))
+            db.add(owner)
+            db.flush()
+            for index in range(20):
+                project = Project(name=f"Library {index:02d}", owner_id=owner.id)
+                db.add(project)
+                db.flush()
+                db.add_all(
+                    [
+                        Asset(
+                            project_id=project.id,
+                            object_key=f"library/{index}/{asset_index}",
+                            filename=f"frame-{asset_index}.jpg",
+                            content_type="image/jpeg",
+                            size=10,
+                            status="READY",
+                        )
+                        for asset_index in range(3)
+                    ]
+                )
+                db.add_all(
+                    [
+                        ReconstructionJob(
+                            project_id=project.id,
+                            profile="fast",
+                            status="RUNNING" if index % 2 else "SUCCEEDED",
+                        ),
+                        ReconstructionJob(project_id=project.id, profile="balanced", status="SUCCEEDED"),
+                    ]
+                )
+            db.commit()
+        login = client.post("/v1/auth/login", json={"email": "library@example.com", "password": "correct-horse"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        statements: list[str] = []
+
+        def record(_conn, _cursor, statement, _parameters, _context, _executemany):
+            statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            response = client.get("/v1/projects?view=summary", headers=headers)
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+        assert response.status_code == 200
+        summaries = response.json()
+        assert len(summaries) == 20
+        assert {item["asset_count"] for item in summaries} == {3}
+        assert {item["job_count"] for item in summaries} == {2}
+        assert sum(item["has_active_jobs"] for item in summaries) == 10
+        assert all(item["cover"] is not None and item["latest_job"] is not None for item in summaries)
+        assert len(statements) <= 8, statements
+        assert sum("from projects" in statement.lower() for statement in statements) == 1
+
+
 def test_admin_governance() -> None:
     with TestClient(app) as client:
         with SessionLocal() as db:
@@ -1022,6 +1093,269 @@ def test_auth_rate_limit(monkeypatch) -> None:
             assert int(blocked.headers["retry-after"]) >= 1
     finally:
         main.settings.cache_clear()
+
+
+def test_rate_limit_ignores_rotated_forwarded_for(monkeypatch) -> None:
+    monkeypatch.setenv("RESCENE_AUTH_RATE_LIMIT", "3")
+    main.settings.cache_clear()
+    try:
+        with TestClient(app) as client:
+            with SessionLocal() as db:
+                db.add(User(email="spoofed@example.com", password_hash=hash_password("correct-horse")))
+                db.commit()
+            payload = {"email": "spoofed@example.com", "password": "correct-horse"}
+            for index in range(3):
+                spoof = {"X-Forwarded-For": f"203.0.113.{index}, 10.0.0.1"}
+                assert client.post("/v1/auth/login", headers=spoof, json=payload).status_code == 200
+            blocked = client.post("/v1/auth/login", headers={"X-Forwarded-For": "198.51.100.7"}, json=payload)
+            assert blocked.status_code == 429
+            assert blocked.headers["x-error-code"] == "auth.rate_limited"
+            assert int(blocked.headers["retry-after"]) >= 1
+    finally:
+        main.settings.cache_clear()
+
+
+def test_rate_limit_separates_verified_client_addresses(monkeypatch) -> None:
+    monkeypatch.setenv("RESCENE_AUTH_RATE_LIMIT", "2")
+    main.settings.cache_clear()
+    try:
+        with TestClient(app) as client:
+            with SessionLocal() as db:
+                db.add(User(email="addressed@example.com", password_hash=hash_password("correct-horse")))
+                db.commit()
+            payload = {"email": "addressed@example.com", "password": "correct-horse"}
+            first, second = {"X-Real-IP": "203.0.113.10"}, {"X-Real-IP": "203.0.113.11"}
+            for headers in (first, first):
+                assert client.post("/v1/auth/login", headers=headers, json=payload).status_code == 200
+            assert client.post("/v1/auth/login", headers=first, json=payload).status_code == 429
+            for headers in (second, second):
+                assert client.post("/v1/auth/login", headers=headers, json=payload).status_code == 200
+            assert client.post("/v1/auth/login", headers=second, json=payload).status_code == 429
+            malformed = client.post("/v1/auth/login", headers={"X-Real-IP": "not-an-ip"}, json=payload)
+            assert malformed.status_code == 200
+    finally:
+        main.settings.cache_clear()
+
+
+def test_rate_limiter_prunes_idle_keys() -> None:
+    limiter.reset()
+    limiter.allow("idle:path", 5, 0.01)
+    assert "idle:path" in limiter._hits
+    time.sleep(0.02)
+    limiter._next_prune = 0.0
+    limiter.allow("fresh:path", 5, 60)
+    assert "idle:path" not in limiter._hits
+    assert "fresh:path" in limiter._hits
+    limiter.reset()
+
+
+def test_oversized_request_body_is_rejected() -> None:
+    with TestClient(app) as client:
+        oversized = b"a" * (3 * 1024 * 1024)
+        declared = client.post(
+            "/v1/auth/register",
+            content=oversized,
+            headers={"Content-Type": "application/json"},
+        )
+        assert declared.status_code == 413
+        streamed = client.post(
+            "/v1/auth/register",
+            content=iter([oversized[: 1024 * 1024], oversized[1024 * 1024 :]]),
+            headers={"Content-Type": "application/json"},
+        )
+        assert streamed.status_code == 413
+    with SessionLocal() as db:
+        assert db.query(User).count() == 0
+
+
+def test_email_normalization_across_admin_and_invitations() -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            admin = User(email="root@example.com", password_hash=hash_password("correct-horse"), is_admin=True)
+            db.add(admin)
+            db.commit()
+            admin_headers = {"Authorization": f"Bearer {issue_token(admin.id)}"}
+        created = client.post(
+            "/v1/users",
+            headers=admin_headers,
+            json={"email": "  Staff@Example.COM  ", "password": "correct-horse"},
+        )
+        assert created.status_code == 201
+        assert created.json()["email"] == "staff@example.com"
+        assert (
+            client.post("/v1/auth/login", json={"email": "STAFF@example.com", "password": "correct-horse"}).status_code
+            == 200
+        )
+        for invalid in ("broken", "space inside@example.com", f"{'a' * 320}@example.com"):
+            assert (
+                client.post(
+                    "/v1/users",
+                    headers=admin_headers,
+                    json={"email": invalid, "password": "correct-horse"},
+                ).status_code
+                == 422
+            )
+        assert (
+            client.post(
+                "/v1/auth/login",
+                json={"email": "staff@example.com", "password": "x" * 2000},
+            ).status_code
+            == 422
+        )
+
+        owner = client.post("/v1/auth/register", json={"email": "  Spaced@Example.com ", "password": "correct-horse"})
+        assert owner.status_code == 201
+        owner_headers = {"Authorization": f"Bearer {owner.json()['access_token']}"}
+        project_id = client.post("/v1/projects", headers=owner_headers, json={"name": "Invites"}).json()["id"]
+        invited = client.post(
+            f"/v1/projects/{project_id}/members",
+            headers=owner_headers,
+            json={"email": "  Guest@Example.COM ", "role": "viewer"},
+        )
+        assert invited.status_code == 201
+        assert invited.json()["email"] == "guest@example.com"
+        with SessionLocal() as db:
+            assert db.scalar(select(ProjectInvitation.email)) == "guest@example.com"
+        assert (
+            client.post(
+                f"/v1/projects/{project_id}/members",
+                headers=owner_headers,
+                json={"email": "not-an-email"},
+            ).status_code
+            == 422
+        )
+
+
+def test_complete_asset_reports_retryable_conflict_codes(monkeypatch) -> None:
+    store = RecordingStore()
+    monkeypatch.setattr(main, "storage", lambda: store)
+
+    def head(*_):
+        raise oss2.exceptions.NotFound(404, {}, b"", {})
+
+    with TestClient(app) as client:
+        headers, _, grant = register_asset(client, "conflicts@example.com")
+        asset_id = str(grant["asset_id"])
+        complete = f"/v1/assets/{asset_id}/complete"
+
+        monkeypatch.setattr(main, "storage", lambda: SimpleNamespace(head=head))
+        incomplete = client.post(complete, headers=headers, json={"size": 2048, "sha256": "a" * 64})
+        assert incomplete.status_code == 409
+        assert incomplete.headers["x-error-code"] == "asset.upload_incomplete"
+
+        monkeypatch.setattr(
+            main,
+            "storage",
+            lambda: SimpleNamespace(head=lambda _: (1024, "image/jpeg")),
+        )
+        sized = client.post(complete, headers=headers, json={"size": 2048, "sha256": "a" * 64})
+        assert sized.status_code == 409
+        assert sized.headers["x-error-code"] == "asset.upload_size_mismatch"
+
+        monkeypatch.setattr(
+            main,
+            "storage",
+            lambda: SimpleNamespace(head=lambda _: (2048, "image/jpeg")),
+        )
+        hashed = client.post(complete, headers=headers, json={"size": 2048, "sha256": "b" * 64})
+        assert hashed.status_code == 409
+        assert hashed.headers["x-error-code"] == "asset.upload_hash_mismatch"
+
+        completed = client.post(complete, headers=headers, json={"size": 2048, "sha256": "a" * 64})
+        assert completed.status_code == 200
+        assert completed.json()["status"] == "READY"
+        repeated = client.post(f"/v1/assets/{asset_id}/upload-session", headers=headers)
+        assert repeated.status_code == 409
+        assert repeated.headers["x-error-code"] == "asset.not_awaiting_upload"
+
+
+def test_upload_session_rolls_back_when_credentials_fail(monkeypatch) -> None:
+    store = RecordingStore()
+
+    def unavailable():
+        raise HTTPException(503, "OSS is not configured")
+
+    route_headers: dict[str, str] = {}
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/auth/register", json={"email": "credentials@example.com", "password": "correct-horse"}
+        )
+        route_headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+        project_id = client.post("/v1/projects", headers=route_headers, json={"name": "Credentials"}).json()["id"]
+        route = f"/v1/projects/{project_id}/assets/upload-session"
+        payload = {"filename": "frame.jpg", "size": 2048, "content_type": "image/jpeg", "sha256": "a" * 64}
+
+        monkeypatch.setattr(main, "storage", unavailable)
+        failed = client.post(route, headers=route_headers, json=payload)
+        assert failed.status_code == 503
+        assert failed.headers["x-error-code"] == "asset.upload_credentials_unavailable"
+        assert failed.headers["retry-after"] == "30"
+        with SessionLocal() as db:
+            assert db.scalars(select(Asset)).all() == []
+            assert db.scalars(select(AuditLog).where(AuditLog.action == "asset.upload.init")).all() == []
+
+        monkeypatch.setattr(main, "storage", lambda: store)
+        created_session = client.post(route, headers=route_headers, json=payload)
+        assert created_session.status_code == 201
+        assert created_session.json()["asset_id"]
+        with SessionLocal() as db:
+            asset = db.scalar(select(Asset))
+            assert asset is not None and asset.status == "UPLOADING"
+            audit_row = db.scalar(select(AuditLog).where(AuditLog.action == "asset.upload.init"))
+            assert audit_row is not None and audit_row.target_id == asset.id
+
+
+def test_stale_upload_expiry_is_bounded_per_request(monkeypatch) -> None:
+    store = RecordingStore()
+    monkeypatch.setattr(main, "storage", lambda: store)
+    with TestClient(app) as client:
+        headers, project_id, _ = register_asset(client, "bounded@example.com")
+        stale_at = now() - timedelta(days=2)
+        with SessionLocal() as db:
+            db.add_all(
+                Asset(
+                    project_id=project_id,
+                    object_key=f"bounded/{index}",
+                    filename=f"frame-{index}.jpg",
+                    size=10,
+                    content_type="image/jpeg",
+                    created_at=stale_at,
+                )
+                for index in range(75)
+            )
+            db.commit()
+        route = f"/v1/projects/{project_id}/assets"
+        for expected in (20, 40, 60, 75):
+            assert client.get(route, headers=headers).status_code == 200
+            with SessionLocal() as db:
+                assert db.scalar(select(func.count()).select_from(AssetCleanup)) == expected
+        assert store.deleted == []
+
+
+def test_cleanup_queue_stops_retrying_permanent_failures(monkeypatch) -> None:
+    store = RecordingStore()
+    monkeypatch.setattr(main, "storage", lambda: store)
+    with TestClient(app) as client:
+        headers, _, grant = register_asset(client, "permanent@example.com")
+        assert client.delete(f"/v1/assets/{grant['asset_id']}", headers=headers).status_code == 204
+        with SessionLocal() as db:
+            record = db.scalar(select(AssetCleanup))
+            assert record is not None
+            record.attempts = main.CLEANUP_MAX_ATTEMPTS - 1
+            store.errors[record.object_key] = oss2.exceptions.OssError(503, {}, "ServiceUnavailable", {})
+            db.commit()
+        assert main.reap_asset_cleanups() == 0
+        with SessionLocal() as db:
+            record = db.scalar(select(AssetCleanup))
+            assert record.attempts == main.CLEANUP_MAX_ATTEMPTS
+            record.next_attempt_at = now() - timedelta(seconds=1)
+            db.commit()
+        assert main.reap_asset_cleanups() == 0
+        with SessionLocal() as db:
+            record = db.scalar(select(AssetCleanup))
+            assert record is not None and record.attempts == main.CLEANUP_MAX_ATTEMPTS
+            assert record.last_error is not None
+        assert store.deleted == []
 
 
 def test_share_qr_and_audit() -> None:

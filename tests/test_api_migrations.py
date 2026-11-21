@@ -9,6 +9,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.pool import StaticPool
 
 from rescene_api import db
+from rescene_api.models import JobLog
 
 
 @pytest.fixture(params=["sqlite", "postgresql"])
@@ -68,7 +69,7 @@ def test_legacy_adoption_preserves_data_and_ignores_unrelated_tables(migration_e
     db.init_db()
     with migration_engine.connect() as connection:
         assert connection.scalar(text("SELECT email FROM users WHERE id = 'legacy'")) == "legacy@example.com"
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0009"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0010"
         assert "external_table" in inspect(connection).get_table_names()
         assert "token_version" in {column["name"] for column in inspect(connection).get_columns("users")}
 
@@ -115,11 +116,24 @@ def test_versioned_legacy_database_upgrades(migration_engine):
     migrate(migration_engine, "0001")
     db.init_db()
     with migration_engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0009"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0010"
+
+
+def test_job_log_composite_index_upgrades_from_0009(migration_engine):
+    migrate(migration_engine, "0009")
+    migrate(migration_engine, "head")
+    with migration_engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0010"
+        indexes = {index["name"]: index["column_names"] for index in inspect(connection).get_indexes("job_logs")}
+    assert indexes["ix_job_logs_job_id_id"] == ["job_id", "id"]
+    assert any(
+        index.name == "ix_job_logs_job_id_id" and [column.name for column in index.columns] == ["job_id", "id"]
+        for index in JobLog.__table__.indexes
+    )
 
 
 def test_new_and_versioned_databases_upgrade(migration_engine):
     db.init_db()
     db.init_db()
     with migration_engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0009"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0010"

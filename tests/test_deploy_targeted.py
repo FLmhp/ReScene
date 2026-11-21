@@ -57,6 +57,17 @@ seq() {
 curl() {
   log curl "$*"
   [ "${STUB_CURL_FAIL:-0}" = 1 ] && return 22
+  case "$*" in
+    *--head*)
+      printf 'HTTP/1.1 200 OK\\r\\n'
+      printf 'X-Content-Type-Options: nosniff\\r\\n'
+      printf 'X-Frame-Options: DENY\\r\\n'
+      printf 'Referrer-Policy: strict-origin-when-cross-origin\\r\\n'
+      printf 'Strict-Transport-Security: max-age=31536000\\r\\n'
+      printf "Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; connect-src 'self' https://api.rescene.xyz; worker-src 'self' blob:\\r\\n"
+      printf '\\r\\n'
+      ;;
+  esac
   return 0
 }
 """
@@ -176,6 +187,21 @@ def test_records_every_phase_and_promotes_web_only_after_api_is_healthy(tmp_path
         "api_url": "https://api.rescene.xyz",
         "web_url": "https://app.rescene.xyz",
     }
+
+
+def test_prepare_publishes_a_protected_snapshot_with_the_retention_name(tmp_path: Path) -> None:
+    result = run_script(tmp_path)
+    lines = call_lines(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    prepare = lines[index_of(lines, "ssh", "pg_dump")]
+    assert f"rescene-pre-deploy-{VERSION}-$stamp.dump" in prepare
+    assert "umask 077" in prepare
+    assert "install -d -m 750 -o root -g 65532 infra/backups" in prepare
+    assert "pg_restore --list" in prepare
+    assert "chgrp 65532" in prepare and "chmod 640" in prepare
+    assert "stat -c %a" in prepare
+    assert f"pre-deploy-{VERSION}.dump'" not in prepare, "the snapshot must match the rescene-*.dump retention glob"
 
 
 def test_failed_load_leaves_both_tags_and_services_alone(tmp_path: Path) -> None:

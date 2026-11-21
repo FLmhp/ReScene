@@ -11,7 +11,7 @@ from rescene_api.auth import hash_password, issue_token
 from rescene_api.config import settings
 from rescene_api.db import SessionLocal, engine
 from rescene_api.main import app, reap_once
-from rescene_api.models import Asset, JobStage, ProjectMember, Reconstruction, ReconstructionJob, User
+from rescene_api.models import Asset, JobStage, Project, ProjectMember, Reconstruction, ReconstructionJob, User
 
 
 def test_project_pagination_is_bounded_and_preserves_full_detail(accounts, project):
@@ -76,6 +76,8 @@ def test_expired_leases_recover_without_a_worker_poll(accounts, project):
                     lease_expires_at=time + timedelta(seconds=90 if reason == "valid" else -1),
                     attempt=3 if reason == "exhausted" else 1,
                     cancel_requested_at=time if reason == "cancel" else None,
+                    progress=0.9 if reason == "retry" else 0.0,
+                    current_stage="export" if reason == "retry" else None,
                 )
             )
     reap_once()
@@ -89,7 +91,86 @@ def test_expired_leases_recover_without_a_worker_poll(accounts, project):
         }.items():
             job = client.get(f"/v1/jobs/{job_id}", headers=accounts["owner"]["headers"]).json()
             assert job["status"] == expected
-            assert job["error_code"] == (None if job_id == "valid" else "WORKER_LEASE_EXPIRED")
+            expected_code = "WORKER_LEASE_EXPIRED" if job_id in {"exhausted", "cancel"} else None
+            assert job["error_code"] == expected_code
+            if job_id == "retry":
+                assert job["progress"] == 0.0 and job["current_stage"] is None
+
+
+def test_requeue_paths_reset_progress_stage_and_errors(accounts, project, monkeypatch):
+    monkeypatch.setenv("RESCENE_WORKER_TOKEN", "worker-test-token")
+    settings.cache_clear()
+    try:
+        time = datetime.now(UTC)
+        with SessionLocal.begin() as db:
+            db.add_all(
+                [
+                    ReconstructionJob(
+                        id="user-retry",
+                        project_id=project["id"],
+                        profile="fast",
+                        status="FAILED",
+                        progress=0.9,
+                        current_stage="export",
+                        attempt=1,
+                        error_code="RENDER_FAILED",
+                        error_message="boom",
+                        resume_artifact_key="checkpoint/keep",
+                    ),
+                    ReconstructionJob(
+                        id="lease-retry",
+                        project_id=project["id"],
+                        profile="fast",
+                        status="RUNNING",
+                        progress=0.8,
+                        current_stage="mesh",
+                        attempt=1,
+                        max_attempts=3,
+                        leased_by="w1",
+                        lease_expires_at=time - timedelta(seconds=1),
+                        error_code="STALE",
+                        error_message="old",
+                    ),
+                    ReconstructionJob(
+                        id="worker-retry",
+                        project_id=project["id"],
+                        profile="fast",
+                        status="LEASED",
+                        progress=0.7,
+                        current_stage="train",
+                        attempt=1,
+                        max_attempts=3,
+                        leased_by="w2",
+                        lease_expires_at=time + timedelta(seconds=60),
+                    ),
+                ]
+            )
+        reap_once()
+        with TestClient(app) as client:
+            owner = accounts["owner"]["headers"]
+            retried = client.post("/v1/jobs/user-retry/retry", headers=owner)
+            assert retried.status_code == 200
+            worker = {"Authorization": "Bearer worker-test-token", "X-Worker-ID": "w2"}
+            failed = client.post(
+                "/v1/worker/jobs/worker-retry/fail",
+                headers={**worker, "X-Lease-Attempt": "1"},
+                json={"error_code": "TRANSIENT", "error_message": "retry me", "retryable": True},
+            )
+            assert failed.json() == {"status": "QUEUED", "retry": True}
+            for job_id in ("user-retry", "lease-retry", "worker-retry"):
+                job = client.get(f"/v1/jobs/{job_id}", headers=owner).json()
+                assert job["status"] == "QUEUED"
+                assert job["progress"] == 0.0
+                assert job["current_stage"] is None
+                assert job["error_code"] is None and job["error_message"] is None
+        with SessionLocal() as db:
+            retried_job = db.get(ReconstructionJob, "user-retry")
+            assert retried_job.resume_artifact_key == "checkpoint/keep"
+            for job_id in ("user-retry", "lease-retry", "worker-retry"):
+                row = db.get(ReconstructionJob, job_id)
+                assert row.leased_by is None and row.lease_expires_at is None and row.heartbeat_at is None
+    finally:
+        settings.cache_clear()
 
 
 def test_asset_preview_permissions_and_unavailable_inputs(accounts, project, monkeypatch):
@@ -186,6 +267,105 @@ def project(accounts):
             db.add(ProjectMember(project_id=project["id"], user_id=accounts["unknown"]["id"], role="unexpected"))
             db.commit()
         return project
+
+
+def test_project_list_summaries_match_single_project_summary(accounts, project):
+    project_id = project["id"]
+    time = datetime(2026, 1, 1, tzinfo=UTC)
+    with SessionLocal.begin() as db:
+        db.add(
+            Project(
+                id="summary-empty",
+                owner_id=accounts["owner"]["id"],
+                name="Empty",
+                created_at=time + timedelta(days=1),
+            )
+        )
+        db.add_all(
+            [
+                Asset(
+                    id="summary-cover-old",
+                    project_id=project_id,
+                    object_key="summary/cover-old",
+                    filename="cover-old.jpg",
+                    content_type="image/jpeg",
+                    size=10,
+                    status="READY",
+                    created_at=time,
+                ),
+                Asset(
+                    id="summary-cover-new",
+                    project_id=project_id,
+                    object_key="summary/cover-new",
+                    filename="cover-new.png",
+                    content_type="image/png",
+                    size=10,
+                    status="READY",
+                    created_at=time + timedelta(seconds=1),
+                ),
+                Asset(
+                    id="summary-notes",
+                    project_id=project_id,
+                    object_key="summary/notes",
+                    filename="notes.txt",
+                    content_type="text/plain",
+                    size=10,
+                    status="READY",
+                    created_at=time + timedelta(seconds=2),
+                ),
+                Asset(
+                    id="summary-pending",
+                    project_id=project_id,
+                    object_key="summary/pending",
+                    filename="pending.jpg",
+                    content_type="image/jpeg",
+                    size=10,
+                    status="UPLOADING",
+                    created_at=time + timedelta(seconds=3),
+                ),
+                ReconstructionJob(
+                    id="summary-job-old",
+                    project_id=project_id,
+                    profile="fast",
+                    status="SUCCEEDED",
+                    created_at=time,
+                ),
+                ReconstructionJob(
+                    id="summary-job-latest",
+                    project_id=project_id,
+                    profile="balanced",
+                    status="RUNNING",
+                    created_at=time + timedelta(seconds=1),
+                ),
+                Reconstruction(
+                    id="summary-reconstruction",
+                    project_id=project_id,
+                    job_id="summary-job-latest",
+                    version=1,
+                    created_at=time + timedelta(seconds=1),
+                ),
+            ]
+        )
+    with TestClient(app) as client:
+        for name in ("owner", "viewer"):
+            headers = accounts[name]["headers"]
+            listed = client.get("/v1/projects", params={"view": "summary"}, headers=headers).json()
+            entry = next(item for item in listed if item["id"] == project_id)
+            detail = client.get(f"/v1/projects/{project_id}?view=summary", headers=headers).json()
+            assert entry == detail
+            assert entry["asset_count"] == 4 and entry["job_count"] == 2 and entry["has_active_jobs"]
+            assert entry["cover"]["id"] == "summary-cover-new"
+            assert entry["latest_job"]["id"] == "summary-job-latest"
+            assert entry["latest_job"]["reconstruction_id"] == "summary-reconstruction"
+        empty = next(
+            item
+            for item in client.get("/v1/projects?view=summary", headers=accounts["owner"]["headers"]).json()
+            if item["id"] == "summary-empty"
+        )
+        assert empty["asset_count"] == 0 and empty["job_count"] == 0
+        assert empty["cover"] is None and empty["latest_job"] is None
+        default = client.get("/v1/projects", headers=accounts["owner"]["headers"]).json()
+        assert all(set(item) == {"id", "name", "owner_id", "effective_role", "created_at"} for item in default)
 
 
 def test_identity_refresh_and_validation(accounts):

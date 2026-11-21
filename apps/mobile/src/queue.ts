@@ -3,7 +3,11 @@ import { accountQueueKey, createNativeQueue, parseQueue, QueuedMediaMissing, ser
 import * as FileSystem from "expo-file-system/legacy";
 
 import { isQueueOwnerCurrent, queueClient } from "./api";
-import { managedMediaExists, persistPickedFile, removeManagedMedia, requireQueuedMedia, uploadFile } from "./upload";
+import { clearOrphanUploadBodies, managedMediaExists, persistPickedFile, removeManagedMedia, requireQueuedMedia, uploadFile } from "./upload";
+
+// Cache sweeps run before any upload this launch, so a killed process cannot
+// leave whole-file bodies behind across sessions.
+clearOrphanUploadBodies();
 
 const LEGACY_QUEUE_FILE = `${FileSystem.documentDirectory}rescene-queue.json`;
 

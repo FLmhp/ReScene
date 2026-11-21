@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -58,6 +59,23 @@ def _read_json(path: Path) -> dict[str, Any]:
         raise ValueError(f"Cannot read JSON configuration {path}: {error}") from error
     if not isinstance(value, dict):
         raise ValueError(f"Configuration must be a JSON object: {path}")
+    return value
+
+
+def _write_json_atomic(path: Path, value: object) -> None:
+    staging = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    staging.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    os.replace(staging, path)
+
+
+def _trial_metrics(path: Path) -> dict[str, Any] | None:
+    """Return a trial's metrics only when the file is a complete, readable result."""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict) or type(value.get("schema_version")) is not int or "total_seconds" not in value:
+        return None
     return value
 
 
@@ -195,8 +213,7 @@ def _median(values: list[object]) -> float | None:
 
 
 def _metric(root: Path, trial: Trial) -> dict[str, Any] | None:
-    path = root / trial.run_id / "metrics.json"
-    return _read_json(path) if path.exists() else None
+    return _trial_metrics(root / trial.run_id / "metrics.json")
 
 
 def _selected_set(metrics_list: list[dict[str, Any]]) -> set[str]:
@@ -384,7 +401,7 @@ def run_dataset_benchmark(
         "trials": [trial.to_dict() for trial in trials],
         "locked_test_policy": "Run only the selected candidate after calibration review",
     }
-    (output / "benchmark-plan.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_atomic(output / "benchmark-plan.json", plan)
     if dry_run:
         return output
 
@@ -397,17 +414,17 @@ def run_dataset_benchmark(
     disk_preflights: list[dict[str, Any]] = []
     for trial in trials:
         metrics_path = trial_root / trial.run_id / "metrics.json"
-        if metrics_path.exists():
+        completed = _trial_metrics(metrics_path)
+        if completed is not None:
             planned_hours += trial.estimated_minutes / 60
             continue
+        incomplete = metrics_path.exists()
         if planned_hours + trial.estimated_minutes / 60 > budget_hours:
             failures.append({"run_id": trial.run_id, "reason": "budget"})
             break
         preflight = disk_preflight(trial_root, trial.run_id, min_free_disk_bytes)
         disk_preflights.append(preflight)
-        (output / "disk-preflights.json").write_text(
-            json.dumps(disk_preflights, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        _write_json_atomic(output / "disk-preflights.json", disk_preflights)
         if preflight["status"] != "ok":
             failures.append({"run_id": trial.run_id, "reason": "disk_preflight", **preflight})
             break
@@ -417,7 +434,7 @@ def run_dataset_benchmark(
                 trial.profile,
                 trial.input_path,
                 trial.run_id,
-                resume=resume,
+                resume=resume or incomplete,
                 config_override=trial.config,
                 output_dir=trial_root / trial.run_id,
                 metadata={
@@ -433,14 +450,10 @@ def run_dataset_benchmark(
             )
         except Exception as error:  # One failed scene must not discard the remaining calibration matrix.
             failures.append({"run_id": trial.run_id, "error": f"{type(error).__name__}: {error}"})
-        (output / "leaderboard.json").write_text(
-            json.dumps(_leaderboard(trial_root, trials), ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        (output / "failures.json").write_text(json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8")
-    (output / "leaderboard.json").write_text(
-        json.dumps(_leaderboard(trial_root, trials), ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    (output / "failures.json").write_text(json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_atomic(output / "leaderboard.json", _leaderboard(trial_root, trials))
+        _write_json_atomic(output / "failures.json", failures)
+    _write_json_atomic(output / "leaderboard.json", _leaderboard(trial_root, trials))
+    _write_json_atomic(output / "failures.json", failures)
     return output
 
 

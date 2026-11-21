@@ -1,3 +1,4 @@
+import errno
 import hashlib
 import json
 import shutil
@@ -181,6 +182,14 @@ def test_resumed_stage_is_not_archived_again():
 
     assert is_resumed_stage(job, "preprocess")
     assert not is_resumed_stage(job, "geometry")
+
+
+def test_degraded_training_checkpoint_is_completed_again():
+    job = {"resume_artifact_key": "projects/p/jobs/j/checkpoints/training-degraded.tar.gz"}
+
+    assert is_resumed_stage(job, "preprocess")
+    assert is_resumed_stage(job, "geometry")
+    assert not is_resumed_stage(job, "training")
 
 
 @pytest.mark.parametrize("filename", ["a.png", "wechat-temp.jpg"])
@@ -474,6 +483,189 @@ def test_failed_oss_archive_does_not_publish_a_resume_key(tmp_path, monkeypatch)
     api.post.assert_not_called()
     assert not (tmp_path / "output-preprocess.tar.gz").exists()
     assert (run / "stages" / "preprocess.json").is_file()
+
+
+def _checkpoint_run(tmp_path):
+    output = tmp_path / "output"
+    (output / "stages").mkdir(parents=True)
+    for name in ("preprocess", "geometry", "training", "export"):
+        (output / "stages" / f"{name}.json").write_text('{"status":"success"}', encoding="utf-8")
+    (output / "config.json").write_text("{}", encoding="utf-8")
+    (output / "input_manifest.json").write_text('{"frames": []}', encoding="utf-8")
+    (output / "photometric_selection.json").write_text("{}", encoding="utf-8")
+    (output / "sparse" / "0").mkdir(parents=True)
+    (output / "sparse" / "0" / "points3D.bin").write_bytes(b"\0" * 16)
+    for relative in ("stereo/a.bin", "images/b.jpg", "sparse/c.bin"):
+        path = output / "dense" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"work tree")
+    (output / "dense" / "fused.ply").write_bytes(b"fused cloud")
+    (output / "dense" / "meshed-poisson.ply").write_bytes(b"mesh")
+    (output / "gsplat").mkdir()
+    (output / "gsplat" / "run.json").write_text("{}", encoding="utf-8")
+    for name in ("photometric_split.json", "geometry_frames.json", "scene.spz"):
+        (output / name).write_bytes(b"{}")
+    return output
+
+
+@pytest.mark.parametrize("stage", ["geometry", "training", "export"])
+def test_checkpoint_keeps_only_resume_dense_files(tmp_path, monkeypatch, stage):
+    output = _checkpoint_run(tmp_path)
+    stored = tmp_path / "stored.tar.gz"
+    monkeypatch.setattr("oss2.resumable_upload", lambda _bucket, _key, path, **_kw: shutil.copyfile(path, stored))
+
+    archive_stage(Mock(), output, "job/", stage)
+
+    with tarfile.open(stored) as archive:
+        names = set(archive.getnames())
+    assert {"dense/fused.ply", "dense/meshed-poisson.ply"} <= names
+    assert not [name for name in names if name.startswith(("dense/stereo", "dense/images", "dense/sparse"))]
+
+
+def test_restored_checkpoint_includes_dense_resume_inputs(tmp_path, monkeypatch):
+    output = _checkpoint_run(tmp_path)
+    stored = tmp_path / "stored.tar.gz"
+    monkeypatch.setattr("oss2.resumable_upload", lambda _bucket, _key, path, **_kw: shutil.copyfile(path, stored))
+    bucket = Mock()
+    bucket.get_object_to_file.side_effect = lambda _key, destination: shutil.copyfile(stored, destination)
+    key = archive_stage(bucket, output, "job/", "training")
+
+    restored = tmp_path / "restored"
+    restore_archive(bucket, key, restored)
+
+    assert (restored / "dense" / "fused.ply").read_bytes() == b"fused cloud"
+    assert (restored / "dense" / "meshed-poisson.ply").read_bytes() == b"mesh"
+    assert not (restored / "dense" / "stereo").exists()
+
+
+def test_failed_degraded_training_uploads_resume_checkpoint(tmp_path, monkeypatch):
+    run = tmp_path / "output"
+    (run / "stages").mkdir(parents=True)
+    for name in ("preprocess", "geometry"):
+        (run / "stages" / f"{name}.json").write_text('{"status":"success"}', encoding="utf-8")
+    (run / "stages" / "training.json").write_text('{"status":"failed"}', encoding="utf-8")
+    (run / "degradation.json").write_text(
+        json.dumps({"stage": "training", "reason": "cuda_oom", "config": {"max_frames": 40}}), encoding="utf-8"
+    )
+    (run / "gsplat").mkdir()
+    (run / "gsplat" / "partial.bin").write_bytes(b"partial output")
+    stored = tmp_path / "stored.tar.gz"
+    monkeypatch.setattr("oss2.resumable_upload", lambda _bucket, _key, path, **_kw: shutil.copyfile(path, stored))
+    api = Mock()
+
+    monitor_job(
+        api,
+        "/attempt",
+        {"output_prefix": "job/"},
+        SimpleNamespace(poll=lambda: 0),
+        run,
+        Mock(),
+        (Event(), Event()),
+    )
+
+    payload = api.post.call_args_list[-1].args[1]
+    assert payload["stage"] == "training"
+    assert payload["resume_artifact_key"] == "job/checkpoints/training-degraded.tar.gz"
+    with tarfile.open(stored) as archive:
+        names = set(archive.getnames())
+    assert "degradation.json" in names
+    assert "stages/training.json" in names
+    assert not [name for name in names if name == "gsplat" or name.startswith("gsplat/")]
+
+
+def _write_checkpoint_archive(path, members, *, symlink=False):
+    with tarfile.open(path, "w:gz") as archive:
+        if symlink:
+            member = tarfile.TarInfo("escape")
+            member.type = tarfile.SYMTYPE
+            member.linkname = "../../outside"
+            archive.addfile(member)
+        for name, payload in members:
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            archive.addfile(member, BytesIO(payload))
+
+
+@pytest.mark.parametrize("damage", ["crc", "truncated", "unsafe"])
+def test_execute_attempt_cleanly_restarts_structural_checkpoint_damage(tmp_path, monkeypatch, damage):
+    source = tmp_path / "checkpoint.tar.gz"
+    members = [
+        ("photometric_selection.json", b"{}"),
+        ("input_manifest.json", VALID_CHECKPOINT_MANIFEST),
+        ("images/view.jpg", b"checkpoint image"),
+        ("stages/preprocess.json", b'{"status":"success"}'),
+    ]
+    _write_checkpoint_archive(source, [] if damage == "unsafe" else members, symlink=damage == "unsafe")
+    if damage == "unsafe":
+        _write_checkpoint_archive(source, members, symlink=True)
+    else:
+        payload = bytearray(source.read_bytes())
+        if damage == "crc":
+            payload[-8] ^= 0xFF
+        else:
+            payload = payload[: len(payload) // 2]
+        source.write_bytes(bytes(payload))
+    bucket = Mock()
+    bucket.get_object_to_file.side_effect = lambda _key, destination: shutil.copyfile(source, destination)
+    monkeypatch.setattr("rescene_worker.main.oss2.Bucket", Mock(return_value=bucket))
+    monkeypatch.setattr(
+        "rescene_worker.main.download_inputs",
+        Mock(side_effect=lambda _bucket, _assets, input_dir, _events: input_dir / "input.mp4"),
+    )
+    start_engine = Mock(return_value=SimpleNamespace(returncode=0))
+    monkeypatch.setattr("rescene_worker.main.subprocess.Popen", start_engine)
+    monkeypatch.setattr("rescene_worker.main.LogShipper", Mock())
+    monkeypatch.setattr("rescene_worker.main.monitor_job", Mock())
+    monkeypatch.setattr("rescene_worker.main.artifacts", Mock(return_value=[{"kind": "spz"}]))
+    job = {
+        "job_id": "damaged",
+        "profile": "fast",
+        "attempt": 1,
+        "assets": [],
+        "output_prefix": "projects/p/jobs/damaged/attempts/1/",
+        "resume_artifact_key": "projects/p/jobs/damaged/attempts/1/checkpoints/training.tar.gz",
+        "oss": {"endpoint": "oss.example", "bucket": "fixture"},
+    }
+    api = Mock()
+    job_dir = tmp_path / "damaged" / "attempt-1"
+    execute_attempt(api, "/damaged", job, job_dir, (Event(), Event()), lock_fd=7)
+
+    start_engine.assert_called_once()
+    spec = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+    assert spec["resume"] is False
+    assert not (job_dir / "output.resume.tar.gz").exists()
+
+
+def test_execute_attempt_retries_disk_full_checkpoint_failure(tmp_path, monkeypatch):
+    source = tmp_path / "checkpoint.tar.gz"
+    _write_checkpoint_archive(source, [("photometric_selection.json", b"{}")])
+    bucket = Mock()
+    bucket.get_object_to_file.side_effect = lambda _key, destination: shutil.copyfile(source, destination)
+    monkeypatch.setattr("rescene_worker.main.oss2.Bucket", Mock(return_value=bucket))
+    monkeypatch.setattr(
+        "rescene_worker.main.download_inputs",
+        Mock(side_effect=lambda _bucket, _assets, input_dir, _events: input_dir / "input.mp4"),
+    )
+    start_engine = Mock()
+    monkeypatch.setattr("rescene_worker.main.subprocess.Popen", start_engine)
+
+    def no_space(_self, _path, *args, **kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(tarfile.TarFile, "extractall", no_space)
+    job = {
+        "job_id": "full",
+        "profile": "fast",
+        "attempt": 1,
+        "assets": [],
+        "output_prefix": "projects/p/jobs/full/attempts/1/",
+        "resume_artifact_key": "projects/p/jobs/full/attempts/1/checkpoints/training.tar.gz",
+        "oss": {"endpoint": "oss.example", "bucket": "fixture"},
+    }
+    with pytest.raises(OSError) as failure:
+        execute_attempt(Mock(), "/full", job, tmp_path / "full" / "attempt-1", (Event(), Event()), lock_fd=7)
+    assert failure.value.errno == errno.ENOSPC
+    start_engine.assert_not_called()
 
 
 def test_log_shipper_tails_incrementally(tmp_path):

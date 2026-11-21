@@ -1,43 +1,74 @@
+# Requires Caddy v2.10.0 or newer: request_body max_size is still marked
+# experimental upstream. Validate before reloading; an older Caddy rejects it.
 app.rescene.xyz {
-    encode zstd gzip
-    handle_path /downloads/* {
-        root * /var/www/rescene-releases
-        file_server
-    }
-    reverse_proxy rescene-web:3000
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		# Next.js still needs 'unsafe-inline' for its inline bootstrap and
+		# 'wasm-unsafe-eval' for hash-wasm. Replace 'unsafe-inline' with a
+		# nonce once apps/web has middleware-based nonce support.
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://api.rescene.xyz https://rescene-prod-741277.oss-cn-beijing.aliyuncs.com; media-src 'self' blob: https://rescene-prod-741277.oss-cn-beijing.aliyuncs.com; font-src 'self' data:; connect-src 'self' https://api.rescene.xyz https://rescene-prod-741277.oss-cn-beijing.aliyuncs.com; worker-src 'self' blob:; frame-src 'none'; form-action 'self' https://rescene-prod-741277.oss-cn-beijing.aliyuncs.com; manifest-src 'self'"
+	}
+	handle_path /downloads/* {
+		root * /var/www/rescene-releases
+		file_server
+	}
+	reverse_proxy rescene-web:3000
 }
 
 api.rescene.xyz {
-    encode zstd gzip
-    reverse_proxy rescene-api:8000
+	encode zstd gzip
+	# Only JSON and small form payloads reach the API; uploads go straight to
+	# OSS. Reject oversized anonymous bodies before they reach the process.
+	request_body {
+		max_size 2MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		# No CSP here: FastAPI serves Swagger UI at /docs, which needs inline
+		# scripts and its CDN assets. API JSON responses gain nothing from a CSP.
+	}
+	reverse_proxy rescene-api:8000 {
+		# Caddy is the only API entry point; replace any client-supplied value
+		# so the API can rate-limit on a trusted client address.
+		header_up X-Real-IP {remote_host}
+	}
 }
 
 # BEGIN RESCENE PUBLIC SITE
 rescene.xyz {
-    encode zstd gzip
-    header {
-        X-Content-Type-Options nosniff
-        Referrer-Policy strict-origin-when-cross-origin
-        X-Frame-Options DENY
-        Permissions-Policy "camera=(), microphone=(), geolocation=()"
-        Content-Security-Policy "default-src 'none'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; form-action 'none'"
-    }
-    handle /assets/* {
-        header Cache-Control "public, max-age=31536000, immutable"
-        root * /var/www/rescene-site
-        file_server
-    }
-    handle {
-        @html path / /index.html
-        header @html Cache-Control "no-cache"
-        @public path /media/* /favicon.svg /social-card.png /social-card.svg /robots.txt /sitemap.xml
-        header @public Cache-Control "public, max-age=3600"
-        root * /var/www/rescene-site/current
-        file_server
-    }
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options DENY
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Content-Security-Policy "default-src 'none'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; form-action 'none'"
+	}
+	handle /assets/* {
+		header Cache-Control "public, max-age=31536000, immutable"
+		root * /var/www/rescene-site
+		file_server
+	}
+	handle {
+		@html path / /index.html
+		header @html Cache-Control "no-cache"
+		@public path /media/* /favicon.svg /social-card.png /social-card.svg /robots.txt /sitemap.xml
+		header @public Cache-Control "public, max-age=3600"
+		root * /var/www/rescene-site/current
+		file_server
+	}
 }
 
 www.rescene.xyz {
-    redir https://rescene.xyz{uri} permanent
+	redir https://rescene.xyz{uri} permanent
 }
 # END RESCENE PUBLIC SITE

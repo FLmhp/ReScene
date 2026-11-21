@@ -28,7 +28,7 @@ from rescene.config import ProfileConfig, profile_config
 from rescene.metrics import (
     collect_metrics,
     final_ply_path,
-    merge_evaluation_evidence,
+    load_and_merge_metrics,
     sha256_file,
     write_report,
 )
@@ -60,7 +60,53 @@ def _timed(timings: dict[str, float], name: str):
         timings[name] = round(timings.get(name, 0.0) + time.perf_counter() - start, 3)
 
 
-def _source_tree_sha256(directory: Path) -> str | None:
+ENVIRONMENT_HASH_CACHE = Path(".cache") / "environment-hashes.json"
+
+
+def _load_environment_hash_cache(path: Path) -> dict[str, dict[str, object]]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    hashes = value.get("hashes") if isinstance(value, dict) else None
+    return hashes if isinstance(hashes, dict) else {}
+
+
+def _cached_sha256(path: Path, cache: dict[str, dict[str, object]], *, rehash: bool) -> str:
+    """Hash a file unless the recorded size and mtime still identify its bytes."""
+    key = str(path.resolve())
+    stat = path.stat()
+    entry = cache.get(key)
+    if (
+        not rehash
+        and isinstance(entry, dict)
+        and entry.get("size") == stat.st_size
+        and entry.get("mtime_ns") == stat.st_mtime_ns
+        and isinstance(entry.get("sha256"), str)
+    ):
+        return str(entry["sha256"])
+    digest = sha256_file(path)
+    cache[key] = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "sha256": digest}
+    return digest
+
+
+def _store_environment_hash_cache(path: Path, cache: dict[str, dict[str, object]], *, existed: bool) -> None:
+    if not cache and not existed:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(path, {"schema_version": 1, "hashes": cache})
+    except OSError:
+        # A read-only checkout still produces auditable digests; only the cache is lost.
+        pass
+
+
+def _source_tree_sha256(
+    directory: Path,
+    cache: dict[str, dict[str, object]] | None = None,
+    *,
+    rehash: bool = False,
+) -> str | None:
     """Hash source contents and relative names, including uncommitted edits."""
     if not directory.is_dir():
         return None
@@ -77,33 +123,32 @@ def _source_tree_sha256(directory: Path) -> str | None:
     )
     digest = hashlib.sha256()
     for path in files:
-        digest.update(f"{path.relative_to(directory).as_posix()}\0{sha256_file(path)}\n".encode())
+        file_digest = sha256_file(path) if cache is None else _cached_sha256(path, cache, rehash=rehash)
+        digest.update(f"{path.relative_to(directory).as_posix()}\0{file_digest}\n".encode())
     return digest.hexdigest()
 
 
-def _environment(root: Path) -> dict[str, object]:
-    revisions: dict[str, str | None] = {}
-    for name in ("vggt", "gsplat", "spz", "dinov2"):
-        path = root / "third_party" / name
-        revision_file = path / ".revision"
-        if revision_file.exists():
-            revisions[name] = revision_file.read_text(encoding="utf-8").strip()
-        else:
-            result = subprocess.run(
-                ["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True, check=False
-            )
-            revisions[name] = result.stdout.strip() or None
-    return {
-        "python": sys.version,
-        "platform": platform.platform(),
-        "git_revisions": revisions,
-        "source_tree_sha256": _source_tree_sha256(root / "src" / "rescene"),
-        "vendor_source_tree_sha256": {
-            name: _source_tree_sha256(root / "third_party" / name) for name in ("vggt", "gsplat", "spz", "dinov2")
-        },
-        "vggt_checkpoint_sha256": next(
+def _environment(root: Path, *, rehash: bool | None = None) -> dict[str, object]:
+    cache_path = root / ENVIRONMENT_HASH_CACHE
+    existed = cache_path.is_file()
+    cache = _load_environment_hash_cache(cache_path) if existed else {}
+    if rehash is None:
+        rehash = os.environ.get("RESCENE_REHASH_ENVIRONMENT", "").strip().lower() in {"1", "true", "yes"}
+    try:
+        revisions: dict[str, str | None] = {}
+        for name in ("vggt", "gsplat", "spz", "dinov2"):
+            path = root / "third_party" / name
+            revision_file = path / ".revision"
+            if revision_file.exists():
+                revisions[name] = revision_file.read_text(encoding="utf-8").strip()
+            else:
+                result = subprocess.run(
+                    ["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+                )
+                revisions[name] = result.stdout.strip() or None
+        checkpoint = next(
             (
-                sha256_file(path)
+                path
                 for path in (
                     root / ".cache/models/VGGT-1B/model.safetensors",
                     root / ".cache/models/VGGT-1B/model.pt",
@@ -111,18 +156,24 @@ def _environment(root: Path) -> dict[str, object]:
                 if path.exists()
             ),
             None,
-        ),
-        "vggsfm_tracker_sha256": (
-            sha256_file(root / ".cache/models/VGGSfM/vggsfm_v2_tracker.pt")
-            if (root / ".cache/models/VGGSfM/vggsfm_v2_tracker.pt").exists()
-            else None
-        ),
-        "dinov2_checkpoint_sha256": (
-            sha256_file(root / ".cache/torch/hub/checkpoints/dinov2_vitb14_reg4_pretrain.pth")
-            if (root / ".cache/torch/hub/checkpoints/dinov2_vitb14_reg4_pretrain.pth").exists()
-            else None
-        ),
-    }
+        )
+        tracker = root / ".cache/models/VGGSfM/vggsfm_v2_tracker.pt"
+        dinov2 = root / ".cache/torch/hub/checkpoints/dinov2_vitb14_reg4_pretrain.pth"
+        return {
+            "python": sys.version,
+            "platform": platform.platform(),
+            "git_revisions": revisions,
+            "source_tree_sha256": _source_tree_sha256(root / "src" / "rescene", cache, rehash=rehash),
+            "vendor_source_tree_sha256": {
+                name: _source_tree_sha256(root / "third_party" / name, cache, rehash=rehash)
+                for name in ("vggt", "gsplat", "spz", "dinov2")
+            },
+            "vggt_checkpoint_sha256": _cached_sha256(checkpoint, cache, rehash=rehash) if checkpoint else None,
+            "vggsfm_tracker_sha256": _cached_sha256(tracker, cache, rehash=rehash) if tracker.exists() else None,
+            "dinov2_checkpoint_sha256": _cached_sha256(dinov2, cache, rehash=rehash) if dinov2.exists() else None,
+        }
+    finally:
+        _store_environment_hash_cache(cache_path, cache, existed=existed)
 
 
 def _find_ply(run_dir: Path) -> Path:
@@ -206,6 +257,40 @@ def _run_dir_has_results(run_dir: Path) -> bool:
 def _sparse_has_points(run_dir: Path) -> bool:
     # shortcut: all current backends emit binary COLMAP models; add text parsing if that changes.
     return any(path.stat().st_size > 8 for path in (run_dir / "sparse").rglob("points3D.bin"))
+
+
+def _sparse_model_present(run_dir: Path) -> bool:
+    """COLMAP writes the sparse model only after matching and mapping succeed."""
+    return any(path.is_file() for path in (run_dir / "sparse").rglob("*"))
+
+
+def _recorded_training_fallback(config: ProfileConfig, degradation: dict[str, object] | None) -> ProfileConfig | None:
+    """Return the training config recorded before an interrupted attempt.
+
+    Training always degrades along ``max_frames``/``gsplat_data_factor`` and packs
+    the rasterizer, so a repeated failure may record a config that was already
+    degraded once. Accept only records that reconstruct from this profile and
+    never increase memory use; anything else falls back to the original config.
+    """
+    if not isinstance(degradation, dict) or degradation.get("stage") != "training":
+        return None
+    recorded = degradation.get("config")
+    if not isinstance(recorded, dict):
+        return None
+    try:
+        fallback = replace(
+            config,
+            max_frames=int(recorded["max_frames"]),
+            gsplat_data_factor=int(recorded["gsplat_data_factor"]),
+            gsplat_packed=bool(recorded["gsplat_packed"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if recorded != fallback.to_dict() or fallback == config:
+        return None
+    if fallback.max_frames > config.max_frames or fallback.gsplat_data_factor < config.gsplat_data_factor:
+        return None
+    return fallback
 
 
 def _clear_colmap_outputs(run_dir: Path) -> None:
@@ -406,7 +491,7 @@ def _run_reuse_comparison(
     metrics["total_seconds"] = None
     metrics["reuse"] = provenance
     metrics["timings"] = timings
-    _write_json(run_dir / "metrics.json", metrics)
+    _write_json_atomic(run_dir / "metrics.json", metrics)
     write_report(run_dir, metrics)
     return run_dir
 
@@ -541,6 +626,16 @@ def run_pipeline(
                 ):
                     raise
                 if config.geometry_backend == "colmap":
+                    if _sparse_model_present(run_dir):
+                        # The sparse model already survived; matcher swaps cannot fix
+                        # registration, MVS, fusion, or meshing failures.
+                        degraded = {
+                            "stage": "geometry",
+                            "reason": "geometry_dense_failed",
+                            "config": config.to_dict(),
+                        }
+                        _write_json(run_dir / "degradation.json", degraded)
+                        raise
                     fallback = {**config.to_dict(), "matcher": "sequential" if not sequential else "exhaustive"}
                     degraded = {"stage": "geometry", "reason": "matcher_retry", "config": fallback}
                     _write_json(run_dir / "degradation.json", degraded)
@@ -690,14 +785,24 @@ def run_pipeline(
         raise ValueError("Cannot resume: successful training lacks required provenance; start a new run")
     if not (resume and stages.complete("training", training_outputs)):
         training_log = logs / "training.log"
-        with _timed(timings, "training"), stages.running("training", stage="training", steps=config.gsplat_steps):
-            _ensure_downsampled_images(run_dir, config.gsplat_data_factor)
+        recorded_fallback = _recorded_training_fallback(config, degraded) if resume else None
+        training_config = recorded_fallback or config
+        if recorded_fallback is not None:
+            degraded = {**(degraded or {}), "effective": True}
+            _write_json(run_dir / "degradation.json", degraded)
+        with (
+            _timed(timings, "training"),
+            stages.running("training", stage="training", steps=training_config.gsplat_steps),
+        ):
+            _ensure_downsampled_images(run_dir, training_config.gsplat_data_factor)
             try:
-                run_command(gsplat_command(root, run_dir, gsplat_dir, config, seed=seed), training_log, cwd=root)
+                run_command(
+                    gsplat_command(root, run_dir, gsplat_dir, training_config, seed=seed), training_log, cwd=root
+                )
             except Exception as error:
                 if not is_cuda_oom(error, training_log):
                     raise
-                fallback = config.degraded()
+                fallback = training_config.degraded()
                 degraded = {"stage": "training", "reason": "cuda_oom", "config": fallback.to_dict()}
                 _write_json(run_dir / "degradation.json", degraded)
                 shutil.rmtree(gsplat_dir, ignore_errors=True)
@@ -717,7 +822,8 @@ def run_pipeline(
     with _timed(timings, "evaluation"):
         metrics = collect_metrics(run_dir, degraded)
     metrics["timings"] = dict(timings)
-    _write_json(run_dir / "metrics.json", metrics)
+    metrics = load_and_merge_metrics(run_dir, metrics)
+    _write_json_atomic(run_dir / "metrics.json", metrics)
     write_report(run_dir, metrics)
     return run_dir
 
@@ -729,19 +835,10 @@ def report_run(run_id: str) -> Path:
     degradation_path = run_dir / "degradation.json"
     degradation = json.loads(degradation_path.read_text(encoding="utf-8")) if degradation_path.exists() else None
     metrics = collect_metrics(run_dir, degradation)
-    metrics_path = run_dir / "metrics.json"
-    if metrics_path.is_file():
-        try:
-            previous = json.loads(metrics_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            previous = None
-        if isinstance(previous, dict):
-            if isinstance(previous.get("timings"), dict):
-                metrics["timings"] = previous["timings"]
-            merge_evaluation_evidence(metrics, previous, run_dir)
+    metrics = load_and_merge_metrics(run_dir, metrics)
     reuse_path = run_dir / "reuse_provenance.json"
     if reuse_path.is_file():
         metrics["reuse"] = json.loads(reuse_path.read_text(encoding="utf-8"))
         metrics["total_seconds"] = None
-    _write_json(metrics_path, metrics)
+    _write_json_atomic(run_dir / "metrics.json", metrics)
     return write_report(run_dir, metrics)

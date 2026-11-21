@@ -156,6 +156,10 @@ pnpm -r test
 
 日常按改动范围运行最小验证。完整质量命令、五个 CI 门禁、契约修改顺序和发布检查表见 [开发与发布指南](CONTRIBUTING.md)。`pnpm quality` 不包含原生安装包、四端构建或 Docker 镜像构建；CI 通过也不代表 GPU 质量回归通过。
 
+### 5. Android 调试（可选）
+
+Android 的 API 与 Web 地址在打包时内联。未设置 `EXPO_PUBLIC_API_URL` 和 `EXPO_PUBLIC_WEB_URL` 时会回退到生产地址，开发构建也一样。复制 `apps/mobile/.env.example` 为 `apps/mobile/.env.local`：模拟器用 `http://10.0.2.2:8000` 和 `http://10.0.2.2:3000`，真机改用主机的局域网 IP 和同样端口，然后运行 `pnpm --filter @rescene/mobile start`。账号页会显示当前服务器地址；详细配置、端口绑定和确认方法见[开发指南](CONTRIBUTING.md#android-开发环境)。
+
 ## 重建路线
 
 | Profile | 几何路线 | 默认 Gaussian 优化步数 | 最大输入帧数 |

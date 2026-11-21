@@ -3,7 +3,19 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from rescene_api.db import Base
@@ -202,6 +214,7 @@ class Notification(Base):
 
 class JobLog(Base):
     __tablename__ = "job_logs"
+    __table_args__ = (Index("ix_job_logs_job_id_id", "job_id", "id"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     job_id: Mapped[str] = mapped_column(ForeignKey("reconstruction_jobs.id", ondelete="CASCADE"), index=True)
     attempt: Mapped[int] = mapped_column(Integer)

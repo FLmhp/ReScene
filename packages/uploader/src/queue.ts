@@ -154,9 +154,25 @@ export function serializeQueue(entries: QueuedEntry[]): string {
   return JSON.stringify(entries);
 }
 
-/** A 409 means the server already owns this upload, so replaying it again cannot help. */
-function isConflict(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as { status?: number }).status === 409;
+/** The only 409 that means the server already owns this upload. */
+export const ASSET_NOT_AWAITING_UPLOAD = "asset.not_awaiting_upload";
+
+/**
+ * A bare 409 is ambiguous: the API also uses it for an incomplete object, a
+ * truncated body, or a digest that no longer matches the local file. Those are
+ * retryable, so only the explicit duplicate code may end the queue entry.
+ */
+export function isDuplicateUploadError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { status, code } = error as { status?: unknown; code?: unknown };
+  return status === 409 && code === ASSET_NOT_AWAITING_UPLOAD;
+}
+
+/** The API's stable error code, carried by `ResceneApiError` and native `UploadError`s. */
+export function uploadErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const { code } = error as { code?: unknown };
+  return typeof code === "string" ? code : undefined;
 }
 
 type ReplayCounts = Omit<ReplayResult, "remaining">;
@@ -167,7 +183,7 @@ async function finishEntry(entry: QueuedEntry, handle: (entry: QueuedEntry) => P
     await handle(entry);
     return entry.kind === "project" ? "created" : "uploaded";
   } catch (reason) {
-    if (entry.kind === "upload" && isConflict(reason)) return "dropped";
+    if (entry.kind === "upload" && isDuplicateUploadError(reason)) return "dropped";
     throw reason;
   }
 }

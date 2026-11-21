@@ -89,6 +89,9 @@ def test_postgres_reapers_fence_late_heartbeat(postgres_sessions):
             attempt=1,
             lease_expires_at=datetime.now(UTC) - timedelta(seconds=30),
             resume_artifact_key="checkpoint/test-bundle",
+            progress=0.9,
+            current_stage="export",
+            error_code="STALE_ATTEMPT",
         )
         db.add(job)
         db.flush()
@@ -118,6 +121,7 @@ def test_postgres_reapers_fence_late_heartbeat(postgres_sessions):
         job = db.get(ReconstructionJob, job_id)
         assert job.status == "QUEUED" and job.attempt == 1 and job.leased_by is None and job.lease_expires_at is None
         assert job.resume_artifact_key == "checkpoint/test-bundle"
+        assert job.progress == 0.0 and job.current_stage is None and job.error_code is None
 
 
 def test_postgres_concurrent_password_rotations_stay_monotonic(postgres_sessions):
@@ -570,31 +574,33 @@ def test_postgres_stale_upload_preserves_completed_asset(
 
 def test_postgres_stale_upload_cleanup_fences_completion(postgres_sessions, stale_upload, monkeypatch):
     project_id, asset_id, object_key, headers = stale_upload
-    objects = {object_key}
     deleted: list[str] = []
     deleting, allow_cleanup, completion_lock_query = Event(), Event(), Event()
-
-    def delete(key):
-        deleting.set()
-        assert allow_cleanup.wait(timeout=15)
-        objects.remove(key)
-        deleted.append(key)
+    paused: list[bool] = []
 
     def head(key):
         pytest.fail(f"Completion reached OSS after expiry of {key}")
+
+    @event.listens_for(postgres_sessions.kw["bind"], "before_cursor_execute")
+    def pause_before_asset_delete(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if statement.lstrip().upper().startswith("DELETE FROM ASSETS") and not paused:
+            paused.append(True)
+            deleting.set()
+            assert allow_cleanup.wait(timeout=15)
 
     @event.listens_for(postgres_sessions.kw["bind"], "before_cursor_execute")
     def observe_completion_lock(_connection, _cursor, statement, _parameters, _context, _executemany):
         if "FROM assets" in statement and "FOR UPDATE" in statement and "SKIP LOCKED" not in statement:
             completion_lock_query.set()
 
-    monkeypatch.setattr(main, "storage", lambda: SimpleNamespace(head=head, delete=delete))
+    monkeypatch.setattr(main, "storage", lambda: SimpleNamespace(head=head, delete=deleted.append))
     details = f"/v1/projects/{project_id}"
     with TestClient(main.app) as client, ThreadPoolExecutor(max_workers=2) as pool:
         cleanup = pool.submit(client.get, details, headers=headers)
         try:
+            # The expiry transaction holds the asset row lock while the row is
+            # still visible; completion must wait for that same lock.
             assert deleting.wait(timeout=10)
-            assert objects == {object_key}
             completion = pool.submit(
                 client.post, f"/v1/assets/{asset_id}/complete", headers=headers, json={"size": 10, "sha256": "a" * 64}
             )
@@ -610,12 +616,19 @@ def test_postgres_stale_upload_cleanup_fences_completion(postgres_sessions, stal
         listing = client.get(f"{details}/assets", headers=headers)
         assert detail.status_code == 200 and detail.json()["assets"] == []
         assert listing.status_code == 200 and listing.json()["items"] == []
+        assert deleted == []
 
-    assert objects == set()
+        with postgres_sessions() as db:
+            assert db.get(Asset, asset_id) is None
+            assert db.scalars(select(AuditLog.action).where(AuditLog.target_id == asset_id)).all() == ["asset.expire"]
+            queued = db.scalars(select(AssetCleanup)).all()
+            assert [(row.object_key, row.reason) for row in queued] == [(object_key, "asset.expire")]
+
+    assert main.reap_asset_cleanups() == 1
     assert deleted == [object_key]
+    assert main.reap_asset_cleanups() == 0
     with postgres_sessions() as db:
-        assert db.get(Asset, asset_id) is None
-        assert db.scalars(select(AuditLog.action).where(AuditLog.target_id == asset_id)).all() == ["asset.expire"]
+        assert db.scalars(select(AssetCleanup)).all() == []
 
 
 def test_postgres_same_key_creates_one_job(postgres_sessions, monkeypatch):

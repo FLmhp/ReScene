@@ -8,4 +8,4 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/pip pip install -c constraints.txt '.[api]'
 USER 65532:65532
 EXPOSE 8000
-CMD ["uvicorn", "rescene_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips", "*", "--log-config", "/app/uvicorn-log-config.json"]
+CMD ["uvicorn", "rescene_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-proxy-headers", "--log-config", "/app/uvicorn-log-config.json"]

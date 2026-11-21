@@ -1,7 +1,8 @@
 import { ResceneClient, type JobEvent } from "@rescene/api-client";
-import type { AppNotification } from "@rescene/schemas";
+import type { AdminUserPage, AppNotification, JobLog } from "@rescene/schemas";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { UploadAdapter } from "@rescene/uploader";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { KeyValueStore } from "./Workbench";
@@ -53,6 +54,13 @@ function routeTable(overrides: Record<string, unknown> = {}): Record<string, unk
 
 type RouteValue = unknown | ((url: URL) => unknown);
 
+function summaryFields(value: unknown) {
+  if (!value || typeof value !== "object" || !("assets" in value) || !("jobs" in value) || !Array.isArray(value.assets) || !Array.isArray(value.jobs)) return null;
+  const assets = value.assets;
+  const jobs = value.jobs;
+  return { asset_count: assets.length, job_count: jobs.length, has_active_jobs: false, cover: assets[0] ?? null, latest_job: jobs[0] ?? null };
+}
+
 function stubFetch(routes: Record<string, RouteValue>) {
   vi.stubGlobal(
     "fetch",
@@ -68,9 +76,17 @@ function stubFetch(routes: Record<string, RouteValue>) {
       }
       if (route === undefined) return new Response("{}", { status: 404 });
       let value = typeof route === "function" ? (route as (url: URL) => unknown)(url) : route;
-      if (url.searchParams.get("view") === "summary" && value && typeof value === "object" && "assets" in value && "jobs" in value) {
-        const { assets, jobs, ...summary } = value as ReturnType<typeof projectDetail>;
-        value = { ...summary, asset_count: assets.length, job_count: jobs.length, has_active_jobs: false, cover: assets[0] ?? null, latest_job: jobs[0] ?? null };
+      const summary = summaryFields(value);
+      if (url.searchParams.get("view") === "summary" && summary && value && typeof value === "object") {
+        value = { ...value, ...summary };
+      } else if (path === "/v1/projects" && url.searchParams.get("view") === "summary" && Array.isArray(value)) {
+        value = value.map((item: unknown) => {
+          if (!item || typeof item !== "object" || "asset_count" in item) return item;
+          const id = "id" in item && typeof item.id === "string" ? item.id : "";
+          const detail = id ? routes[`/v1/projects/${id}`] : undefined;
+          const resolved = typeof detail === "function" ? (detail as (url: URL) => unknown)(url) : detail;
+          return { ...item, ...(summaryFields(resolved) ?? { asset_count: 0, job_count: 0, has_active_jobs: false, cover: null, latest_job: null }) };
+        });
       }
       if (value && typeof value === "object" && "status" in value && typeof (value as { status: unknown }).status === "number") {
         const spec = value as { status: number; body?: unknown };
@@ -100,11 +116,11 @@ function memoryStore(initial: Record<string, string> = {}): KeyValueStore & { da
 const uploader = { upload: async () => ({ assetId: "a1" }) };
 const viewer = () => <div data-testid="viewer" />;
 
-function renderWorkbench(client = new ResceneClient("https://api.example"), store = memoryStore()) {
+function renderWorkbench(client = new ResceneClient("https://api.example"), store = memoryStore(), adapter: UploadAdapter = uploader) {
   render(
     <Workbench
       client={client}
-      uploader={uploader}
+      uploader={adapter}
       viewer={viewer}
       tokenStore={store}
       webBaseUrl="https://app.example"
@@ -212,6 +228,31 @@ describe("session gate", () => {
     await waitFor(() => expect(screen.getByRole("navigation", { name: "项目" }).querySelector("button")).toBeTruthy());
     expect(screen.getByText(/ops@example\.com/)).toBeTruthy();
     expect(screen.getByText(/RTX 5090 在线/)).toBeTruthy();
+  });
+});
+
+describe("project gallery summaries", () => {
+  it("loads twenty projects with one summary list call and no per-card summary requests", async () => {
+    const summaries = Array.from({ length: 20 }, (_, index) => ({
+      ...project,
+      id: `p${index + 1}`,
+      name: `Project ${index + 1}`,
+      asset_count: index,
+      job_count: 0,
+      has_active_jobs: false,
+      cover: null,
+      latest_job: null,
+    }));
+    stubFetch(routeTable({ "GET /v1/projects?view=summary": summaries }));
+
+    renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /打开项目/ })).toHaveLength(20));
+    const urls = vi.mocked(fetch).mock.calls.map(([input]) => new URL(String(input)));
+    const listCalls = urls.filter((url) => url.pathname === "/v1/projects" && url.searchParams.get("view") === "summary");
+    const cardCalls = urls.filter((url) => /^\/v1\/projects\/[^/]+$/.test(url.pathname) && url.searchParams.get("view") === "summary");
+    expect(listCalls).toHaveLength(1);
+    expect(cardCalls).toHaveLength(0);
   });
 });
 
@@ -572,6 +613,39 @@ describe("management console", () => {
     });
   });
 
+  it("keeps the newest admin search results when responses arrive out of order", async () => {
+    const client = new ResceneClient("https://api.example", "token-1");
+    const pending: { query: string; resolve: (page: AdminUserPage) => void }[] = [];
+    vi.spyOn(client, "listUsers").mockImplementation((params) => {
+      const deferred = Promise.withResolvers<AdminUserPage>();
+      pending.push({ query: params?.query ?? "", resolve: deferred.resolve });
+      return deferred.promise;
+    });
+    stubFetch(adminRoutes());
+    renderWorkbench(client);
+    await openAdminConsole();
+    await waitFor(() => expect(pending).toHaveLength(1));
+    pending[0].resolve({ total: 1, items: [adminUser("u1", "ops@example.com", true, true)] });
+    await waitFor(() => expect(document.querySelector(".user-list")?.textContent).toContain("ops@example.com"));
+
+    const input = screen.getByLabelText("搜索邮箱");
+    fireEvent.change(input, { target: { value: "alice" } });
+    await waitFor(() => expect(pending).toHaveLength(2), { timeout: 2000 });
+    fireEvent.change(input, { target: { value: "bob" } });
+    expect(screen.getByRole("button", { name: "停用" }).hasAttribute("disabled")).toBe(true);
+    await waitFor(() => expect(pending).toHaveLength(3), { timeout: 2000 });
+    expect(pending[1]?.query).toBe("alice");
+    expect(pending[2]?.query).toBe("bob");
+
+    pending[2].resolve({ total: 1, items: [adminUser("u2", "bob@example.com", true)] });
+    await waitFor(() => expect(document.querySelector(".user-list")?.textContent).toContain("bob@example.com"));
+    expect(screen.getByRole("button", { name: "停用" }).hasAttribute("disabled")).toBe(false);
+    pending[1].resolve({ total: 1, items: [adminUser("u3", "alice@example.com", true)] });
+    await act(async () => { await Promise.resolve(); });
+    expect(document.querySelector(".user-list")?.textContent).toContain("bob@example.com");
+    expect(document.querySelector(".user-list")?.textContent).not.toContain("alice@example.com");
+  });
+
   it("publishes an announcement and renders it in the list", async () => {
     const published: unknown[] = [];
     stubFetch(
@@ -732,6 +806,113 @@ describe("job status reconciliation", () => {
     await waitFor(() => expect(screen.getByRole("progressbar", { name: "任务进度" }).getAttribute("aria-valuenow")).toBe("90"));
     expect(document.querySelector(".job-state")?.getAttribute("data-status")).toBe("FAILED");
   });
+
+  it("keeps one subscription and one copy of replayed stage events", async () => {
+    const second = { ...asset, id: "a2", filename: "second.jpg" };
+    stubFetch(routeTable({
+      "/v1/projects/p1": { ...projectDetail("owner"), jobs: [jobFixture("QUEUED", 0, "2026-01-01T00:00:00Z")] },
+      "/v1/projects/p1/assets": (url: URL) => url.searchParams.get("cursor") === "second"
+        ? { items: [second], next_cursor: null } : { items: [asset], next_cursor: "second" },
+      "/v1/jobs/j1/stages": [{ id: "s1", stage: "training", status: "running", progress: 0.4, message: null, metrics: {}, created_at: "2026-01-01T00:00:00Z" }],
+    }));
+    const client = new ResceneClient("https://api.example", "token-1");
+    let handler!: (event: JobEvent) => void;
+    const subscribe = vi.spyOn(client, "subscribeJob").mockImplementation((_id, onEvent) => { handler = onEvent; return vi.fn(); });
+    renderWorkbench(client);
+    await userEvent.click(await screen.findByRole("button", { name: /Kitchen ·/ }));
+    await waitFor(() => expect(handler).toBeDefined());
+    await waitFor(() => expect(document.querySelectorAll(".timeline li")).toHaveLength(1));
+
+    act(() => handler({ stage: "training", status: "running", progress: 0.4, message: null, metrics: {} }));
+    expect(document.querySelectorAll(".timeline li")).toHaveLength(1);
+    act(() => handler({ stage: "training", status: "running", progress: 0.65, message: null, metrics: {} }));
+    expect(document.querySelectorAll(".timeline li")).toHaveLength(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /second.jpg/ })).toBeTruthy());
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(document.querySelectorAll(".timeline li")).toHaveLength(2);
+  });
+});
+
+describe("job log paging", () => {
+  const log = (id: number, message: string): JobLog => ({ id, level: "info", message, created_at: "2026-01-01T00:00:00Z" });
+  const job = (id: string) => ({
+    id, project_id: "p1", profile: "balanced", status: "SUCCEEDED", progress: 1, attempt: 1,
+    cancel_requested: false, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", reconstruction_id: null,
+  });
+
+  it("never prepends an earlier page from a job the user already left", async () => {
+    const client = new ResceneClient("https://api.example", "token-1");
+    const earlier = Promise.withResolvers<JobLog[]>();
+    const beforeRequests: string[] = [];
+    vi.spyOn(client, "listJobLogs").mockImplementation((jobId, params) => {
+      if (params?.beforeId !== undefined) {
+        beforeRequests.push(jobId);
+        return earlier.promise;
+      }
+      return Promise.resolve(jobId === "j1" ? [log(2, "j1 latest")] : [log(10, "j2 latest")]);
+    });
+    stubFetch(routeTable({
+      "/v1/projects/p1": { ...projectDetail("owner"), jobs: [job("j1"), job("j2")] },
+    }));
+    renderWorkbench(client);
+    await userEvent.click(await screen.findByRole("button", { name: /Kitchen ·/ }));
+    await waitFor(() => expect(screen.getByText(/j1 latest/)).toBeTruthy());
+
+    const earlierButton = screen.getByRole("button", { name: "加载更早" });
+    fireEvent.click(earlierButton);
+    fireEvent.click(earlierButton);
+    expect(beforeRequests).toEqual(["j1"]);
+
+    await userEvent.selectOptions(screen.getByLabelText("任务记录"), "j2");
+    await waitFor(() => expect(screen.getByText(/j2 latest/)).toBeTruthy());
+    await act(async () => { earlier.resolve([log(1, "j1 old page")]); });
+
+    expect(screen.queryByText(/j1 old page/)).toBeNull();
+    expect(screen.getByText(/j2 latest/)).toBeTruthy();
+  });
+});
+
+describe("project-scoped uploads", () => {
+  it("keeps another project's picker enabled while a batch is still running", async () => {
+    const studio = { ...project, id: "p2", name: "Studio" };
+    const pending = Promise.withResolvers<{ assetId: string }>();
+    const adapter = {
+      upload: vi.fn((_request: { projectId: string; file: File }, onProgress: (percent: number) => void) => {
+        onProgress(25);
+        return pending.promise;
+      }),
+    };
+    stubFetch(routeTable({
+      "/v1/projects": [project, studio],
+      "/v1/projects/p2": { ...projectDetail("owner"), id: "p2", name: "Studio" },
+      "/v1/projects/p2/members": [],
+      "/v1/projects/p2/invitations": [],
+    }));
+    renderWorkbench(new ResceneClient("https://api.example", "token-1"), memoryStore(), adapter);
+    await userEvent.click(await screen.findByRole("button", { name: /Kitchen ·/ }));
+    await waitFor(() => expect(document.querySelector('input[type="file"]')).toBeTruthy());
+
+    const header = new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70]);
+    const file = new File([header], "clip.mp4");
+    // jsdom's Blob has no arrayBuffer(); expose just the header the preflight reads.
+    Object.defineProperty(file, "slice", { value: () => ({ arrayBuffer: async () => header.buffer }) });
+    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [file] } });
+    await waitFor(() => expect(adapter.upload).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(document.querySelector<HTMLInputElement>('input[type="file"]')?.disabled).toBe(true));
+    expect(document.querySelector(".upload-panel")?.textContent).toContain("clip.mp4 · 上传中");
+
+    await userEvent.click(screen.getByRole("button", { name: /Studio ·/ }));
+    await waitFor(() => expect(document.querySelector<HTMLInputElement>('input[type="file"]')?.disabled).toBe(false));
+    expect(document.querySelector(".upload-panel")?.textContent).not.toContain("clip.mp4");
+
+    await userEvent.click(screen.getByRole("button", { name: /Kitchen ·/ }));
+    await waitFor(() => expect(document.querySelector(".upload-panel")?.textContent).toContain("clip.mp4 · 上传中"));
+
+    await act(async () => { pending.resolve({ assetId: "a2" }); });
+    await waitFor(() => expect(document.querySelector(".upload-panel")?.textContent).toContain("clip.mp4 · 完成"));
+  });
 });
 
 describe("notification pagination", () => {
@@ -804,6 +985,70 @@ describe("notification pagination", () => {
 
     await act(async () => { resolveUnread([notice("stale", 99)]); });
     expect(screen.queryByText("通知 99")).toBeNull();
+  });
+
+  it("loads fresh notifications when the panel opens after the badge changes", async () => {
+    vi.useFakeTimers();
+    try {
+      let items = [notice("n1", 1)];
+      let unread = 1;
+      stubFetch(routeTable({
+        "/v1/notifications/count": () => ({ unread }),
+        "/v1/notifications": () => items,
+      }));
+      renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByText("通知（1）")).toBeTruthy();
+      const initial = vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes("/v1/notifications?")).length;
+
+      items = [notice("n2", 2), notice("n1", 1)];
+      unread = 2;
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(screen.getByText("通知（2）")).toBeTruthy();
+      expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes("/v1/notifications?")).length).toBe(initial);
+
+      fireEvent.click(screen.getByText("通知（2）"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByText("通知 2")).toBeTruthy();
+      expect(screen.getByText("通知 1")).toBeTruthy();
+      expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes("/v1/notifications?")).length).toBe(initial + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("workspace refresh feedback", () => {
+  it("keeps the last snapshot and clears the stale banner after a successful retry", async () => {
+    const client = new ResceneClient("https://api.example", "token-1");
+    const workspace = vi.spyOn(client, "getWorkspace")
+      .mockResolvedValueOnce(projectDetail("owner") as never)
+      .mockRejectedValue(new Error("服务器暂时不可用"));
+    stubFetch(routeTable());
+    vi.useFakeTimers();
+    try {
+      renderWorkbench(client, memoryStore({ "rescene-project": "p1" }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByRole("heading", { name: "Kitchen" })).toBeTruthy();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(screen.getByText(/刷新失败/)).toBeTruthy();
+      expect(screen.getByText(/显示的是/)).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Kitchen" })).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: "关闭刷新提示" }));
+      expect(screen.queryByText(/刷新失败/)).toBeNull();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(screen.getByText(/刷新失败/)).toBeTruthy();
+
+      vi.useRealTimers();
+      workspace.mockResolvedValue(projectDetail("owner") as never);
+      fireEvent.click(screen.getByRole("button", { name: "重试" }));
+      await waitFor(() => expect(screen.queryByText(/刷新失败/)).toBeNull());
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

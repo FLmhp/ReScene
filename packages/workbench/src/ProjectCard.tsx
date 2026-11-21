@@ -5,19 +5,24 @@ import { JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, type Project, type ProjectS
 import { useEffect, useRef, useState } from "react";
 import { AssetPreview } from "./AssetPreview";
 
-export function ProjectCard({ client, project, onOpen }: { client: ResceneClient; project: Project; onOpen: () => void }) {
-  const [detail, setDetail] = useState<ProjectSummary | null>(null);
+export function ProjectCard({ client, project, summary, onOpen }: {
+  client: ResceneClient; project: Project; summary?: ProjectSummary; onOpen: () => void;
+}) {
+  const [fetched, setFetched] = useState<ProjectSummary | null>(null);
   const host = useRef<HTMLElement>(null);
+  const needsSummary = summary === undefined;
   useEffect(() => {
+    if (!needsSummary) return;
     let active = true;
-    const load = () => { void client.getProjectSummary(project.id).then((value) => { if (active) setDetail(value); }).catch(() => undefined); };
+    const load = () => { void client.getProjectSummary(project.id).then((value) => { if (active) setFetched(value); }).catch(() => undefined); };
     if (typeof IntersectionObserver === "undefined" || !host.current) { load(); return () => { active = false; }; }
     const observer = new IntersectionObserver(([entry]) => {
       if (entry?.isIntersecting) { load(); observer.disconnect(); }
     });
     observer.observe(host.current);
     return () => { active = false; observer.disconnect(); };
-  }, [client, project.id]);
+  }, [client, needsSummary, project.id]);
+  const detail = summary ?? fetched;
   const cover = detail?.cover;
   const job = detail?.latest_job;
   return <article className="project-card" ref={host}>
