@@ -72,7 +72,23 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 | 引擎与性能 | 045 046 049 | 引擎恢复证据、OOM 降级、几何分类、损坏 checkpoint、benchmark 原子写/校验、环境哈希缓存与 checkpoint 成员用例通过；项目摘要批量查询与 `job_logs(job_id,id)` 迁移测试通过。 |
 | 契约、CI、文档 | 047 048 | 13 份契约夹具与 zod 解析一致；Rust `cargo test` 3 项通过；health 测试 3 项通过；四端构建通过；文档链接和版本一致性检查通过。 |
 
-本地构建：`rescene-web`、`@rescene/desktop`、`@rescene/mobile`（Android 导出）和 `@rescene/miniapp`（生产 `build:weapp`，使用仓库 AppID 与合成 HTTPS 域名）成功。未执行 Docker 守护进程、真实 PostgreSQL 并发、真实 OSS、桌面 release 扫码、真机或生产部署；相应验收保持待验收。PostgreSQL 测试因本机无 `RESCENE_TEST_POSTGRES_URL`/Docker 守护进程而跳过。
+本地构建：`rescene-web`、`@rescene/desktop`、`@rescene/mobile`（Android 导出）和 `@rescene/miniapp`（生产 `build:weapp`，使用仓库 AppID 与合成 HTTPS 域名）成功。PostgreSQL 测试因本机无 `RESCENE_TEST_POSTGRES_URL`/Docker 守护进程而跳过。
+
+### 第三轮生产部署（2026-11-21）
+
+生产主机 `107.151.246.42`，最终代码提交 `1dd6bae`，分支 `codex/audit-integration`。本轮先把 `0009` 备份写入 `/root/rescene-backup-audit-20261121T134059Z`，并在临时 PostgreSQL 16 恢复，校验 `jobs=25`、`assets=131`、`users=8` 后切换到 `0010`。Caddy 为 2.11.4，先备份并 `validate`/graceful reload，再切换 API/Web；镜像从干净归档在公网主机构建，未使用本地 Docker。
+
+| 项目 | 结果 |
+|---|---|
+| API | `rescene-api:0.4.1-1dd6bae`，`sha256:0cd7f77b324834a47e441510ac401f72bcfe8aa168059d9169f35b6ea4c690eb`，healthy，重启 0 |
+| Web | `rescene-web:0.4.1-f16372e`，`sha256:0f1ca323845a84e7d39f965bcec029dfe7c74c297e5f959590a49655367e67dd`，healthy，重启 0 |
+| 数据库 | PostgreSQL 16，Alembic `0010`，`ix_job_logs_job_id_id` 已建立，无 `QUEUED`/`RUNNING` 任务 |
+| Caddy | 安全头、HSTS、CSP 已生效；2 MB 请求返回 413；`X-Real-IP` 改用 `{http.request.client_ip}`，伪造地址不再绕过限流（10 次后 429） |
+| API 冒烟 | 管理员登录 200；16 个项目；任务 `e301947a-c7cd-4574-9e8a-dc6a226199ce` 为 `SUCCEEDED`；7 个阶段；SSE 事件可读 |
+| Web 冒烟 | 真实浏览器登录、项目列表、任务页和 SPZ Viewer 渲染成功；Viewer canvas 1643×897 |
+| 本轮测试 | Python 374 通过/32 跳过；Ruff、mypy；workspace 类型检查；workspace 115 项；Rust fmt/clippy/test；13 份契约夹具；Web、Desktop、Site、Android 导出、小程序生产构建 |
+
+本轮未触发新的 GPU 训练，也未重跑 Android/微信真机、桌面 release 扫码或真实 OSS 故障注入；这些保持待验收。生产 Worker 在切换后继续以 200 响应领取租约。
 
 ### 0.4.1 审计集成补验
 
