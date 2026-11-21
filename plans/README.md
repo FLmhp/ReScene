@@ -106,7 +106,7 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 | [013](013-make-session-version-monotonic.md) | A08 | 保证会话撤销版本单调更新 | P2 | M | 无 | TODO |
 | [014](014-scope-project-notifications-to-current-access.md) | A09 | 按当前项目访问权限筛选任务通知 | P2 | M | 无 | TODO |
 | [015](015-reconcile-job-status-with-sse.md) | A10 | 同步任务主状态并给 SSE 加空闲回退 | P2 | M | 无 | TODO |
-| [016](016-repair-incomplete-downsample-cache.md) | A11 | 拒绝复用中断留下的不完整降采样目录 | P2 | S | 无 | TODO |
+| [016](016-repair-incomplete-downsample-cache.md) | A11 | 拒绝复用中断留下的不完整降采样目录 | P2 | S | 无 | DONE · `4dbbf2c` |
 | [017](017-poll-miniapp-logs-from-empty.md) | A12 | 微信任务日志从空列表开始追踪 | P2 | S | 无 | TODO |
 | [018](018-verify-experiment-process-group-exit.md) | A13 | 试验退出时确认所属进程组停止 | P2 | M | 无 | TODO |
 | [019](019-stop-worker-between-artifact-uploads.md) | A14 | 取消或失租后停止后续产物上传 | P2 | S–M | 无 | TODO |
