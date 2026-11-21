@@ -37,6 +37,17 @@ const TOKEN_KEY = "rescene-token";
 const PROJECT_KEY = "rescene-project";
 const JOB_KEY = "rescene-job";
 const ACTIVE: Record<string, boolean> = { QUEUED: true, LEASED: true, RUNNING: true };
+const TERMINAL_JOB = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
+
+/** A newer snapshot wins, but a late queue row may never rewind a terminal outcome. */
+function preferredJob(live: Job | undefined, snapshot: Job | undefined): Job | undefined {
+  if (!live) return snapshot;
+  if (!snapshot || snapshot.id !== live.id) return live;
+  const liveTerminal = TERMINAL_JOB.has(live.status);
+  const snapshotTerminal = TERMINAL_JOB.has(snapshot.status);
+  if (liveTerminal !== snapshotTerminal) return liveTerminal ? live : snapshot;
+  return Date.parse(snapshot.updated_at) > Date.parse(live.updated_at) ? snapshot : live;
+}
 const PROFILES: Profile[] = ["fast", "balanced", "quality"];
 const PANES = [{ key: "materials", label: "素材" }, { key: "tasks", label: "任务" }, { key: "results", label: "结果" }] as const;
 const NOTIFY_PAGE_SIZE = 20;
@@ -243,14 +254,17 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   }, [selected]);
   const listedJob = detail?.jobs.find((job) => job.id === selectedJob);
   const currentJob = listedJob ?? (selectedJob ? undefined : detail?.jobs[0]);
-  const latest = liveJob && liveJob.id === (selectedJob || currentJob?.id) ? liveJob : currentJob;
+  const liveSelected = liveJob && liveJob.id === (selectedJob || currentJob?.id) ? liveJob : undefined;
+  const latest = preferredJob(liveSelected, currentJob);
+  const latestRef = useRef<Job | null>(null);
+  latestRef.current = latest ?? null;
   const loadedProjectId = detail?.id;
   useEffect(() => {
     if (!loadedProjectId || !selectedJob || listedJob) return;
     let active = true;
     void client.getJob(selectedJob).then((job) => {
       if (!active) return;
-      if (job.project_id === loadedProjectId) setLiveJob(job);
+      if (job.project_id === loadedProjectId) setLiveJob((current) => preferredJob(current ?? undefined, job) ?? job);
       else setSelectedJob("");
     }).catch((error: unknown) => {
       if (!active) return;
@@ -273,9 +287,17 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       if ("stage" in event) {
         const row: TimelineRow = { key: `live-${Date.now()}-${event.stage}`, stage: event.stage, status: event.status, progress: event.progress, message: event.message, metrics: event.metrics };
         setTimeline((rows) => [...rows, row].slice(-100));
-        setLiveJob((job) => job?.id === id ? { ...job, progress: event.progress, current_stage: event.stage } : job);
+        setLiveJob((job) => {
+          const base = job && job.id === id ? job : latestRef.current;
+          if (!base || base.id !== id || base.project_id !== detailRef.current?.id) return job;
+          return { ...base, progress: event.progress, current_stage: event.stage };
+        });
       }
-      else { setLiveJob(event); if (!ACTIVE[event.status]) void refresh(); }
+      else {
+        if (event.id !== id || event.project_id !== detailRef.current?.id) return;
+        setLiveJob(event);
+        if (!ACTIVE[event.status]) void refresh();
+      }
     }, (error) => {
       if (error instanceof ResceneApiError && error.status === 401) expire();
       else setMessage(`进度流中断：${error.message}`);
