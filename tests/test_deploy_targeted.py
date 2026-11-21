@@ -96,19 +96,21 @@ pytestmark = pytest.mark.skipif(BASH is None, reason="the deploy script needs a 
 
 
 def posix_path(path: Path) -> str:
-    drive = str(path).replace("\\", "/")
-    return f"/{drive[0].lower()}{drive[2:]}"
+    if os.name != "nt":
+        return str(path)
+    drive_path = path.as_posix()
+    return f"/{drive_path[0].lower()}{drive_path[2:]}"
 
 
 def run_script(tmp_path: Path, **extra_env: str) -> subprocess.CompletedProcess[str]:
     root = tmp_path / "deploy-root"
     (root / "scripts").mkdir(parents=True)
-    (root / "VERSION").write_text(f"{VERSION}\n", encoding="utf-8")
+    (root / "VERSION").write_text(f"{VERSION}\n", encoding="utf-8", newline="\n")
     shutil.copy(REPO_ROOT / "scripts/deploy_targeted.sh", root / "scripts/deploy_targeted.sh")
     log = tmp_path / "calls.log"
     log.write_text("", encoding="utf-8")
     stub_env = tmp_path / "stub-env.sh"
-    stub_env.write_text(STUB_ENV, encoding="utf-8")
+    stub_env.write_text(STUB_ENV, encoding="utf-8", newline="\n")
     env = {
         **os.environ,
         "BASH_ENV": posix_path(stub_env),
