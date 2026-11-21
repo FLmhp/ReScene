@@ -1,3 +1,5 @@
+import { newIdempotencyKey } from "./idempotency";
+
 /**
  * Offline replay state machine shared by Android and the Mini Program.
  *
@@ -94,12 +96,12 @@ export type QueuedUpload = {
   createdAt: number;
 };
 
-export type QueuedProject = { kind: "project"; id: string; name: string; createdAt: number };
+export type QueuedProject = { kind: "project"; id: string; name: string; createdAt: number; idempotencyKey?: string };
 
 export type QueuedEntry = QueuedUpload | QueuedProject;
 
 export type QueueHandlers = {
-  createProject(name: string): Promise<void>;
+  createProject(name: string, idempotencyKey?: string): Promise<void>;
   upload(entry: QueuedUpload, onProgress?: (percent: number) => void): Promise<void>;
 };
 
@@ -159,7 +161,9 @@ export async function replayQueue(entries: QueuedEntry[], handlers: QueueHandler
   const result: ReplayResult = { remaining: [], created: 0, uploaded: 0, dropped: 0 };
   for (const entry of entries) {
     try {
-      const outcome = await finishEntry(entry, (row) => row.kind === "project" ? handlers.createProject(row.name) : handlers.upload(row));
+      const outcome = await finishEntry(entry, (row) =>
+        row.kind === "project" ? handlers.createProject(row.name, row.idempotencyKey) : handlers.upload(row),
+      );
       result[outcome] += 1;
     } catch {
       result.remaining.push(entry);
@@ -183,7 +187,10 @@ class QueueStorageError extends Error {
   }
 }
 
-export function createNativeQueue(storage: QueueStorage) {
+export type NativeQueueOptions = { idempotencyKey?: () => string };
+
+export function createNativeQueue(storage: QueueStorage, options: NativeQueueOptions = {}) {
+  const nextKey = options.idempotencyKey ?? newIdempotencyKey;
   const writes = new Map<string, Promise<void>>();
   const claimed = new Map<string, { generation: number; task: Promise<EntryResult> }>();
   const replaying = new Map<string, { generation: number; task: Promise<ReplayCounts> }>();
@@ -232,6 +239,16 @@ export function createNativeQueue(storage: QueueStorage) {
     return mutate(owner, (entries) => entries.map((row) => row.id === id && row.kind === "upload" ? { ...row, assetId } : row));
   }
 
+  /** A draft queued before retry keys existed gets one, saved before the first attempt. */
+  async function withIdempotencyKey(owner: QueueOwner, entry: QueuedEntry): Promise<QueuedEntry> {
+    if (entry.kind !== "project" || entry.idempotencyKey) return entry;
+    const key = nextKey();
+    const prepared: QueuedProject = { ...entry, idempotencyKey: key };
+    await mutate(owner, (rows) => rows.map((row) => (row.id === entry.id ? prepared : row)));
+    assertCurrent(owner);
+    return prepared;
+  }
+
   function runEntry(
     owner: QueueOwner,
     id: string,
@@ -251,7 +268,8 @@ export function createNativeQueue(storage: QueueStorage) {
       const entry = (await load(owner)).find((row) => row.id === id);
       if (!entry) return "missing";
       assertCurrent(owner);
-      const outcome = await finishEntry(entry, handle);
+      const prepared = await withIdempotencyKey(owner, entry);
+      const outcome = await finishEntry(prepared, handle);
       await remove(owner, id);
       return outcome;
     })().finally(() => { claimed.delete(key); });
@@ -275,7 +293,7 @@ export function createNativeQueue(storage: QueueStorage) {
       if (!storage.isCurrent(owner)) break;
       try {
         const outcome = await runEntry(owner, id, (entry) => entry.kind === "project"
-          ? handlers.createProject(entry.name)
+          ? handlers.createProject(entry.name, entry.idempotencyKey)
           : handlers.upload(entry, (assetId) => remember(owner, entry.id, assetId)), true);
         if (outcome !== "busy" && outcome !== "missing") result[outcome] += 1;
       } catch (reason) {

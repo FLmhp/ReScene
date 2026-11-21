@@ -39,7 +39,7 @@ describe("replayQueue", () => {
   it("removes a project once it exists on the server", async () => {
     const createProject = vi.fn(async () => undefined);
     const result = await replayQueue([project], { createProject, upload: vi.fn() });
-    expect(createProject).toHaveBeenCalledWith("厨房");
+    expect(createProject).toHaveBeenCalledWith("厨房", undefined);
     expect(result).toMatchObject({ remaining: [], created: 1, uploaded: 0, dropped: 0 });
   });
 
@@ -163,6 +163,42 @@ describe("queue account ownership", () => {
   });
 });
 
+
+describe("idempotency keys", () => {
+  it("gives a legacy project draft a key before the first attempt and reuses it on retry", async () => {
+    const { owner, queue, write } = queueFixture();
+    const legacy = { kind: "project" as const, id: "legacy-project", name: "Studio", createdAt: 1 };
+    await queue.enqueue(owner, legacy);
+    const seen: (string | undefined)[] = [];
+    let attempt = 0;
+    const handlers = {
+      createProject: vi.fn(async (_name: string, key?: string) => {
+        seen.push(key);
+        attempt += 1;
+        if (attempt === 1) throw new Error("network down");
+      }),
+      upload: vi.fn(),
+    };
+
+    await expect(queue.replay(owner, handlers)).resolves.toEqual({ created: 0, uploaded: 0, dropped: 0 });
+    expect(seen[0]).toMatch(/^[0-9a-f-]{32,36}$/);
+    const [stored] = await queue.load(owner);
+    expect(stored).toMatchObject({ id: "legacy-project", idempotencyKey: seen[0] });
+    expect(write).toHaveBeenCalled();
+
+    await expect(queue.replay(owner, handlers)).resolves.toEqual({ created: 1, uploaded: 0, dropped: 0 });
+    expect(seen).toEqual([seen[0], seen[0]]);
+    expect(await queue.load(owner)).toEqual([]);
+  });
+
+  it("keeps the key supplied by the enqueueing client", async () => {
+    const { owner, queue } = queueFixture();
+    await queue.enqueue(owner, { ...project, idempotencyKey: "minted-earlier" });
+    const createProject = vi.fn(async () => undefined);
+    await queue.replay(owner, { createProject, upload: vi.fn() });
+    expect(createProject).toHaveBeenCalledWith(project.name, "minted-earlier");
+  });
+});
 
 function deferred() {
   let resolve!: () => void;

@@ -55,7 +55,7 @@ export async function uploadQueued(owner: QueueOwner, id: string, onProgress: (p
 export function replayQueued(owner: QueueOwner, onProgress: (entry: QueuedUpload, percent: number) => void) {
   const client = queueClient(owner);
   return queue.replay(owner, {
-    createProject: async (name) => { await client.createProject(name); },
+    createProject: async (name, idempotencyKey) => { await client.createProject(name, idempotencyKey); },
     upload: transfer(owner, client, onProgress),
   });
 }

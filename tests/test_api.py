@@ -522,6 +522,94 @@ def test_cleanup_queue_treats_a_missing_object_as_done(monkeypatch) -> None:
             assert db.scalars(select(AssetCleanup)).all() == []
 
 
+def ready_asset(project_id: str, name: str = "frame.jpg") -> str:
+    with SessionLocal() as db:
+        asset = Asset(
+            project_id=project_id,
+            object_key=f"idempotent/{name}",
+            filename=name,
+            size=10,
+            content_type="image/jpeg",
+            status="READY",
+            sha256="a" * 64,
+        )
+        db.add(asset)
+        db.commit()
+        return asset.id
+
+
+def test_job_creation_replays_the_first_response_for_a_repeated_key() -> None:
+    with TestClient(app) as client:
+        created = client.post("/v1/auth/register", json={"email": "retry@example.com", "password": "correct-horse"})
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+        project_id = client.post("/v1/projects", headers=headers, json={"name": "Retry"}).json()["id"]
+        asset_id = ready_asset(project_id)
+        keyed = {**headers, "Idempotency-Key": "job-retry-1"}
+        body = {"profile": "balanced", "asset_ids": [asset_id]}
+
+        first = client.post(f"/v1/projects/{project_id}/jobs", headers=keyed, json=body)
+        second = client.post(f"/v1/projects/{project_id}/jobs", headers=keyed, json=body)
+        assert first.status_code == 201 and second.status_code == 201
+        assert second.json() == first.json()
+        with SessionLocal() as db:
+            assert len(db.scalars(select(ReconstructionJob)).all()) == 1
+            assert len(db.scalars(select(AuditLog).where(AuditLog.action == "job.create")).all()) == 1
+
+        conflict = client.post(
+            f"/v1/projects/{project_id}/jobs", headers=keyed, json={"profile": "fast", "asset_ids": [asset_id]}
+        )
+        assert conflict.status_code == 409
+        assert conflict.headers["x-error-code"] == "idempotency.conflict"
+        with SessionLocal() as db:
+            assert len(db.scalars(select(ReconstructionJob)).all()) == 1
+
+        new_key = {**headers, "Idempotency-Key": "job-retry-2"}
+        again = client.post(f"/v1/projects/{project_id}/jobs", headers=new_key, json=body)
+        assert again.status_code == 201 and again.json()["id"] != first.json()["id"], "a new key starts a new operation"
+
+
+def test_project_creation_replays_only_for_the_same_key() -> None:
+    with TestClient(app) as client:
+        created = client.post("/v1/auth/register", json={"email": "projects@example.com", "password": "correct-horse"})
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+        keyed = {**headers, "Idempotency-Key": "project-retry-1"}
+
+        first = client.post("/v1/projects", headers=keyed, json={"name": "Studio"})
+        second = client.post("/v1/projects", headers=keyed, json={"name": "Studio"})
+        assert first.status_code == 201 and second.status_code == 201
+        assert second.json() == first.json()
+
+        plain = client.post("/v1/projects", headers=headers, json={"name": "Studio"})
+        other = client.post("/v1/projects", headers=headers, json={"name": "Studio"})
+        assert plain.json()["id"] != other.json()["id"], "requests without a key keep creating new projects"
+        assert len({first.json()["id"], plain.json()["id"], other.json()["id"]}) == 3
+
+        too_long = client.post("/v1/projects", headers={**headers, "Idempotency-Key": "x" * 129}, json={"name": "Long"})
+        assert too_long.status_code == 400
+        assert too_long.headers["x-error-code"] == "idempotency.invalid_key"
+
+
+def test_idempotency_keys_are_scoped_to_the_account_and_project() -> None:
+    with TestClient(app) as client:
+        first = client.post("/v1/auth/register", json={"email": "one@example.com", "password": "correct-horse"})
+        second = client.post("/v1/auth/register", json={"email": "two@example.com", "password": "correct-horse"})
+        one = {"Authorization": f"Bearer {first.json()['access_token']}", "Idempotency-Key": "shared-key"}
+        two = {"Authorization": f"Bearer {second.json()['access_token']}", "Idempotency-Key": "shared-key"}
+        mine = client.post("/v1/projects", headers=one, json={"name": "Mine"}).json()
+        theirs = client.post("/v1/projects", headers=two, json={"name": "Theirs"})
+        assert theirs.status_code == 201 and theirs.json()["id"] != mine["id"]
+
+        second_project = {**one, "Idempotency-Key": "shared-key-2"}
+        other_project = client.post("/v1/projects", headers=second_project, json={"name": "Second"}).json()["id"]
+        asset_a = ready_asset(mine["id"], "a.jpg")
+        asset_b = ready_asset(other_project, "b.jpg")
+        headers_a = {**one, "Idempotency-Key": "job-shared"}
+        job_a = client.post(f"/v1/projects/{mine['id']}/jobs", headers=headers_a, json={"asset_ids": [asset_a]})
+        job_b = client.post(f"/v1/projects/{other_project}/jobs", headers=headers_a, json={"asset_ids": [asset_b]})
+        assert job_a.status_code == 201 and job_b.status_code == 201
+        assert job_a.json()["id"] != job_b.json()["id"], "the project scopes the key"
+
+
 def test_password_change_revokes_other_sessions() -> None:
     with TestClient(app) as client:
         created = client.post("/v1/auth/register", json={"email": "rotate@example.com", "password": "correct-horse"})

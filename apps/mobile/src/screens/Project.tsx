@@ -10,7 +10,7 @@ import { AssetThumbnail } from "../AssetThumbnail";
 import { enqueue, replayQueued, uploadQueued } from "../queue";
 import { useAppearance } from "../appearance";
 import type { Palette } from "@rescene/design-tokens";
-import { MediaPreflightError, mediaType, QUEUE_PAUSED, summarizeMediaWarnings, type QueueOwner } from "@rescene/uploader";
+import { MediaPreflightError, mediaType, newIdempotencyKey, QUEUE_PAUSED, summarizeMediaWarnings, type QueueOwner } from "@rescene/uploader";
 import { inspectPickedFiles, type PickedFile } from "../upload";
 import { Button, Card, ErrorText, Field, Screen, useTextStyles } from "../ui";
 
@@ -48,6 +48,7 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
   const [creating, setCreating] = useState(false);
   const mutationFlight = useRef(false);
   const jobFlight = useRef(false);
+  const jobAttempt = useRef<{ signature: string; key: string } | null>(null);
   const uploadSequence = useRef(0);
   const picking = useRef(false);
   const [checkingMedia, setCheckingMedia] = useState(false);
@@ -183,8 +184,15 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
     jobFlight.current = true;
     setCreating(true);
     setError("");
-    try { const job = await client.createJob(project.id, profile, selected.map((asset) => asset.id)); onJob(job.id, { assets: selected, profile }); }
-    catch (reason) { setError(explainError(reason, "创建任务失败")); }
+    const ids = selected.map((asset) => asset.id);
+    const signature = JSON.stringify([profile, [...ids].sort()]);
+    const attempt = jobAttempt.current?.signature === signature ? jobAttempt.current : { signature, key: newIdempotencyKey() };
+    jobAttempt.current = attempt;
+    try {
+      const job = await client.createJob(project.id, profile, ids, attempt.key);
+      jobAttempt.current = null;
+      onJob(job.id, { assets: selected, profile });
+    } catch (reason) { setError(explainError(reason, "创建任务失败")); }
     finally { jobFlight.current = false; setCreating(false); }
   }
 

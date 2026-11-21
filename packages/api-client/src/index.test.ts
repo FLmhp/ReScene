@@ -57,6 +57,21 @@ describe("request handling", () => {
     });
   });
 
+  it("sends the retry key only when the caller supplies one", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse(String(input).endsWith("/jobs") ? job : project),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ResceneClient("https://api.example", "token-1");
+
+    await client.createProject("Kitchen", "retry-1");
+    await client.createProject("Kitchen");
+    await client.createJob("p1", "balanced", ["a"], "retry-2");
+
+    const headers = fetchMock.mock.calls.map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"));
+    expect(headers).toEqual(["retry-1", null, "retry-2"]);
+  });
+
   it("rejects a payload that drifts from the contract", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ id: "p1" })));
 

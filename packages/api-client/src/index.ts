@@ -208,6 +208,11 @@ function auditQuery(params: AuditFilters): URLSearchParams {
   return search;
 }
 
+/** Sends the retry key only when the caller holds one; requests without it keep the old contract. */
+function idempotencyHeader(key?: string): { headers?: Record<string, string> } {
+  return key ? { headers: { "Idempotency-Key": key } } : {};
+}
+
 export class ResceneClient {
   private token: string | null;
 
@@ -334,8 +339,12 @@ export class ResceneClient {
     return this.send("/v1/projects", ProjectSchema.array());
   }
 
-  async createProject(name: string): Promise<Project> {
-    return this.send("/v1/projects", ProjectSchema, { method: "POST", body: JSON.stringify({ name }) });
+  async createProject(name: string, idempotencyKey?: string): Promise<Project> {
+    return this.send("/v1/projects", ProjectSchema, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+      ...idempotencyHeader(idempotencyKey),
+    });
   }
 
   async getProject(id: string): Promise<ProjectDetail> {
@@ -492,10 +501,11 @@ export class ResceneClient {
     await this.send(`/v1/assets/${encodeURIComponent(assetId)}`, z.void(), { method: "DELETE" });
   }
 
-  async createJob(projectId: string, profile: Profile, assetIds: string[]): Promise<Job> {
+  async createJob(projectId: string, profile: Profile, assetIds: string[], idempotencyKey?: string): Promise<Job> {
     return this.send(`/v1/projects/${encodeURIComponent(projectId)}/jobs`, JobSchema, {
       method: "POST",
       body: JSON.stringify({ profile, asset_ids: assetIds }),
+      ...idempotencyHeader(idempotencyKey),
     });
   }
 
