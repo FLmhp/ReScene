@@ -65,10 +65,32 @@ def test_monitor_signals_only_the_trial_on_deadline(tmp_path, monkeypatch):
     monkeypatch.setattr(supervisor, "gpu_processes", lambda: {})
     monkeypatch.setattr(supervisor, "environment", dict)
     terminate = Mock()
-    monkeypatch.setattr(supervisor.os, "killpg", terminate, raising=False)
+    monkeypatch.setattr(supervisor, "stop_trial", terminate)
     result = supervisor.monitor({"name": "test", "profile": "fast", "spec": spec, "repeat": 1}, deadline=0)
-    terminate.assert_called_once_with(12345, supervisor.signal.SIGTERM)
+    terminate.assert_called_once_with(proc, 12345)
     assert not result["valid"] and result["abort_reason"] == "batch deadline reached"
+
+
+def test_stop_trial_checks_group_after_leader_exit_and_escalates(monkeypatch):
+    calls = []
+    probes = iter([True, True, True, False])
+
+    def killpg(pgid, sig):
+        calls.append((pgid, sig))
+        if sig == 0 and not next(probes):
+            raise ProcessLookupError
+
+    clock = iter([0, 11, 11, 12])
+    monkeypatch.setattr(supervisor, "os", SimpleNamespace(name="posix", killpg=killpg))
+    monkeypatch.setattr(supervisor, "signal", SimpleNamespace(SIGTERM=15, SIGKILL=9))
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(supervisor.time, "sleep", lambda _: None)
+    supervisor.stop_trial(Mock(pid=123, poll=Mock(return_value=0)), 123)
+    assert (123, supervisor.signal.SIGTERM) in calls
+    assert (123, supervisor.signal.SIGKILL) in calls
+    assert all(pgid == 123 for pgid, _ in calls)
+    with pytest.raises(RuntimeError, match="ownership"):
+        supervisor.stop_trial(Mock(pid=123), None)
 
 
 def test_monitor_keeps_phase_memory_peaks_between_utilization_samples(tmp_path, monkeypatch):
@@ -85,6 +107,7 @@ def test_monitor_keeps_phase_memory_peaks_between_utilization_samples(tmp_path, 
     monkeypatch.setattr(supervisor, "ROOT", tmp_path)
     monkeypatch.setattr(supervisor.subprocess, "Popen", Mock(return_value=proc))
     monkeypatch.setattr(supervisor, "gpu_processes", Mock(side_effect=[{12345: 80}, {12345: 120}]))
+    monkeypatch.setattr(supervisor, "stop_trial", Mock())
     monkeypatch.setattr(supervisor, "gpu_utilization", Mock(return_value=45))
     monkeypatch.setattr(supervisor, "owned", lambda pid, owner: pid == owner)
     monkeypatch.setattr(supervisor, "free_bytes", lambda: 10 * 1024**3)

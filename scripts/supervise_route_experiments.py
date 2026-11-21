@@ -197,6 +197,52 @@ def trial_command(trial: dict) -> list[str]:
     ]
 
 
+def stop_trial(process: subprocess.Popen, pgid: int | None) -> None:
+    """Stop only the session started for this trial and confirm it is gone."""
+    if os.name == "nt":
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        return
+    if pgid is None or pgid != process.pid or pgid <= 1:
+        raise RuntimeError("Cannot confirm trial process group ownership")
+
+    def exists() -> bool:
+        try:
+            os.killpg(pgid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except OSError as error:
+            raise RuntimeError(f"Cannot confirm trial process group {pgid} exit") from error
+
+    def wait_gone(seconds: float) -> bool:
+        deadline = time.monotonic() + seconds
+        while exists():
+            process.poll()  # Reap the leader, which otherwise keeps the group alive.
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.1)
+        return True
+
+    if not exists():
+        return
+    for sig, timeout in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        except OSError as error:
+            raise RuntimeError(f"Cannot signal trial process group {pgid}") from error
+        if wait_gone(timeout):
+            return
+    raise RuntimeError(f"Trial process group {pgid} did not exit; refusing next trial")
+
+
 def monitor(trial: dict[str, object], deadline: float | None = None) -> dict[str, object]:
     name = str(trial["name"])
     run = RUNS / "runs" / name
@@ -297,21 +343,10 @@ def monitor(trial: dict[str, object], deadline: float | None = None) -> dict[str
                     reason = f"{STALL_SECONDS}s without progress in a GPU stage and no owned GPU memory"
                 if reason:
                     emit(f"ABORT [{name}]: {reason}")
-                    os.killpg(process.pid, signal.SIGTERM)
-                    try:
-                        process.wait(timeout=90)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
                     break
                 time.sleep(0.5)
         finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    process.wait(timeout=90)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait(timeout=10)
+            stop_trial(process, process.pid)
         result = {
             "trial": name,
             "profile": trial["profile"],
