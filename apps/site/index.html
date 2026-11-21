@@ -158,20 +158,20 @@
     </section>
     <section id="delivery" class="section">
       <div class="container">
-        <div class="section-heading"><h2>平台交付与验证进度</h2><p>Windows 与 Android 正式安装包仍为 0.4.0，向授权协作者提供。下表区分当前入口与 %RESCENE_VERSION% 候选验证。</p></div>
+        <div class="section-heading"><h2>平台交付与验证进度</h2><p>线上工作台与 API 已升级至 %RESCENE_VERSION%，Windows 与 Android 正式安装包仍为 0.4.0，向授权协作者提供。</p></div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th scope="col">平台</th><th scope="col">当前入口</th><th scope="col">%RESCENE_VERSION% 验证进度</th></tr></thead>
+            <thead><tr><th scope="col">平台</th><th scope="col">当前入口</th><th scope="col">验证进度</th></tr></thead>
             <tbody>
-              <tr><th scope="row">Web</th><td><a href="https://app.rescene.xyz/">在线工作台</a></td><td>本轮在 Edge 验证窄屏键盘导航；此前候选已验证断点上传与 Viewer 签名链接恢复。</td></tr>
-              <tr><th scope="row">Windows</th><td>0.4.0 安装包</td><td>已验证覆盖安装、SPZ 浏览、产物下载和分享撤销。</td></tr>
-              <tr><th scope="row">Android</th><td>0.4.0 签名 APK</td><td>此前候选已验证图片与视频上传；本轮离线续传和私有 Viewer 仍须真机复核。</td></tr>
-              <tr><th scope="row">微信小程序</th><td>协作者体验版</td><td>此前候选已验证登录、图片任务与浏览器分享；本轮日志追踪与分享切换须复核，正式版以平台审核为准。</td></tr>
+              <tr><th scope="row">Web</th><td><a href="https://app.rescene.xyz/">在线工作台</a></td><td>线上 %RESCENE_VERSION%，数据库 <code>0009</code>。已验证窄屏键盘导航、上传续传、Viewer 签名链接恢复和管理员读取。</td></tr>
+              <tr><th scope="row">Windows</th><td>0.4.0 安装包</td><td>候选已验证覆盖安装、SPZ 浏览、产物下载和分享撤销；正式包仍为 0.4.0。</td></tr>
+              <tr><th scope="row">Android</th><td>0.4.0 签名 APK</td><td>候选在 Android 35 模拟器验证原生首载、续签、加载失败重试、离线素材重放、换号隔离和真实 SPZ 渲染；物理真机待验收。</td></tr>
+              <tr><th scope="row">微信小程序</th><td>协作者体验版</td><td>开发者工具验证登录页渲染和编译构建；真机日志追踪与分享切换待复核，正式版以平台审核为准。</td></tr>
             </tbody>
           </table>
         </div>
         <div class="delivery-notes">
-          <p>此前候选在 RTX 5090 上完成图片与视频各三条路线，并验证产物重载和对象存储恢复。这些结果不代表新节点或当前线上版本已完成同样的验证。</p>
+          <p>线上 API、Web 和数据库已完成 0.4.1 停写迁移，GPU Worker 已恢复并领取排队任务。原生端正式包在真机验收和签名发布前不跟随服务端升级。</p>
           <p>工作台由单个 GPU Worker 串行处理任务，节点离线时提交仍进入队列。</p>
         </div>
       </div>
@@ -181,7 +181,7 @@
         <h2>常见问题</h2>
         <div class="faq">
           <details class="disclosure"><summary>如何开始？</summary><p>在工作台使用邮箱注册，密码至少 12 位。登录后即可创建项目并提交素材。</p></details>
-          <details class="disclosure"><summary>如何添加团队成员？</summary><p>请项目管理者在「成员」区分配权限。%RESCENE_VERSION% 候选新增一次性领取码：管理者签发后转交受邀者，受邀者用对应邮箱登录领取。该流程尚未在生产工作台启用。</p></details>
+          <details class="disclosure"><summary>如何添加团队成员？</summary><p>请项目管理者在「成员」区分配权限。%RESCENE_VERSION% 使用一次性领取码：管理者签发后转交受邀者，受邀者用对应邮箱登录领取。</p></details>
           <details class="disclosure"><summary>任务为什么会排队？</summary><p>Worker 可能离线或正在执行其他任务。提交后可在工作台查看队列和任务进度。</p></details>
           <details class="disclosure"><summary>许可与数据边界是什么？</summary><p>VGGT-1B 权重受学术非商用许可约束。持有有效分享链接的人可以访问对应场景，项目成员可以按权限撤销链接。</p></details>
         </div>
@@ -191,7 +191,7 @@
   <footer class="site-footer">
     <div class="container footer-inner">
       <a class="brand" href="/"><img src="/media/rescene-mark.svg" alt="" width="38" height="38"><span>ReScene</span></a>
-      <div class="footer-end"><a href="https://app.rescene.xyz/">打开工作台</a><span>候选版本 %RESCENE_VERSION%</span></div>
+      <div class="footer-end"><a href="https://app.rescene.xyz/">打开工作台</a><span>当前版本 %RESCENE_VERSION%</span></div>
     </div>
   </footer>
 </body>

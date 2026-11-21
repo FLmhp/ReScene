@@ -57,7 +57,39 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 
 最终闸门（2026-11-21）：Python 全量 `pytest` 362 项通过、7 项跳过（含 PostgreSQL 16.16）；Ruff lint/format 与 `mypy` 通过。Node 侧 `pnpm -r typecheck` 全部通过，workspace 测试 101 项通过；`rescene-web`、`@rescene/desktop`、`@rescene/miniapp`（生产 `build:weapp`）与 `@rescene/mobile`（Android 导出）构建成功；`scripts/check-miniapp-login.mjs` 与 `scripts/check-mobile-viewer.cjs` 夹具通过。Rust `cargo fmt --check`、`cargo clippy --offline --all-targets -D warnings`、`cargo test --offline`（3 项）通过。执行环境为 Node 26.13.1、pnpm 10.18.3、Python 3.11.18；仓库声明的 Node 22 未复跑。
 
-待验收：Android 阅读器与原生队列需真机回归（001、020、021），微信开发者工具需覆盖日志从空到实时、切换与退后台（017），窄屏抽屉需真实浏览器 Tab/Shift+Tab 实测（029），Worker 上传中断与 GPU 探测超时需在真实 5090 与驱动上验证（019、024），生产旧库接管需隔离备份复核（022）。025 的缓存锁只覆盖进程内，跨进程并发仍未防护。Docker 守护进程未运行，镜像构建与容器日志抽查、GPU 训练回归仍待记录。
+本次集成本地检查不含真机、Docker 容器日志、真实 OSS 与 GPU 训练；后续补验见下节。025 的缓存锁只覆盖进程内，跨进程并发仍未防护。
+
+### 0.4.1 审计集成补验
+
+候选应用源码：`70e509afb602919fcc577be3f737644d2f6f941a`。不把此前 `e42f505` 的 [六条 GPU 任务与设备验收](../artifacts/test-runs/2026-11-20-release-041/report.md)计入本次候选。
+
+| 事项 | 环境与结果 |
+|---|---|
+| 029 · Web 窄屏键盘 | Windows Edge 157.0.4341.60，候选生产构建、隔离 API 夹具。390 px 浅色和 1024 px 深色：关闭时 Tab 跳过抽屉，打开后 Tab / Shift+Tab 循环，Escape 返回入口，选择项目后焦点进入标题；切到 1366 px 后侧栏正常可用。 |
+| 001、009 · 容器业务验收 | 候选 API + 独立 PostgreSQL：先签发、后注册仍无权限；错误账号拒绝领取，正确账户仅领取一次，移除成员后访问撤销。同一幂等键重复创建返回同一项目。没有使用生产账号或数据。生产备份中的历史成员关系未改动，仍由项目所有者复核。 |
+| 010 · 定向切换与回退 | Ubuntu CI 暴露 `BASH_ENV` 测试路径误转；修正后 Git Bash、GPU Linux 各 7 项通过。旧 0.4.0 API 在隔离 `0009` 启动失败；另从原备份还原 `0006` 后启动并返回 200。不能只换镜像回退；有写入后不能直接还原部署前快照。 |
+| Docker 镜像 | 公网主机用 `70e509a` 干净归档单独构建：API `sha256:1bd805f4f9c5602a41aac79e36100427fe34c33db2d7a54088ad926ce3228476`、Web `sha256:2b6f587303bf1d5ec76baa3b7d13ca8c5cd5b568539dcbee492b1c8f129ab29c`；Web 容器在无网络、无端口映射时就绪，容器内请求首页 HTTP 200。两者均未替换线上镜像。 |
+| 006 · 容器访问日志 | 候选 Docker 容器返回分享 404、健康检查 200；Uvicorn 保留脱敏访问行，合成路径与查询凭证均未出现在容器日志。 |
+| 008 · OSS 素材删除 | 候选独立项目和新对象：STS 上传、完成及读取通过；DELETE 204 后素材行消失，清理队列先有记录，再由后台回收；STS 再读返回对象不存在。真实 OSS 未注入故障，失败和并发路径由隔离夹具覆盖。 |
+| 022 · 迁移与旧库接管 | 在隔离 PostgreSQL 还原本轮生产 `0006` 备份，升级至 `0009`，15 张原表的行数和原列指纹一致。另还原 2026-11-09 无 `alembic_version` 的真实历史备份，自动接管并升级至 `0009`，11 张原表的行数和原列指纹一致。生产 PostgreSQL 16.14 未迁移；本轮部署前演练备份 367,926 字节、root `0600`，SHA-256 `dadb7db5e0a1be6dba660634899cb405126fbd1701b2f8692876e59dadce80ff`。正式切换须重新生成停写后的最终快照。 |
+| 001、002、005、009、020、021 · Android 模拟器 | `SLT_API35` 上的旧候选复现 Viewer 首载超时：WebView 14.0.1 在 Android 只上报发送者 origin，被旧路径校验拒绝。`d87c268` 修正并接入回归脚本，[CI 44896479485](https://github.com/FLmhp/ReScene/actions/runs/44896479485) 五项通过。含修复的内嵌 JS 测试 APK（SHA-256 `738db4e4763ba0be2a04075e5a8664ae1d2b152eb75ca36b6fc2e33c9ae5f9eb`）在真实 WebView 验证无 `src` 导航、原生首载、模拟签名地址 403 后重试换 URL 并收到 200，主文档 503 后也可重试。另验收断网强制退出再启动、A/B 换号无串队列、隔离邀请领取及 A 只重放一个项目。另经回环代理加载真实 FAST 交付的 19,517,631 字节 SPZ（SHA-256 `d63b2de6ddb404ed7a0f128cf5fd8c3c1f3e3d428792479f92902244b4dec15f`），模拟器实际显示彩色高斯场景。未使用物理设备、正式签名或真实移动网络。 |
+| 012 · Android 素材重放 | 离线选入合成 PNG；强制退出并删除测试原文件及选取缓存后，应用管理副本仍在。重新联网后发送到隔离上传替身，27,769 字节与 SHA-256 一致，接口返回 `READY` 后清掉管理副本。该次不涉及真机或真实 OSS。 |
+| 007、017 · 微信运行时 | DevTools Stable 2.01.2510290 / SDK 3.17.6，候选开发构建、合成账号与回环 API。CLI 已登录；首次启动页面方法超时，最小工程及候选重新打开后都能显示首页，但自动化元素查询仍卡住。DevTools 确认候选登录页渲染；尝试操作登录未到达回环 API，未证实日志追踪或分享切换。编译夹具通过，仍需微信真机及有效 HTTPS 分享配置复测。 |
+| 018 · Linux 进程组 | 主进程先退出后，真实同组子进程忽略 TERM，随后由 KILL 结束；10.1 秒确认组消失，无关进程未受影响，归属未知时拒绝继续。 |
+| 019 · 5090 传输边界 | 候选 Worker、独立 PostgreSQL 与真实 OSS；第一件约 19 MB 实际 PUT 开始后通过候选 API 取消。当前 PUT 允许完成，未开始下一件或 manifest，任务为 `CANCELLED` 且未发布重建。任务 `033a7fe7-08a0-49ed-99f2-79ba48b6c868`。 |
+| 5090 · FAST 交付 | `5d2fcc3e-3f3f-4868-bf9f-1f67e06b22ef` 在隔离 SSH 转发中断后失租，第 2 次领取成功并发布重建 `c098aeb9-eee4-4c38-baff-d8edd98e0dfe`；从 5090 通过 API 签名链接读回 SPZ、PLY、metrics、report、manifest，字节数及 SHA-256 全部匹配；注册率 100%，训练峰值显存 1381 MiB，指标有限。仅凭这次重试成功不认定已恢复 checkpoint。 |
+| 5090 · BALANCED 交付 | `79e8ad83-02cf-446f-ba2d-e9c3a9c35703` 第 1 次领取成功，发布 `6a898941-f309-44a2-a5b6-e34b1087017c`。25 张图全部注册，重投影 1.0928 px，PSNR 15.296，SSIM 0.4739，LPIPS 0.4744，训练峰值 1486.5 MiB，耗时 333.1 秒；通过候选 manifest 取回并校验五类产物。 |
+| 5090 · QUALITY 交付 | `c550c6b8-7df5-4fc4-a95c-4a8be4a5e24c` 第 1 次领取成功，发布 `02dde559-9ed2-4372-a0a3-913d6feb5855`。25 张源图注册 24 张（96%），重投影 0.3481 px，PSNR 16.988，SSIM 0.5612，LPIPS 0.3709，峰值显存 1137.9 MiB，耗时 549.6 秒；稠密点 157,267、网格 63,072，manifest、metrics 与全部产物 SHA-256 及 Range GET 206 通过。 |
+| 5090 · OSS checkpoint 恢复 | 另建隔离 FAST 任务 `e7a1b7b8-83f4-4888-919e-ca5f993879b2`。第 1 次真实上传几何 checkpoint 并获 API 确认后，受控退出本次 Worker，租约自然过期。第 2 次领到相同对象键、实际从 OSS 读取并还原归档，最终成功发布 `2e9bf811-b044-4920-b259-f8089c879d77`。 |
+| 024 · GPU 探测 | RTX 5090 上注入挂起的 `nvidia-smi` 命令，10 秒超时，独立锁释放、未领租约；随后真实探测恢复。未制造物理驱动故障或重置。 |
+| 032 · drain 归属 | 5090 独立根目录和独立队列：候选 Worker PID 6807 被监督器 drain / stop，注入试验子进程启动失败后恢复为 PID 6885，`drain=no`，随后正常停止。夹具另证实保留预置 drain 与停止失败标记。未改动生产 Worker 或标记。 |
+| 5090 基础回归 | 驱动 580.76.05、Torch 2.12.0+cu130；CUDA smoke 通过。共用 GPU 锁下用 25 张 Golden Kitchen 图运行 100 步，39.2 秒完成，PLY 导出和评估均到第 99 步。不是三条路线的生产任务。 |
+| 上线前现网 | API 0.4.0，PostgreSQL 16.14 revision `0006`；API、Web、数据库容器均健康。新 RTX 5090 节点已用固定主机密钥登录；检查时生产 Worker 停止、无 drain 标记、GPU 无计算进程。 |
+| 生产上线 | 2026-11-21T11:17:58Z–11:18:20Z 停写切换，源码 `d87c268`、CI 44896479485。备份 `rescene.dump` SHA-256 `2e6f5d21…0a94`，数据库 `0006`→`0009`，四类行数保持 16/120/24/18。API 0.4.1、Web 健康，公网三入口 200，管理员读取 14 个项目与 12 条未读通知。 |
+| 生产 Worker | 5090 原树为 0.3.0；备份配置与 `.sync.tar.gz` 后换入 `d87c268` 干净归档，保留 `worker.env`、`worker_token` 与共享数据链接。`workerctl bootstrap` 和 GPU smoke 通过，Worker 以 PID 22691、`drain=no` 启动，租约验证后领取排队任务 `f8201574-991a-4f88-bc8a-9b1c86f370d8`。旧树保留在 `/root/ReScene-0.3.0-live-20261121T112035Z`。 |
+| 官网发布 | 交付状态先由 `d25f301` 通过 [CI 44895065999](https://github.com/FLmhp/ReScene/actions/runs/44895065999) 独立发布；现网为 `20401f80adb1eb71bbbcbabe0a9c7fa0e4457193`，[CI 44895921345](https://github.com/FLmhp/ReScene/actions/runs/44895921345) 通过，明确领取码只适用于候选。事务 `20261121T105214Z-20401f80adb1-1e803786` 已提交，发布归档 SHA-256 为 `091cdc99a96cc3550174ed810f39fe01d94494ca3bc8e435a62862f45b0a5ddc`；HTTPS、重定向、静态产物、缓存、安全头及既有 API/Web/数据库/Caddy 容器身份检查通过。公网 Edge 390 / 1440 px 验证新文案，官网、工作台和 API 就绪入口均为 HTTP 200；API 仍为 0.4.0、数据库仍为 `0006`。 |
+
+**0.4.1 生产上线（2026-11-21T11:17:58Z–11:18:20Z）。** 发布源码为 `d87c268ab14ed900c7c966eb7e605f9cee975f69`，[CI 44896479485](https://github.com/FLmhp/ReScene/actions/runs/44896479485) 五项通过。停写窗口先停 Web 再停 API；生产 Worker 已停止、无 drain 标记、GPU 无计算进程，排队任务 1 项。最终快照 `/root/rescene-rollback-041-production-20261121T111758Z/rescene.dump` 为 root `0600`、367,926 字节，SHA-256 `2e6f5d21d3d798ae5699f7996853c39de65fb20b6131d68ebec1f07d0cb80a94`，`pg_restore -l` 可读；同目录保留原镜像 ID、前后行数、会话数和校验文件。切换镜像为 API `sha256:7fdf98cccc4b2119710aa509ba5fbe08f09942497d289ba7face732228c8508a`、Web `sha256:fdb2161a75e5b5ffaa93ca945a59cc69f59d75e75f66a33bc5078d5c5461db68`；原 API `sha256:d1dcbb34364782fd4ce2e82859b4087e7452ba41e0855e4d11b607a7fedfd976`、Web `sha256:037419dc0f13c5211ade4b201a32fd087dfeec99e802026833980ec1beb13025` 及先前镜像归档继续保留。数据库由 `0006` 升级至 `0009`，项目、素材、任务、重建前后均为 16、120、24、18。API `0.4.1` 和 Web 健康检查通过，公网 API、工作台、官网均返回 200；管理员登录及项目、通知读取返回 200（14 个可见项目）。生产 Worker 仍离线，1 项排队任务等待 GPU Worker 恢复；原生真机、微信真机和正式签名安装包仍未验收。回退须恢复最终快照后再启动旧镜像；旧 API 不能读取 `0009`，开放写入后的异常只能前滚修复，直接还原会丢失上线后写入。
 
 ## 审计发现
 
@@ -106,37 +138,37 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 
 ## 第二轮实施顺序
 
-本轮按用户选择为全部 27 项发现编写独立计划。以下工作均待实施。
+本轮为 27 项发现编写独立计划。下表记录实现状态，环境验收与发布状态见 [0.4.1 审计集成补验](#041-审计集成补验)。
 
 | 计划 | 审计编号 | 工作项 | 优先级 | 工作量 | 前置 | 状态 |
 |---|---|---|---|---|---|---|
-| [006](006-redact-share-access-logs.md) | A01 | 从 API 访问日志移除分享凭证 | P1 | S | 无 | DONE · `dd2607e`（镜像构建待验收） |
+| [006](006-redact-share-access-logs.md) | A01 | 从 API 访问日志移除分享凭证 | P1 | S | 无 | DONE · `dd2607e`（候选 Docker 访问日志已复核） |
 | [007](007-bind-share-state-to-reconstruction.md) | A02 | 将分享状态绑定到当前重建 | P1 | M | 无 | DONE · `2c172bb`（微信 DevTools 场景切换待验收） |
-| [008](008-persist-asset-deletion-intent.md) | A03 | 持久化素材删除意图并重试 OSS 清理 | P1 | M | 无 | DONE · `afe1691`（真实 OSS 删除待验收） |
-| [009](009-make-create-requests-idempotent.md) | A04 | 为项目与重建创建增加幂等重试 | P1 | L | [005](005-make-native-replay-concurrency-safe.md) 的原生集成基线 | DONE · `339ddc0`（模拟器重启重放待验收） |
-| [010](010-fence-targeted-deployment-rollback.md) | A05 | 确保定向部署可以安全停止与回滚 | P1 | M | 无 | DONE · `53cf75d`（真实服务器演练待验收） |
+| [008](008-persist-asset-deletion-intent.md) | A03 | 持久化素材删除意图并重试 OSS 清理 | P1 | M | 无 | DONE · `afe1691`（隔离候选真实 OSS 删除通过） |
+| [009](009-make-create-requests-idempotent.md) | A04 | 为项目与重建创建增加幂等重试 | P1 | L | [005](005-make-native-replay-concurrency-safe.md) 的原生集成基线 | DONE · `339ddc0`（Android 模拟器项目冷启动重放通过） |
+| [010](010-fence-targeted-deployment-rollback.md) | A05 | 确保定向部署可以安全停止与回滚 | P1 | M | 无 | DONE · `53cf75d`（真实备份隔离恢复已演练，未切换业务） |
 | [011](011-preserve-evaluation-in-regenerated-reports.md) | A06 | 重生成报告时保留匹配产物的评估证据 | P2 | S–M | 无 | DONE · `c760512` |
-| [012](012-persist-native-queued-media.md) | A07 | 让原生离线上传保存素材字节 | P2 | L | [005](005-make-native-replay-concurrency-safe.md) 的原生集成基线 | DONE · `b047977`（真机重启重放待验收） |
+| [012](012-persist-native-queued-media.md) | A07 | 让原生离线上传保存素材字节 | P2 | L | [005](005-make-native-replay-concurrency-safe.md) 的原生集成基线 | DONE · `b047977`（Android 模拟器素材冷启动重放通过，真机待验收） |
 | [013](013-make-session-version-monotonic.md) | A08 | 保证会话撤销版本单调更新 | P2 | M | 无 | DONE · `59d1221` |
 | [014](014-scope-project-notifications-to-current-access.md) | A09 | 按当前项目访问权限筛选任务通知 | P2 | M | 无 | DONE · `4274f91` |
 | [015](015-reconcile-job-status-with-sse.md) | A10 | 同步任务主状态并给 SSE 加空闲回退 | P2 | M | 无 | DONE · `adcec37` |
 | [016](016-repair-incomplete-downsample-cache.md) | A11 | 拒绝复用中断留下的不完整降采样目录 | P2 | S | 无 | DONE · `74b0395` |
 | [017](017-poll-miniapp-logs-from-empty.md) | A12 | 微信任务日志从空列表开始追踪 | P2 | S | 无 | DONE · `e08c21c`(编译产物夹具覆盖,微信开发者工具待验收) |
-| [018](018-verify-experiment-process-group-exit.md) | A13 | 试验退出时确认所属进程组停止 | P2 | M | 无 | DONE · `2a18993`（Linux 进程组待实测） |
-| [019](019-stop-worker-between-artifact-uploads.md) | A14 | 取消或失租后停止后续产物上传 | P2 | S–M | 无 | DONE · `0f7f91f`（真实 5090 待验收） |
-| [020](020-request-initial-viewer-url-over-native-bridge.md) | A15 | 通过原生桥加载 Android 私有场景 | P2 | S–M | 无 | DONE · `17008c8`(真机复测待验收) |
-| [021](021-show-retry-on-native-viewer-load-error.md) | A16 | Android Viewer 主页面加载失败时显示重试 | P2 | S | 无 | DONE · `17008c8`(真机复测待验收) |
-| [022](022-verify-legacy-database-adoption.md) | A17 | 按固定基线接管无版本标记的旧数据库 | P2 | M | 无 | DONE · `d10b698`(真实旧库采用待人工验收) |
+| [018](018-verify-experiment-process-group-exit.md) | A13 | 试验退出时确认所属进程组停止 | P2 | M | 无 | DONE · `2a18993`（真实 Linux 进程组实测通过） |
+| [019](019-stop-worker-between-artifact-uploads.md) | A14 | 取消或失租后停止后续产物上传 | P2 | S–M | 无 | DONE · `0f7f91f`（5090 + 独立 API + 真实 OSS 取消通过） |
+| [020](020-request-initial-viewer-url-over-native-bridge.md) | A15 | 通过原生桥加载 Android 私有场景 | P2 | S–M | 无 | DONE · `17008c8`、`d87c268`（Android 模拟器通过，真机待验收） |
+| [021](021-show-retry-on-native-viewer-load-error.md) | A16 | Android Viewer 主页面加载失败时显示重试 | P2 | S | 无 | DONE · `17008c8`、`d87c268`（Android 模拟器通过，真机待验收） |
+| [022](022-verify-legacy-database-adoption.md) | A17 | 按固定基线接管无版本标记的旧数据库 | P2 | M | 无 | DONE · `d10b698`（真实历史备份自动接管通过） |
 | [023](023-lock-only-next-lease-candidate.md) | A18 | 领取任务时仅锁一个候选 | P2 | S | 无 | DONE · `0ab1bda` |
-| [024](024-bound-worker-gpu-probes.md) | A19 | 为 Worker GPU 探测设置超时 | P2 | S | 无 | DONE · `ccf3587`（真实驱动超时待验收） |
+| [024](024-bound-worker-gpu-probes.md) | A19 | 为 Worker GPU 探测设置超时 | P2 | S | 无 | DONE · `ccf3587`（5090 上注入超时通过，未制造驱动故障） |
 | [025](025-serialize-desktop-artifact-cache-publication.md) | A20 | 串行化同一桌面场景缓存发布 | P2 | M | 无 | DONE · `6606dfc`（单进程锁，跨进程不保证） |
 | [026](026-preserve-expanded-notification-pages.md) | A21 | 在自动刷新时保留已展开的通知分页 | P2 | S–M | 无 | DONE · `abf9e1a` |
 | [027](027-project-list-role-projection.md) | A22 | 在项目列表查询中一次取回角色 | P3 | S | 无 | DONE · `cba4a06` |
 | [028](028-reject-degenerate-pose-alignment.md) | A23 | 拒绝退化的相机位姿对齐 | P3 | S | 无 | DONE · `47038ab` |
-| [029](029-make-narrow-navigation-keyboard-accessible.md) | A24 | 让窄屏工作台抽屉遵循键盘焦点顺序 | P3 | S–M | 无 | DONE · `8ecc5fe`(真实浏览器 Tab 实测待补) |
+| [029](029-make-narrow-navigation-keyboard-accessible.md) | A24 | 让窄屏工作台抽屉遵循键盘焦点顺序 | P3 | S–M | 无 | DONE · `8ecc5fe`（Edge 实测通过，见后续验收） |
 | [030](030-split-trial-summaries-by-scene.md) | A25 | 按数据集和场景分组试验汇总 | P3 | S–M | 无 | DONE · `0a2fdc6` |
 | [031](031-classify-only-current-backend-attempt.md) | A26 | 仅按当前引擎子进程日志分类失败 | P3 | S | 无 | DONE · `ff7a640` |
-| [032](032-restore-owned-worker-drain-after-startup-failure.md) | A27 | 试验启动失败后恢复本次设置的 Worker drain | P3 | M | 无 | DONE · `88eeeee`（真实 Worker 停启待验收） |
+| [032](032-restore-owned-worker-drain-after-startup-failure.md) | A27 | 试验启动失败后恢复本次设置的 Worker drain | P3 | M | 无 | DONE · `88eeeee`（隔离 5090 Worker 停启恢复通过） |
 
 - 优先启动 006–010。006、007、010 可以独立执行。008、009 共用 API 测试和迁移链，建议先落 008，随后核对 009 的迁移编号、API 锚点与并发验收。若 001 已集成，以该基线的最新 revision 为准。
 - 009 的原生项目重放和 012 的素材队列以 005 的账户隔离及队列状态为基础。007 与 001、005 同时涉及原生项目页面，集成时保留双方行为。
