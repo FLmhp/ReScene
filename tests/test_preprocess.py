@@ -1,3 +1,5 @@
+import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -90,6 +92,69 @@ def test_downsampled_images_for_gsplat_fallback(tmp_path: Path) -> None:
 
     with Image.open(tmp_path / "images_2" / "frame.jpg") as image:
         assert image.size == (20, 10)
+
+
+def test_downsample_cache_fills_an_interrupted_directory(tmp_path: Path) -> None:
+    images = tmp_path / "images"
+    images.mkdir()
+    _pattern(images / "first.jpg", offset=1)
+    _pattern(images / "second.jpg", offset=2)
+    interrupted = tmp_path / "images_2"
+    interrupted.mkdir()
+    _pattern(interrupted / "first.jpg", size=(16, 12))
+
+    _ensure_downsampled_images(tmp_path, 2)
+
+    for name in ("first.jpg", "second.jpg"):
+        with Image.open(tmp_path / "images_2" / name) as image:
+            assert image.size == (16, 12)
+    manifest = json.loads((tmp_path / "images_2.json").read_text(encoding="utf-8"))
+    assert set(manifest["sources"]) == {"first.jpg", "second.jpg"}
+    assert not (tmp_path / f"images_2.partial-{os.getpid()}").exists()
+
+
+def test_downsample_cache_is_reused_and_rebuilt_when_inputs_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rescene.pipeline as pipeline
+
+    images = tmp_path / "images"
+    images.mkdir()
+    _pattern(images / "frame.jpg", offset=3)
+    _ensure_downsampled_images(tmp_path, 2)
+    cached = (tmp_path / "images_2" / "frame.jpg").read_bytes()
+
+    monkeypatch.setattr(pipeline.Image, "open", lambda *args, **kwargs: pytest.fail("cache was not reused"))
+    _ensure_downsampled_images(tmp_path, 2)
+    monkeypatch.undo()
+
+    _pattern(images / "frame.jpg", offset=4)
+    _ensure_downsampled_images(tmp_path, 2)
+    assert (tmp_path / "images_2" / "frame.jpg").read_bytes() != cached
+
+
+def test_downsample_cache_rebuilds_a_truncated_output(tmp_path: Path) -> None:
+    images = tmp_path / "images"
+    images.mkdir()
+    _pattern(images / "frame.jpg", offset=5)
+    _ensure_downsampled_images(tmp_path, 2)
+    intact = (tmp_path / "images_2" / "frame.jpg").read_bytes()
+    (tmp_path / "images_2" / "frame.jpg").write_bytes(intact[:40])
+
+    _ensure_downsampled_images(tmp_path, 2)
+
+    assert (tmp_path / "images_2" / "frame.jpg").read_bytes() == intact
+
+
+def test_downsample_factor_one_writes_nothing(tmp_path: Path) -> None:
+    images = tmp_path / "images"
+    images.mkdir()
+    _pattern(images / "frame.jpg")
+
+    _ensure_downsampled_images(tmp_path, 1)
+
+    assert not (tmp_path / "images_1").exists()
+    assert not (tmp_path / "images_1.json").exists()
 
 
 def test_global_duplicates_and_coverage_selection_are_deterministic(tmp_path: Path) -> None:

@@ -44,6 +44,12 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
 
+def _write_json_atomic(path: Path, value: object) -> None:
+    staging = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    staging.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    os.replace(staging, path)
+
+
 @contextmanager
 def _timed(timings: dict[str, float], name: str):
     """Accumulate wall-clock seconds per pipeline stage, including fallbacks."""
@@ -123,17 +129,74 @@ def _find_ply(run_dir: Path) -> Path:
     return final_ply_path(run_dir)
 
 
-def _ensure_downsampled_images(scene_dir: Path, factor: int) -> None:
-    if factor == 1:
-        return
+def _downsample_manifest_path(scene_dir: Path, factor: int) -> Path:
+    return scene_dir / f"images_{factor}.json"
+
+
+def _downsample_cache_is_complete(scene_dir: Path, destination: Path, factor: int) -> bool:
+    """Check the cache against the current inputs, factor and recorded digests."""
+    manifest_path = _downsample_manifest_path(scene_dir, factor)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if manifest.get("schema_version") != 1 or manifest.get("factor") != factor:
+        return False
+    sources = manifest.get("sources")
+    outputs = manifest.get("outputs")
+    if not isinstance(sources, dict) or not isinstance(outputs, dict):
+        return False
+    current = {path.name: path for path in sorted((scene_dir / "images").glob("*.jpg"))}
+    if set(current) != set(sources) or set(sources) != set(outputs):
+        return False
+    for name, source in current.items():
+        expected = sources[name]
+        if not isinstance(expected, dict):
+            return False
+        stat = source.stat()
+        if expected.get("size") != stat.st_size or expected.get("mtime_ns") != stat.st_mtime_ns:
+            return False
+        output = outputs[name]
+        if not isinstance(output, dict):
+            return False
+        path = destination / name
+        if not path.is_file() or path.stat().st_size != output.get("size"):
+            return False
+        if output.get("sha256") != sha256_file(path):
+            return False
+    return True
+
+
+def _publish_downsampled_images(scene_dir: Path, factor: int) -> None:
     destination = scene_dir / f"images_{factor}"
-    if destination.exists() and any(destination.iterdir()):
-        return
-    destination.mkdir(parents=True, exist_ok=True)
+    staging = scene_dir / f"images_{factor}.partial-{os.getpid()}"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+    sources: dict[str, dict[str, int]] = {}
+    outputs: dict[str, dict[str, object]] = {}
     for source in sorted((scene_dir / "images").glob("*.jpg")):
         with Image.open(source) as image:
             size = (max(1, image.width // factor), max(1, image.height // factor))
-            image.resize(size, Image.Resampling.LANCZOS).save(destination / source.name, quality=95)
+            image.resize(size, Image.Resampling.LANCZOS).save(staging / source.name, quality=95)
+        stat = source.stat()
+        sources[source.name] = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+        target = staging / source.name
+        outputs[source.name] = {"size": target.stat().st_size, "sha256": sha256_file(target)}
+    manifest = {"schema_version": 1, "factor": factor, "sources": sources, "outputs": outputs}
+    if destination.exists():
+        shutil.rmtree(destination)
+    os.replace(staging, destination)
+    _write_json_atomic(_downsample_manifest_path(scene_dir, factor), manifest)
+
+
+def _ensure_downsampled_images(scene_dir: Path, factor: int) -> None:
+    """Publish a complete downsample cache, replacing interrupted or stale directories."""
+    if factor == 1:
+        return
+    destination = scene_dir / f"images_{factor}"
+    if _downsample_cache_is_complete(scene_dir, destination, factor):
+        return
+    _publish_downsampled_images(scene_dir, factor)
 
 
 def _run_dir_has_results(run_dir: Path) -> bool:
