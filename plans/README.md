@@ -103,7 +103,7 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 | [010](010-fence-targeted-deployment-rollback.md) | A05 | 确保定向部署可以安全停止与回滚 | P1 | M | 无 | DONE · `53cf75d`（真实服务器演练待验收） |
 | [011](011-preserve-evaluation-in-regenerated-reports.md) | A06 | 重生成报告时保留匹配产物的评估证据 | P2 | S–M | 无 | DONE · `c760512` |
 | [012](012-persist-native-queued-media.md) | A07 | 让原生离线上传保存素材字节 | P2 | L | [005](005-make-native-replay-concurrency-safe.md) 的原生集成基线 | DONE · `b047977`（真机重启重放待验收） |
-| [013](013-make-session-version-monotonic.md) | A08 | 保证会话撤销版本单调更新 | P2 | M | 无 | TODO |
+| [013](013-make-session-version-monotonic.md) | A08 | 保证会话撤销版本单调更新 | P2 | M | 无 | DONE · `59d1221` |
 | [014](014-scope-project-notifications-to-current-access.md) | A09 | 按当前项目访问权限筛选任务通知 | P2 | M | 无 | TODO |
 | [015](015-reconcile-job-status-with-sse.md) | A10 | 同步任务主状态并给 SSE 加空闲回退 | P2 | M | 无 | TODO |
 | [016](016-repair-incomplete-downsample-cache.md) | A11 | 拒绝复用中断留下的不完整降采样目录 | P2 | S | 无 | DONE · `74b0395` |
