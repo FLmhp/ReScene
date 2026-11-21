@@ -61,6 +61,19 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 
 本次集成本地检查不含真机、Docker 容器日志、真实 OSS 与 GPU 训练；后续补验见下节。025 的缓存锁只覆盖进程内，跨进程并发仍未防护。
 
+### 第三轮集成（033–049）
+
+集成工作树 `C:/rs-audit-integration`，分支 `codex/audit-integration`，提交 `f16372e`。17 份计划按安全/上传/任务、客户端、引擎、CI/文档四个切片实现，未改动生产环境。
+
+| 范围 | 计划 | 验证 |
+|---|---|---|
+| 安全与上传 | 033 034 035 036 037 039 040 | API 全量 `pytest` 374 项通过、32 项跳过；针对 XFF/X-Real-IP、2 MB 请求体上限、邮箱边界、四个 409 错误码、上传凭据回滚、过期上传批次与清理上限的用例通过。Caddy 配置用 v2.11.9 `validate` 通过；`deploy_targeted.sh`/`backup.sh` 语法检查通过。 |
+| 任务与客户端 | 038 041 042 043 044 | 重试/租约/Worker 失败的进度与阶段重置用例通过；Uploader 36 项、Workbench 36 项、workspace 类型检查通过；Android 串行上传、缓存清理、桌面 CSP 断言、通知刷新/工作区错误条、日志/上传/管理员搜索围栏用例通过。 |
+| 引擎与性能 | 045 046 049 | 引擎恢复证据、OOM 降级、几何分类、损坏 checkpoint、benchmark 原子写/校验、环境哈希缓存与 checkpoint 成员用例通过；项目摘要批量查询与 `job_logs(job_id,id)` 迁移测试通过。 |
+| 契约、CI、文档 | 047 048 | 13 份契约夹具与 zod 解析一致；Rust `cargo test` 3 项通过；health 测试 3 项通过；四端构建通过；文档链接和版本一致性检查通过。 |
+
+本地构建：`rescene-web`、`@rescene/desktop`、`@rescene/mobile`（Android 导出）和 `@rescene/miniapp`（生产 `build:weapp`，使用仓库 AppID 与合成 HTTPS 域名）成功。未执行 Docker 守护进程、真实 PostgreSQL 并发、真实 OSS、桌面 release 扫码、真机或生产部署；相应验收保持待验收。PostgreSQL 测试因本机无 `RESCENE_TEST_POSTGRES_URL`/Docker 守护进程而跳过。
+
 ### 0.4.1 审计集成补验
 
 候选应用源码：`70e509afb602919fcc577be3f737644d2f6f941a`。不把此前 `e42f505` 的 [六条 GPU 任务与设备验收](../artifacts/test-runs/2026-11-20-release-041/report.md)计入本次候选。
