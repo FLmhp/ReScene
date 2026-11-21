@@ -108,21 +108,21 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 | [015](015-reconcile-job-status-with-sse.md) | A10 | 同步任务主状态并给 SSE 加空闲回退 | P2 | M | 无 | TODO |
 | [016](016-repair-incomplete-downsample-cache.md) | A11 | 拒绝复用中断留下的不完整降采样目录 | P2 | S | 无 | DONE · `74b0395` |
 | [017](017-poll-miniapp-logs-from-empty.md) | A12 | 微信任务日志从空列表开始追踪 | P2 | S | 无 | TODO |
-| [018](018-verify-experiment-process-group-exit.md) | A13 | 试验退出时确认所属进程组停止 | P2 | M | 无 | TODO |
+| [018](018-verify-experiment-process-group-exit.md) | A13 | 试验退出时确认所属进程组停止 | P2 | M | 无 | DONE · `2a18993`（Linux 进程组待实测） |
 | [019](019-stop-worker-between-artifact-uploads.md) | A14 | 取消或失租后停止后续产物上传 | P2 | S–M | 无 | TODO |
 | [020](020-request-initial-viewer-url-over-native-bridge.md) | A15 | 通过原生桥加载 Android 私有场景 | P2 | S–M | 无 | TODO |
 | [021](021-show-retry-on-native-viewer-load-error.md) | A16 | Android Viewer 主页面加载失败时显示重试 | P2 | S | 无 | TODO |
 | [022](022-verify-legacy-database-adoption.md) | A17 | 按固定基线接管无版本标记的旧数据库 | P2 | M | 无 | TODO |
 | [023](023-lock-only-next-lease-candidate.md) | A18 | 领取任务时仅锁一个候选 | P2 | S | 无 | TODO |
 | [024](024-bound-worker-gpu-probes.md) | A19 | 为 Worker GPU 探测设置超时 | P2 | S | 无 | TODO |
-| [025](025-serialize-desktop-artifact-cache-publication.md) | A20 | 串行化同一桌面场景缓存发布 | P2 | M | 无 | TODO |
+| [025](025-serialize-desktop-artifact-cache-publication.md) | A20 | 串行化同一桌面场景缓存发布 | P2 | M | 无 | DONE · `6606dfc`（单进程锁，跨进程不保证） |
 | [026](026-preserve-expanded-notification-pages.md) | A21 | 在自动刷新时保留已展开的通知分页 | P2 | S–M | 无 | TODO |
 | [027](027-project-list-role-projection.md) | A22 | 在项目列表查询中一次取回角色 | P3 | S | 无 | TODO |
 | [028](028-reject-degenerate-pose-alignment.md) | A23 | 拒绝退化的相机位姿对齐 | P3 | S | 无 | DONE · `47038ab` |
 | [029](029-make-narrow-navigation-keyboard-accessible.md) | A24 | 让窄屏工作台抽屉遵循键盘焦点顺序 | P3 | S–M | 无 | TODO |
-| [030](030-split-trial-summaries-by-scene.md) | A25 | 按数据集和场景分组试验汇总 | P3 | S–M | 无 | TODO |
+| [030](030-split-trial-summaries-by-scene.md) | A25 | 按数据集和场景分组试验汇总 | P3 | S–M | 无 | DONE · `0a2fdc6` |
 | [031](031-classify-only-current-backend-attempt.md) | A26 | 仅按当前引擎子进程日志分类失败 | P3 | S | 无 | DONE · `ff7a640` |
-| [032](032-restore-owned-worker-drain-after-startup-failure.md) | A27 | 试验启动失败后恢复本次设置的 Worker drain | P3 | M | 无 | TODO |
+| [032](032-restore-owned-worker-drain-after-startup-failure.md) | A27 | 试验启动失败后恢复本次设置的 Worker drain | P3 | M | 无 | DONE · `88eeeee`（真实 Worker 停启待验收） |
 
 - 优先启动 006–010。006、007、010 可以独立执行。008、009 共用 API 测试和迁移链，建议先落 008，随后核对 009 的迁移编号、API 锚点与并发验收。若 001 已集成，以该基线的最新 revision 为准。
 - 009 的原生项目重放和 012 的素材队列以 005 的账户隔离及队列状态为基础。007 与 001、005 同时涉及原生项目页面，集成时保留双方行为。
