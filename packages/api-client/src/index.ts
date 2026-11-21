@@ -83,7 +83,7 @@ export type UploadInit = {
 export type UploadMode = "sts" | "post";
 
 export type JobEvent = StageEvent | Job;
-export type JobSubscriptionOptions = { transport?: "sse" | "polling"; pollIntervalMs?: number };
+export type JobSubscriptionOptions = { transport?: "sse" | "polling"; pollIntervalMs?: number; idleTimeoutMs?: number };
 
 export class ResceneApiError extends Error {
   constructor(
@@ -102,6 +102,8 @@ const TERMINAL_STATUSES: Record<string, true> = { SUCCEEDED: true, FAILED: true,
 const ProjectOverviewSchema = ProjectSummarySchema.or(ProjectDetailSchema);
 const MAX_RECONNECTS = 3;
 const POLL_INTERVAL_MS = 2000;
+// The server writes a heartbeat every 2s; a silent socket is treated as dead.
+const IDLE_TIMEOUT_MS = 30_000;
 const MAX_POLL_DELAY_MS = 15000;
 const MAX_RECONNECT_DELAY_MS = 8000;
 const RECONNECT_BASE_MS = 500;
@@ -600,6 +602,7 @@ export class ResceneClient {
   subscribeJob(id: string, onEvent: Listener, onError?: (error: Error) => void, options?: JobSubscriptionOptions): () => void {
     let closed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
     let lastEventId: string | undefined;
     let reconnects = 0;
@@ -608,6 +611,7 @@ export class ResceneClient {
     const stop = () => {
       closed = true;
       clearTimeout(timer);
+      clearTimeout(idleTimer);
       controller?.abort();
     };
     const report = (error: unknown) => {
@@ -645,6 +649,15 @@ export class ResceneClient {
       if (closed) return;
       try {
         controller = new AbortController();
+        const active = controller;
+        const armIdle = () => {
+          clearTimeout(idleTimer);
+          if (closed) return;
+          idleTimer = setTimeout(() => {
+            if (!closed) active.abort();
+          }, options?.idleTimeoutMs ?? IDLE_TIMEOUT_MS);
+        };
+        armIdle();
         const query = lastEventId ? `?lastEventId=${encodeURIComponent(lastEventId)}` : "";
         const response = await this.fetcher(`${this.baseUrl}/v1/jobs/${encodeURIComponent(id)}/events${query}`, {
           headers: {
@@ -669,6 +682,7 @@ export class ResceneClient {
             const { done, value } = await reader.read();
             if (closed) return;
             if (done) break;
+            armIdle();
             buffer += decoder.decode(value, { stream: true });
             let match: RegExpExecArray | null;
             while ((match = /\r?\n\r?\n/.exec(buffer))) {
@@ -685,6 +699,7 @@ export class ResceneClient {
             }
           }
         } finally {
+          clearTimeout(idleTimer);
           reader.releaseLock();
         }
         throw new Error("Event stream ended before the job completed");

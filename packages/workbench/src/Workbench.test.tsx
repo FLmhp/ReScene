@@ -1,5 +1,5 @@
-import { ResceneClient } from "@rescene/api-client";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { ResceneClient, type JobEvent } from "@rescene/api-client";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -665,5 +665,70 @@ describe("appearance", () => {
     expect((screen.getByLabelText("团队邮箱") as HTMLInputElement).value).toBe("retained@example.com");
     await userEvent.selectOptions(screen.getByLabelText("外观主题"), "light");
     expect(document.documentElement.dataset.theme).toBe("light");
+  });
+});
+
+describe("job status reconciliation", () => {
+  function jobFixture(status: string, progress: number, updatedAt: string) {
+    return {
+      id: "j1",
+      project_id: "p1",
+      profile: "balanced",
+      status,
+      progress,
+      attempt: 1,
+      cancel_requested: false,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: updatedAt,
+      reconstruction_id: null,
+    };
+  }
+
+  async function openQueuedJob() {
+    stubFetch(routeTable({ "/v1/projects/p1": { ...projectDetail("owner"), jobs: [jobFixture("QUEUED", 0, "2026-01-01T00:00:00Z")] } }));
+    const client = new ResceneClient("https://api.example", "token-1");
+    let handler!: (event: JobEvent) => void;
+    vi.spyOn(client, "subscribeJob").mockImplementation((_id, onEvent) => { handler = onEvent; return vi.fn(); });
+    renderWorkbench(client);
+    await userEvent.click(await screen.findByRole("button", { name: /Kitchen ·/ }));
+    await waitFor(() => expect(document.querySelector(".job-state")?.getAttribute("data-status")).toBe("QUEUED"));
+    await waitFor(() => expect(handler).toBeDefined());
+    return () => handler;
+  }
+
+  it("keeps the terminal status when a late workspace snapshot still reports QUEUED", async () => {
+    stubFetch(routeTable({
+      "/v1/projects/p1": { ...projectDetail("owner"), jobs: [jobFixture("QUEUED", 0, "2026-01-01T00:00:00Z")] },
+      "/v1/reconstructions/r1/manifest": { reconstruction_id: "r1", artifacts: [] },
+      "/v1/reconstructions/r1/shares": [],
+    }));
+    const client = new ResceneClient("https://api.example", "token-1");
+    let handler!: (event: JobEvent) => void;
+    vi.spyOn(client, "subscribeJob").mockImplementation((_id, onEvent) => { handler = onEvent; return vi.fn(); });
+    renderWorkbench(client);
+    await userEvent.click(await screen.findByRole("button", { name: /Kitchen ·/ }));
+    await waitFor(() => expect(handler).toBeDefined());
+
+    const done = { ...jobFixture("SUCCEEDED", 1, "2026-01-01T00:10:00Z"), reconstruction_id: "r1" };
+    act(() => handler(done as JobEvent));
+    await waitFor(() => expect(document.querySelector(".job-state")?.getAttribute("data-status")).toBe("SUCCEEDED"));
+    const projectCalls = () => vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes("/v1/projects/p1") && !String(input).includes("/assets") && !String(input).includes("/jobs")).length;
+    await waitFor(() => expect(projectCalls()).toBeGreaterThan(1));
+    expect(document.querySelector(".job-state")?.getAttribute("data-status")).toBe("SUCCEEDED");
+  });
+
+  it("advances progress from stage events without letting them rewind a terminal status", async () => {
+    const handler = await openQueuedJob();
+
+    act(() => handler()({ stage: "training", status: "running", progress: 0.4, message: null, metrics: {} }));
+    await waitFor(() => expect(screen.getByRole("progressbar", { name: "任务进度" }).getAttribute("aria-valuenow")).toBe("40"));
+    expect(document.querySelector(".job-state")?.getAttribute("data-status")).toBe("QUEUED");
+
+    act(() => handler()({ ...jobFixture("FAILED", 0.6, "2026-01-01T00:10:00Z"), reconstruction_id: null } as JobEvent));
+    await waitFor(() => expect(document.querySelector(".job-state")?.getAttribute("data-status")).toBe("FAILED"));
+
+    act(() => handler()({ stage: "training", status: "running", progress: 0.9, message: null, metrics: {} }));
+    await waitFor(() => expect(screen.getByRole("progressbar", { name: "任务进度" }).getAttribute("aria-valuenow")).toBe("90"));
+    expect(document.querySelector(".job-state")?.getAttribute("data-status")).toBe("FAILED");
   });
 });

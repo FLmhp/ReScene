@@ -267,6 +267,34 @@ describe("subscription recovery and disposal", () => {
     stop();
   });
 
+  it("falls back to polling when the event stream stops sending heartbeats", async () => {
+    vi.useFakeTimers();
+    try {
+      const stage = JSON.stringify({ stage: "training", status: "running", progress: 0.4, message: null, metrics: {} });
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (!String(input).endsWith("/events")) return jsonResponse(job);
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`id: 7\nevent: stage\ndata: ${stage}\n\n`));
+            init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+          },
+        });
+        return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const events: JobEvent[] = [];
+      const stop = new ResceneClient("https://api.example", "token").subscribeJob(
+        "j1", (event) => events.push(event), undefined, { idleTimeoutMs: 20 },
+      );
+      await vi.runAllTimersAsync();
+      expect(events.map((event) => event.status)).toContain("SUCCEEDED");
+      expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/v1/jobs/j1"))).toBe(true);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("polls immediately without streaming dependencies and delivers terminal identity", async () => {
     vi.stubGlobal("AbortController", undefined);
     const fetchMock = vi.fn(async () => jsonResponse(job));
