@@ -20,7 +20,18 @@ const expiryListeners = new Set<() => void>();
 function sessionFetch(expected: Snapshot, owner?: QueueOwner): typeof fetch {
   return async (input, init) => {
     if (owner) assertQueueOwner(owner);
-    const response = await fetch(input, init);
+    const request = fetch(input, init);
+    let response: Response;
+    try {
+      response = await request;
+    } catch (error) {
+      if (!owner) throw error;
+      const signal = init?.signal ?? (typeof Request !== "undefined" && input instanceof Request ? input.signal : undefined);
+      const aborted = error && typeof error === "object" && "name" in error && error.name === "AbortError";
+      if (signal?.aborted || aborted) throw error;
+      // Expo rejects failed native requests with FetchError, which is not a TypeError.
+      throw new ResceneApiError(0, "网络连接失败，请检查网络后重试。");
+    }
     if (response.status === 401 && expected.token && session.matches(expected)) {
       void discardSession().catch(() => undefined);
       for (const listener of expiryListeners) listener();
