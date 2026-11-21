@@ -372,6 +372,111 @@ describe("collaboration surfaces", () => {
   });
 });
 
+describe("share state", () => {
+  function sceneJob(id: string, reconstructionId: string) {
+    return {
+      id,
+      project_id: "p1",
+      profile: "balanced",
+      status: "SUCCEEDED",
+      progress: 1,
+      attempt: 1,
+      cancel_requested: false,
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+      reconstruction_id: reconstructionId,
+    };
+  }
+
+  function shareRoutes(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return routeTable({
+      "/v1/projects/p1": { ...projectDetail("owner"), jobs: [sceneJob("j1", "r1"), sceneJob("j2", "r2")] },
+      "/v1/reconstructions/r1/manifest": { reconstruction_id: "r1", artifacts: [] },
+      "/v1/reconstructions/r2/manifest": { reconstruction_id: "r2", artifacts: [] },
+      "/v1/reconstructions/r1/shares": [],
+      "/v1/reconstructions/r2/shares": [],
+      ...overrides,
+    });
+  }
+
+  async function openScene(client: ResceneClient) {
+    renderWorkbench(client);
+    await userEvent.click(await screen.findByRole("button", { name: /Kitchen ·/ }));
+    await screen.findByLabelText("任务记录");
+  }
+
+  it("hides a created link and its QR code when the scene changes", async () => {
+    const client = new ResceneClient("https://api.example", "token-1");
+    stubFetch(shareRoutes());
+    vi.spyOn(client, "createShare").mockResolvedValue({ id: "s1", token: "tok-a", expires_at: null });
+    await openScene(client);
+
+    await userEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    expect((await screen.findByLabelText<HTMLInputElement>("新分享链接")).value).toBe("https://app.example/share/tok-a");
+    expect(screen.getByAltText("分享二维码").getAttribute("src")).toContain("tok-a");
+
+    await userEvent.selectOptions(screen.getByLabelText("任务记录"), "j2");
+    await waitFor(() => expect(screen.queryByLabelText("新分享链接")).toBeNull());
+    expect(screen.queryByAltText("分享二维码")).toBeNull();
+  });
+
+  it("drops a share created for the scene the user already left", async () => {
+    const client = new ResceneClient("https://api.example", "token-1");
+    stubFetch(shareRoutes());
+    const creating = Promise.withResolvers<{ id: string; token: string; expires_at: null }>();
+    vi.spyOn(client, "createShare").mockReturnValue(creating.promise);
+    await openScene(client);
+
+    await userEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    await userEvent.selectOptions(screen.getByLabelText("任务记录"), "j2");
+    creating.resolve({ id: "s1", token: "tok-a", expires_at: null });
+
+    await waitFor(() => expect(screen.getByLabelText("任务记录")).toBeTruthy());
+    expect(screen.queryByLabelText("新分享链接")).toBeNull();
+    expect(screen.queryByAltText("分享二维码")).toBeNull();
+  });
+
+  it("keeps the newest share list when responses arrive out of order", async () => {
+    const client = new ResceneClient("https://api.example", "token-1");
+    stubFetch(shareRoutes());
+    const older = Promise.withResolvers<unknown[]>();
+    const newest = Promise.withResolvers<unknown[]>();
+    vi.spyOn(client, "listShares").mockReturnValueOnce(older.promise as never).mockReturnValue(newest.promise as never);
+    vi.spyOn(client, "createShare").mockResolvedValue({ id: "s9", token: "tok-a", expires_at: null });
+    await openScene(client);
+
+    await userEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    newest.resolve([{ id: "bbbbbbbb-1", expires_at: null, revoked_at: null }]);
+    await waitFor(() => expect(screen.getByText("bbbbbbbb")).toBeTruthy());
+    older.resolve([{ id: "aaaaaaaa-1", expires_at: null, revoked_at: null }]);
+
+    await waitFor(() => expect(screen.getByText("bbbbbbbb")).toBeTruthy());
+    expect(screen.queryByText("aaaaaaaa")).toBeNull();
+  });
+
+  it("keeps the new scene's link when an older revoke returns", async () => {
+    const client = new ResceneClient("https://api.example", "token-1");
+    stubFetch(shareRoutes({
+      "/v1/reconstructions/r1/shares": [{ id: "s1", expires_at: null, revoked_at: null }],
+    }));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const revoking = Promise.withResolvers<void>();
+    vi.spyOn(client, "revokeShare").mockReturnValue(revoking.promise);
+    vi.spyOn(client, "createShare").mockResolvedValue({ id: "s2", token: "tok-b", expires_at: null });
+    await openScene(client);
+
+    await userEvent.click(await screen.findByRole("button", { name: "撤销" }));
+    await userEvent.selectOptions(screen.getByLabelText("任务记录"), "j2");
+    await userEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    expect((await screen.findByLabelText<HTMLInputElement>("新分享链接")).value).toBe("https://app.example/share/tok-b");
+
+    revoking.resolve();
+    await waitFor(() => expect(revoking.promise).toBeTruthy());
+    expect((screen.getByLabelText<HTMLInputElement>("新分享链接")).value).toBe("https://app.example/share/tok-b");
+    expect(screen.queryByText(/操作失败/)).toBeNull();
+  });
+});
+
 const adminSelf = { id: "u1", email: "ops@example.com", is_admin: true };
 
 function adminUser(id: string, email: string, active: boolean, isAdmin = false) {

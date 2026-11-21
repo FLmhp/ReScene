@@ -65,7 +65,8 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [pane, setPane] = useState<(typeof PANES)[number]["key"]>("materials");
   const workspaceRequest = useRef(0);
   const [members, setMembers] = useState<ProjectMember[]>([]);
-  const [shares, setShares] = useState<ShareSummary[]>([]);
+  const [sharesState, setSharesState] = useState<{ reconstructionId: string; items: ShareSummary[] }>({ reconstructionId: "", items: [] });
+  const shareRequest = useRef(0);
   const [search, setSearch] = useState("");
   const [profile, setProfile] = useState<Profile>("balanced");
   const [selectedAssets, setSelectedAssets] = useState<Asset[]>([]);
@@ -78,8 +79,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [scene, setScene] = useState<{ reconstructionId: string; kind: string } | null>(null);
   const sceneDialog = useRef<HTMLDialogElement>(null);
   const [viewerStatus, setViewerStatus] = useState("");
-  const [createdLink, setCreatedLink] = useState("");
-  const [createdShareToken, setCreatedShareToken] = useState("");
+  const [createdShare, setCreatedShare] = useState<{ reconstructionId: string; link: string; token: string } | null>(null);
   const [sharePreset, setSharePreset] = useState<SharePreset>("7d");
   const [message, setMessage] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -237,7 +237,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   useEffect(() => {
     if (previousSelection.current === selected) return;
     previousSelection.current = selected;
-    setSelectedAssets([]); setDetail(null); setLiveJob(null); setScene(null); setArtifacts([]); setMembers([]); setShares([]); setCreatedLink(""); setCreatedShareToken(""); setTimeline([]); setUploads([]); setInvitations([]); setAudit([]);
+    setSelectedAssets([]); setDetail(null); setLiveJob(null); setScene(null); setArtifacts([]); setMembers([]); setSharesState({ reconstructionId: "", items: [] }); setCreatedShare(null); setTimeline([]); setUploads([]); setInvitations([]); setAudit([]);
   }, [selected]);
   const listedJob = detail?.jobs.find((job) => job.id === selectedJob);
   const currentJob = listedJob ?? (selectedJob ? undefined : detail?.jobs[0]);
@@ -331,21 +331,36 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     }
     return () => { cancelled = true; };
   }, [client, detail?.effective_role, selected]);
-  const loadShares = useCallback(async (id: string) => { setShares(await client.listShares(id)); }, [client]);
+  const loadShares = useCallback(async (id: string) => {
+    const request = ++shareRequest.current;
+    const list = await client.listShares(id);
+    if (request !== shareRequest.current || activeReconstruction.current !== id) return;
+    setSharesState({ reconstructionId: id, items: list });
+  }, [client]);
   useEffect(() => {
-    setShares([]); setCreatedLink("");
+    setSharesState({ reconstructionId: "", items: [] }); setCreatedShare(null);
     if (!reconstructionId) return;
+    const id = reconstructionId;
     let cancelled = false;
     const fail = (error: unknown, fallback: string) => {
-      if (cancelled) return;
+      if (cancelled || activeReconstruction.current !== id) return;
       if (error instanceof ResceneApiError && error.status === 401) expire();
       else setMessage(error instanceof Error ? error.message : fallback);
     };
-    void client.getManifest(reconstructionId).then((manifest) => { if (!cancelled) setArtifacts(manifest.artifacts); }).catch((error: unknown) => fail(error, "无法加载产物"));
-    if (canWrite) void loadShares(reconstructionId).catch((error: unknown) => fail(error, "无法加载分享"));
+    void client.getManifest(id).then((manifest) => { if (!cancelled && activeReconstruction.current === id) setArtifacts(manifest.artifacts); }).catch((error: unknown) => fail(error, "无法加载产物"));
+    if (canWrite) void loadShares(id).catch((error: unknown) => fail(error, "无法加载分享"));
     return () => { cancelled = true; };
   }, [canWrite, client, expire, loadShares, reconstructionId]);
   function runAction(action: () => Promise<void>) { void action().catch((error: unknown) => { if (error instanceof ResceneApiError && error.status === 401) expire(); else setMessage(explainError(error, "操作失败")); }); }
+  const shares = sharesState.reconstructionId === reconstructionId ? sharesState.items : [];
+  const activeCreatedShare = createdShare?.reconstructionId === reconstructionId ? createdShare : null;
+  function runShareAction(id: string, action: () => Promise<void>) {
+    void action().catch((error: unknown) => {
+      if (error instanceof ResceneApiError && error.status === 401) { expire(); return; }
+      if (activeReconstruction.current !== id) return;
+      setMessage(explainError(error, "操作失败"));
+    });
+  }
   async function issueInvitation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (issuingInvitation) return;
@@ -926,31 +941,31 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                                 <summary>管理分享</summary>
                                 <div className="share-tools">
                                 <label>到期<select value={sharePreset} onChange={(event) => setSharePreset(event.target.value as SharePreset)}>{SHARE_PRESETS.map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</select></label>
-                                <button onClick={() => runAction(async () => {
+                                <button onClick={() => runShareAction(reconstructionId, async () => {
+                                  const id = reconstructionId;
                                   const preset = SHARE_PRESETS.find((item) => item.value === sharePreset);
                                   const expiresAt = preset?.ms ? new Date(Date.now() + preset.ms).toISOString() : null;
-                                  const share = await client.createShare(reconstructionId, expiresAt);
-                                  const link = `${webBaseUrl.replace(/\/$/, "")}/share/${encodeURIComponent(share.token)}`;
-                                  setCreatedLink(link);
-                                  setCreatedShareToken(share.token);
-                                  await loadShares(reconstructionId);
+                                  const share = await client.createShare(id, expiresAt);
+                                  if (activeReconstruction.current !== id) return;
+                                  setCreatedShare({ reconstructionId: id, link: `${webBaseUrl.replace(/\/$/, "")}/share/${encodeURIComponent(share.token)}`, token: share.token });
+                                  await loadShares(id);
                                 })}>创建分享</button>
                                 </div>
-                                {createdLink && (
+                                {activeCreatedShare && (
                                   <div className="created-share">
-                                    <label>新分享链接<input readOnly value={createdLink} /></label>
+                                    <label>新分享链接<input readOnly value={activeCreatedShare.link} /></label>
                                     <div className="share-tools">
-                                      <button onClick={() => runAction(() => copy(createdLink))}>复制分享链接</button>
-                                      {typeof navigator !== "undefined" && typeof navigator.share === "function" ? <button onClick={() => runAction(() => shareLink(createdLink))}>系统分享</button> : null}
+                                      <button onClick={() => runAction(() => copy(activeCreatedShare.link))}>复制分享链接</button>
+                                      {typeof navigator !== "undefined" && typeof navigator.share === "function" ? <button onClick={() => runAction(() => shareLink(activeCreatedShare.link))}>系统分享</button> : null}
                                     </div>
                                   </div>
                                 )}
-                                {createdShareToken && <img className="qr" alt="分享二维码" width={160} height={160} src={client.shareQrUrl(createdShareToken)} />}
+                                {activeCreatedShare && <img className="qr" alt="分享二维码" width={160} height={160} src={client.shareQrUrl(activeCreatedShare.token)} />}
                                 <ul className="artifact-list">
                                   {shares.filter((share) => !share.revoked_at).map((share) => (
                                   <li key={share.id}>
                                     <div className="artifact-meta"><strong>{share.id.slice(0, 8)}</strong><small>{share.expires_at ? `到期 ${new Date(share.expires_at).toLocaleString()}` : "永不过期"}</small></div>
-                                      <button onClick={() => { if (!window.confirm("撤销该分享链接？")) return; runAction(async () => { await client.revokeShare(share.id); setCreatedLink(""); setCreatedShareToken(""); await loadShares(reconstructionId); }); }}>撤销</button>
+                                      <button onClick={() => { if (!window.confirm("撤销该分享链接？")) return; runShareAction(reconstructionId, async () => { const id = reconstructionId; await client.revokeShare(share.id); if (activeReconstruction.current !== id) return; setCreatedShare(null); await loadShares(id); }); }}>撤销</button>
                                   </li>
                                   ))}
                                 </ul>

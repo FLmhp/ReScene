@@ -87,9 +87,9 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
   const [issuedInvitation, setIssuedInvitation] = useState<{ email: string; code: string } | null>(null);
   const [issuingInvitation, setIssuingInvitation] = useState(false);
   const invitationContext = useRef(0);
-  const [shares, setShares] = useState<ShareSummary[]>([]);
-  const [shareUrl, setShareUrl] = useState("");
-  const [shareToken, setShareToken] = useState("");
+  const [sharesState, setSharesState] = useState<{ reconstructionId: string; items: ShareSummary[] }>({ reconstructionId: "", items: [] });
+  const [createdShare, setCreatedShare] = useState<{ reconstructionId: string; url: string; token: string } | null>(null);
+  const shareRequest = useRef(0);
   const [sharePreset, setSharePreset] = useState<SharePreset>("7d");
   const [timeline, setTimeline] = useState<TimelineRow[]>([]);
   const [logs, setLogs] = useState<JobLog[]>([]);
@@ -263,15 +263,28 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
   }, [jobId, jobActive, logLevel]);
 
   const reconstructionId = job?.reconstruction_id ?? "";
+  const activeReconstruction = useRef(reconstructionId);
+  activeReconstruction.current = reconstructionId;
+  const shares = sharesState.reconstructionId === reconstructionId ? sharesState.items : [];
+  const activeCreatedShare = createdShare?.reconstructionId === reconstructionId ? createdShare : null;
+  const shareUrl = activeCreatedShare?.url ?? "";
+  const shareToken = activeCreatedShare?.token ?? "";
   const loadShares = useCallback(async () => {
     if (!reconstructionId || !canWrite) return;
-    try { setShares(await client.listShares(reconstructionId)); }
-    catch (reason) { setError(message(reason, "加载分享失败")); }
+    const request = ++shareRequest.current;
+    try {
+      const list = await client.listShares(reconstructionId);
+      if (request !== shareRequest.current || activeReconstruction.current !== reconstructionId) return;
+      setSharesState({ reconstructionId, items: list });
+    } catch (reason) {
+      if (request === shareRequest.current && activeReconstruction.current === reconstructionId) {
+        setError(message(reason, "加载分享失败"));
+      }
+    }
   }, [reconstructionId, canWrite]);
   useEffect(() => {
-    setShares([]);
-    setShareUrl("");
-    setShareToken("");
+    setSharesState({ reconstructionId: "", items: [] });
+    setCreatedShare(null);
     if (reconstructionId && canWrite) void loadShares();
   }, [reconstructionId, canWrite, loadShares]);
 
@@ -442,22 +455,31 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
     }
     const preset = SHARE_PRESETS.find((item) => item.value === sharePreset);
     const expires = preset?.ms ? new Date(Date.now() + preset.ms).toISOString() : undefined;
+    const target = reconstructionId;
     shareLock.current = true;
     setSharing(true);
     try {
-      const share = await client.createShare(reconstructionId, expires);
-      setShareToken(share.token);
-      setShareUrl(`${webBaseUrl.replace(/\/+$/, "")}/share/${encodeURIComponent(share.token)}`);
+      const share = await client.createShare(target, expires);
+      if (activeReconstruction.current !== target) return;
+      setCreatedShare({ reconstructionId: target, url: `${webBaseUrl.replace(/\/+$/, "")}/share/${encodeURIComponent(share.token)}`, token: share.token });
       await loadShares();
-    } catch (reason) { setError(message(reason, "创建分享失败")); }
-    finally { shareLock.current = false; setSharing(false); }
+    } catch (reason) {
+      if (activeReconstruction.current === target) setError(message(reason, "创建分享失败"));
+    } finally { shareLock.current = false; setSharing(false); }
   }
 
   async function revokeShare(id: string) {
     const result = await Taro.showModal({ title: "撤销分享", content: "撤销后该链接将无法访问。" });
     if (!result.confirm) return;
-    try { await client.revokeShare(id); setShareUrl(""); setShareToken(""); await loadShares(); }
-    catch (reason) { setError(message(reason, "撤销分享失败")); }
+    const target = activeReconstruction.current;
+    try {
+      await client.revokeShare(id);
+      if (activeReconstruction.current !== target) return;
+      setCreatedShare(null);
+      await loadShares();
+    } catch (reason) {
+      if (activeReconstruction.current === target) setError(message(reason, "撤销分享失败"));
+    }
   }
 
   async function copyShare() {
