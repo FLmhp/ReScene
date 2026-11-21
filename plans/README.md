@@ -113,7 +113,7 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 | [020](020-request-initial-viewer-url-over-native-bridge.md) | A15 | 通过原生桥加载 Android 私有场景 | P2 | S–M | 无 | TODO |
 | [021](021-show-retry-on-native-viewer-load-error.md) | A16 | Android Viewer 主页面加载失败时显示重试 | P2 | S | 无 | TODO |
 | [022](022-verify-legacy-database-adoption.md) | A17 | 按固定基线接管无版本标记的旧数据库 | P2 | M | 无 | TODO |
-| [023](023-lock-only-next-lease-candidate.md) | A18 | 领取任务时仅锁一个候选 | P2 | S | 无 | TODO |
+| [023](023-lock-only-next-lease-candidate.md) | A18 | 领取任务时仅锁一个候选 | P2 | S | 无 | DONE · `0ab1bda` |
 | [024](024-bound-worker-gpu-probes.md) | A19 | 为 Worker GPU 探测设置超时 | P2 | S | 无 | TODO |
 | [025](025-serialize-desktop-artifact-cache-publication.md) | A20 | 串行化同一桌面场景缓存发布 | P2 | M | 无 | DONE · `6606dfc`（单进程锁，跨进程不保证） |
 | [026](026-preserve-expanded-notification-pages.md) | A21 | 在自动刷新时保留已展开的通知分页 | P2 | S–M | 无 | TODO |
