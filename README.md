@@ -49,7 +49,7 @@ ReScene 把团队工作台、GPU 重建引擎和 SPZ 查看器放在同一个仓
 | Android | 候选签名 APK 版本码 6。Android 35 模拟器验证原生首载、403 续签、503 重试、离线素材重放、换号隔离和真实 SPZ 渲染；物理真机待验收 |
 | 微信小程序 | 开发者工具验证登录页渲染和编译构建；真机日志追踪与分享切换待验收，正式版以平台审核为准 |
 
-生产 API 与 Web 已运行 0.4.1；生产 GPU Worker 已切换到 0.4.1 并恢复领取队列（PID 22691，drain=no）。首个生产任务 `f8201574-991a-4f88-bc8a-9b1c86f370d8` 已成功交付重建 `3814d608-dc1d-4c81-9604-6300d50d652c`（质量 16.34，manifest、metrics、report、19.7 MB SPZ 与 185 MB PLY）。此前候选的六条 GPU 路线、checkpoint 恢复、取消与上传边界已在隔离候选栈复验。 [0.4.1 品牌与真机验收](artifacts/test-runs/2026-11-20-brand-refresh/report.md)
+生产 API 与 Web 已运行 0.4.1；生产 GPU Worker 已切换到 0.4.1 并恢复领取队列（PID 22691，drain=no）。首个生产任务 `f8201574-991a-4f88-bc8a-9b1c86f370d8` 已成功交付重建 `3814d608-dc1d-4c81-9604-6300d50d652c`（质量 16.34，manifest、metrics、report、19.7 MB SPZ 与 185 MB PLY）。仍使用 0.4.0 的 Android/微信安装包新增成员时不会显示一次性领取码，应先在 Web 工作台签发，待原生正式包验收后再更新。此前候选的六条 GPU 路线、checkpoint 恢复、取消与上传边界已在隔离候选栈复验。 [0.4.1 品牌与真机验收](artifacts/test-runs/2026-11-20-brand-refresh/report.md)
 
 0.4.1 候选采用青色 R 与蓝紫色 S 组成的新标志。技术设计和中期报告的现状附录见 [Word 文档索引](docs/reference/README.md)。 [项目官网](https://rescene.xyz/)
 
