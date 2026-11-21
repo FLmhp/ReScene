@@ -25,7 +25,13 @@ from rescene.backends import (
     vggt_command,
 )
 from rescene.config import ProfileConfig, profile_config
-from rescene.metrics import collect_metrics, final_ply_path, sha256_file, write_report
+from rescene.metrics import (
+    collect_metrics,
+    final_ply_path,
+    merge_evaluation_evidence,
+    sha256_file,
+    write_report,
+)
 from rescene.preprocess import classify_input, preprocess_input, relocate_selected_images
 from rescene.stages import StageStore
 
@@ -663,11 +669,13 @@ def report_run(run_id: str) -> Path:
     metrics_path = run_dir / "metrics.json"
     if metrics_path.is_file():
         try:
-            previous_timings = json.loads(metrics_path.read_text(encoding="utf-8")).get("timings")
+            previous = json.loads(metrics_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            previous_timings = None
-        if isinstance(previous_timings, dict):
-            metrics["timings"] = previous_timings
+            previous = None
+        if isinstance(previous, dict):
+            if isinstance(previous.get("timings"), dict):
+                metrics["timings"] = previous["timings"]
+            merge_evaluation_evidence(metrics, previous, run_dir)
     reuse_path = run_dir / "reuse_provenance.json"
     if reuse_path.is_file():
         metrics["reuse"] = json.loads(reuse_path.read_text(encoding="utf-8"))

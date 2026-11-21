@@ -198,6 +198,48 @@ def test_report_preserves_reuse_timing_and_provenance(tmp_path, monkeypatch):
     assert metrics["reuse"]["mode"] == "single_stage_reuse"
 
 
+def test_report_reuses_evaluation_only_for_unchanged_artifacts(tmp_path, monkeypatch):
+    from rescene.metrics import evaluation_artifacts
+
+    run = tmp_path / "runs" / "eval"
+    run.mkdir(parents=True)
+    (run / "scene.spz").write_bytes(b"scene")
+    (run / "metrics.json").write_text(
+        json.dumps(
+            {
+                "timings": {"training": 2.0},
+                "pose_ate": 0.25,
+                "point_fscore": 0.9,
+                "evaluation_evidence": {
+                    "schema_version": 1,
+                    "artifacts": evaluation_artifacts(run),
+                    "fields": {"pose_ate": 0.25, "point_fscore": 0.9},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pipeline, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(pipeline, "collect_metrics", lambda *args: {"total_seconds": 9.0})
+    monkeypatch.setattr(pipeline, "write_report", lambda run_dir, metrics: run_dir / "report.md")
+
+    pipeline.report_run("eval")
+    pipeline.report_run("eval")
+    metrics = json.loads((run / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["pose_ate"] == 0.25
+    assert metrics["point_fscore"] == 0.9
+    assert metrics["timings"] == {"training": 2.0}
+    assert "evaluation_needs_recompute" not in metrics
+
+    (run / "scene.spz").write_bytes(b"regenerated")
+    pipeline.report_run("eval")
+    stale = json.loads((run / "metrics.json").read_text(encoding="utf-8"))
+    assert "pose_ate" not in stale
+    assert "point_fscore" not in stale
+    assert stale["evaluation_needs_recompute"] is True
+    assert stale["timings"] == {"training": 2.0}
+
+
 def test_reuse_forbids_overlap_and_resume(tmp_path):
     source = _source_run(tmp_path)
     with pytest.raises(ValueError, match="separate"):
