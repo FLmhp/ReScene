@@ -14,7 +14,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from rescene_api import main
-from rescene_api.auth import hash_password, issue_token
+from rescene_api.auth import hash_password, issue_token, verify_password
 from rescene_api.config import settings
 from rescene_api.models import (
     Asset,
@@ -26,6 +26,7 @@ from rescene_api.models import (
     ReconstructionJob,
     User,
 )
+from rescene_api.schemas import ChangePasswordRequest
 
 
 def migrate(connection, revision):
@@ -113,6 +114,47 @@ def test_postgres_reapers_fence_late_heartbeat(postgres_sessions):
         job = db.get(ReconstructionJob, job_id)
         assert job.status == "QUEUED" and job.attempt == 1 and job.leased_by is None and job.lease_expires_at is None
         assert job.resume_artifact_key == "checkpoint/test-bundle"
+
+
+def test_postgres_concurrent_password_rotations_stay_monotonic(postgres_sessions):
+    with postgres_sessions.begin() as db:
+        owner = User(email="rotate@example.com", password_hash=hash_password("correct-horse"))
+        db.add(owner)
+        db.flush()
+        user_id = owner.id
+
+    barrier = Barrier(2)
+    outcomes: list[str] = []
+
+    def rotate(password: str) -> None:
+        with postgres_sessions() as db:
+            user = db.get(User, user_id)
+            barrier.wait(timeout=10)
+            try:
+                main.change_password(
+                    ChangePasswordRequest(current_password="correct-horse", new_password=password),
+                    db,
+                    user,
+                )
+                outcomes.append("rotated")
+            except Exception as error:  # the loser must observe a conflict, not a silent overwrite
+                outcomes.append(getattr(error, "status_code", 500))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(rotate, "first-password"), pool.submit(rotate, "second-password")]
+        for future in futures:
+            future.result(timeout=15)
+
+    assert sorted(outcomes, key=str) == [409, "rotated"]
+    with postgres_sessions() as db:
+        current = db.get(User, user_id)
+        assert current.token_version == 1, "only the winning rotation may advance the version"
+        applied = [
+            password
+            for password in ("first-password", "second-password")
+            if verify_password(password, current.password_hash)
+        ]
+        assert len(applied) == 1, "the losing rotation must not overwrite the applied password"
 
 
 @pytest.mark.parametrize("operation", ["create", "retry"])

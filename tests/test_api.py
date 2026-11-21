@@ -9,10 +9,10 @@ import oss2
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from rescene_api import main
-from rescene_api.auth import hash_password, issue_token
+from rescene_api.auth import hash_password, issue_token, verify_password
 from rescene_api.config import Settings
 from rescene_api.db import SessionLocal
 from rescene_api.main import app
@@ -28,6 +28,7 @@ from rescene_api.models import (
     User,
     now,
 )
+from rescene_api.schemas import ChangePasswordRequest
 from rescene_api.storage import OssStorage, TemporaryCredentials
 
 
@@ -636,6 +637,74 @@ def test_password_change_revokes_other_sessions() -> None:
         )
         login = client.post("/v1/auth/login", json={"email": "rotate@example.com", "password": "correct-horse-2"})
         assert login.status_code == 200
+
+
+def test_password_change_rejects_a_stale_verified_hash() -> None:
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/v1/auth/register", json={"email": "race@example.com", "password": "correct-horse"}
+            ).status_code
+            == 201
+        )
+        with SessionLocal() as db:
+            user_id = db.scalar(select(User.id).where(User.email == "race@example.com"))
+        with SessionLocal() as stale, SessionLocal() as fresher:
+            user = stale.get(User, user_id)
+            fresher.execute(update(User).where(User.id == user_id).values(password_hash=hash_password("someone-else")))
+            fresher.commit()
+            with pytest.raises(HTTPException) as raised:
+                main.change_password(
+                    ChangePasswordRequest(current_password="correct-horse", new_password="correct-horse-2"),
+                    stale,
+                    user,
+                )
+        assert raised.value.status_code == 409
+        assert raised.value.headers["X-Error-Code"] == "auth.session_stale"
+        with SessionLocal() as db:
+            current = db.get(User, user_id)
+            assert verify_password("someone-else", current.password_hash)
+            assert current.token_version == 0, "a refused rotation must not advance the version"
+
+
+def test_session_version_grows_with_every_revocation() -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            db.add(User(email="root@example.com", password_hash=hash_password("correct-horse"), is_admin=True))
+            db.add(User(email="member@example.com", password_hash=hash_password("correct-horse")))
+            db.commit()
+        with SessionLocal() as db:
+            member_id = db.scalar(select(User.id).where(User.email == "member@example.com"))
+
+        def bearer(email: str) -> dict[str, str]:
+            token = client.post("/v1/auth/login", json={"email": email, "password": "correct-horse"}).json()[
+                "access_token"
+            ]
+            return {"Authorization": f"Bearer {token}"}
+
+        admin = bearer("root@example.com")
+        member = bearer("member@example.com")
+
+        def version() -> int:
+            with SessionLocal() as db:
+                return db.get(User, member_id).token_version
+
+        start = version()
+        assert client.post("/v1/auth/logout", headers=member).status_code == 204
+        after_logout = version()
+        assert after_logout > start
+        assert (
+            client.post(
+                f"/v1/users/{member_id}/password", headers=admin, json={"password": "reset-password"}
+            ).status_code
+            == 204
+        )
+        after_reset = version()
+        assert after_reset > after_logout
+        assert client.patch(f"/v1/users/{member_id}", headers=admin, json={"active": False}).status_code == 200
+        after_deactivate = version()
+        assert after_deactivate > after_reset
+        assert client.get("/v1/auth/me", headers=member).status_code == 401
 
 
 def test_admin_governance() -> None:
