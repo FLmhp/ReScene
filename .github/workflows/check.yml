@@ -87,6 +87,7 @@ jobs:
           TARO_APP_WEB_URL: https://app.example.com
           TARO_APP_WECHAT_APP_ID: wx0123456789abcdef
       - run: node scripts/check-miniapp-login.mjs
+      - run: node scripts/check-mobile-viewer.cjs
 
   images:
     runs-on: ubuntu-latest

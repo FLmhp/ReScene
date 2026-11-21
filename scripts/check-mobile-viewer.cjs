@@ -66,8 +66,8 @@ function find(tree, type) {
     if (found) return found;
   }
 }
-function message(id, requestId) {
-  return { nativeEvent: { url: 'https://app.example.com/viewer', data: JSON.stringify({ type: 'RESCENE_MANIFEST_REQUEST', reconstructionId: id, requestId }) } };
+function message(id, requestId, url = 'https://app.example.com/viewer') {
+  return { nativeEvent: { url, data: JSON.stringify({ type: 'RESCENE_MANIFEST_REQUEST', reconstructionId: id, requestId }) } };
 }
 async function tick() { await Promise.resolve(); await Promise.resolve(); }
 (async () => {
@@ -76,7 +76,13 @@ async function tick() { await Promise.resolve(); await Promise.resolve(); }
   let view = find(tree, 'WebView');
   assert.equal(view.props.source.uri, 'https://app.example.com/viewer?reconstruction=scene-a&theme=light');
   view.props.ref.current = { injectJavaScript: (script) => injections.push(script) };
-  view.props.onMessage(message('scene-a', 'one'));
+  assert.equal(view.props.onShouldStartLoadWithRequest({ url: view.props.source.uri }), true);
+  assert.equal(view.props.onShouldStartLoadWithRequest({ url: 'https://app.example.com/viewer-unrelated' }), false);
+  view.props.onMessage(message('scene-a', 'foreign', 'https://foreign.example.com'));
+  view.props.onMessage(message('scene-a', 'other-document', 'https://app.example.com/viewer-unrelated'));
+  await tick();
+  assert.deepEqual(injections, [], 'reject messages outside the pinned Viewer document or origin');
+  view.props.onMessage(message('scene-a', 'one', 'https://app.example.com'));
   await tick();
   assert.match(injections[0], /signature=secret/);
   assert.match(injections[0], /one/);

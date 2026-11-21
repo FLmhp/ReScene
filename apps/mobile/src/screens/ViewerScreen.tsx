@@ -61,13 +61,10 @@ export function ViewerScreen({ reconstructionId, onBack }: { reconstructionId: s
   async function receive(event: WebViewMessageEvent, instance: NonNullable<typeof viewer>) {
     try {
       if (!isCurrent(instance)) return;
-      // Android WebView does not always expose `nativeEvent.url`; the WebView
-      // source and onShouldStartLoadWithRequest already pin the trusted origin.
+      // Android's WebMessageListener supplies the source origin, not a document URL.
+      // Legacy WebViews can supply the full URL or omit it; navigation pins the viewer document.
       const pageUrl = event.nativeEvent.url;
-      if (pageUrl) {
-        const source = new URL(pageUrl);
-        if (source.origin !== trustedOrigin || !source.pathname.startsWith("/viewer")) return;
-      }
+      if (pageUrl && pageUrl !== trustedOrigin && !isViewerDocument(pageUrl)) return;
       const request: unknown = JSON.parse(event.nativeEvent.data);
       if (!request || typeof request !== "object") return;
       const payload = request as Record<string, unknown>;
@@ -98,12 +95,7 @@ export function ViewerScreen({ reconstructionId, onBack }: { reconstructionId: s
       javaScriptEnabled
       mixedContentMode="never"
       originWhitelist={[trustedOrigin]}
-      onShouldStartLoadWithRequest={(request) => {
-        try {
-          const url = new URL(request.url);
-          return url.origin === trustedOrigin && url.pathname.startsWith("/viewer");
-        } catch { return false; }
-      }}
+      onShouldStartLoadWithRequest={({ url }) => isViewerDocument(url)}
       onMessage={(event) => void receive(event, viewer)}
       onError={(event) => {
         if (isCurrent(viewer) && isViewerDocument(event.nativeEvent.url)) {
