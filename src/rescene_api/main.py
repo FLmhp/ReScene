@@ -19,7 +19,7 @@ import jwt
 import oss2
 import segno
 import uvicorn
-from aliyunsdkcore.acs_exception.exceptions import ClientException
+from aliyunsdkcore.acs_exception.exceptions import ClientException, ServerException
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -1419,26 +1419,29 @@ def asset_referenced(db: Session, asset: Asset) -> bool:
 
 
 def expire_stale_uploads(db: Session, project: Project) -> None:
-    """Drop uploads that were registered but never completed, so rows cannot leak."""
+    """Remove expired uploads while holding the same row lock as completion."""
+    project_id = project.id
     cutoff = now() - timedelta(seconds=settings().stale_upload_seconds)
-    stale = db.scalars(
-        select(Asset).where(Asset.project_id == project.id, Asset.status == "UPLOADING", Asset.created_at < cutoff)
-    ).all()
-    if not stale:
-        return
-    try:
-        store = storage()
-    except HTTPException:
-        store = None
-    for asset in stale:
-        asset_id = asset.id
-        if store is not None:
-            # The object was never written, or OSS rejects a missing key.
-            with suppress(Exception):
-                store.delete(asset.object_key)
-        audit(db, None, "asset.expire", "asset", asset_id, project_id=project.id)
+    eligible = (Asset.project_id == project_id, Asset.status == "UPLOADING", Asset.created_at < cutoff)
+    for asset_id in db.scalars(select(Asset.id).where(*eligible)).all():
+        asset = db.scalar(
+            select(Asset)
+            .where(Asset.id == asset_id, *eligible)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
+        )
+        if asset is None:
+            continue
+        try:
+            with suppress(oss2.exceptions.NoSuchKey):
+                storage().delete(asset.object_key)
+        except (HTTPException, ClientException, ServerException, oss2.exceptions.OssError) as error:
+            logger.warning("Could not expire upload %s (%s)", asset_id, type(error).__name__)
+            db.rollback()
+            continue
+        audit(db, None, "asset.expire", "asset", asset_id, project_id=project_id)
         db.delete(asset)
-    db.commit()
+        db.commit()
 
 
 def recover_expired_leases(db: Session, current_time: datetime) -> None:

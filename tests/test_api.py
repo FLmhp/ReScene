@@ -5,17 +5,20 @@ import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import oss2
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from rescene_api import main
-from rescene_api.auth import hash_password
+from rescene_api.auth import hash_password, issue_token
 from rescene_api.config import Settings
 from rescene_api.db import SessionLocal
 from rescene_api.main import app
 from rescene_api.models import (
     Asset,
+    AuditLog,
     JobStage,
     Notification,
     ProjectInvitation,
@@ -281,16 +284,16 @@ def test_registration_rejects_invalid_input() -> None:
 class RecordingStore:
     """Stands in for OSS so deletion is observable without network calls."""
 
-    def __init__(self, fail: bool = False) -> None:
+    def __init__(self) -> None:
         self.deleted: list[str] = []
-        self.fail = fail
+        self.errors: dict[str, Exception] = {}
 
     def upload_credentials(self, key: str, session: str) -> TemporaryCredentials:
         return TemporaryCredentials("id", "secret", "token", "later")
 
     def delete(self, key: str) -> None:
-        if self.fail:
-            raise RuntimeError("object was never written")
+        if key in self.errors:
+            raise self.errors[key]
         self.deleted.append(key)
 
 
@@ -334,18 +337,101 @@ def test_asset_delete_and_stale_upload_expiry(monkeypatch) -> None:
             db.add_all([stale, ready])
             db.commit()
             ready_id = ready.id
-            stale_key = stale.object_key
+            stale_id, stale_key = stale.id, stale.object_key
+        store.errors[stale_key] = oss2.exceptions.NoSuchKey(404, {}, "", {"Code": "NoSuchKey"})
         monkeypatch.setenv("RESCENE_STALE_UPLOAD_SECONDS", "60")
         main.settings.cache_clear()
         detail = client.get(f"/v1/projects/{project_id}", headers=headers).json()
         assert [item["filename"] for item in detail["assets"]] == ["frame.jpg"]
-        assert stale_key in store.deleted
+        assert stale_key not in store.deleted
+        with SessionLocal() as db:
+            assert db.get(Asset, stale_id) is None
+            assert db.scalar(select(AuditLog).where(AuditLog.target_id == stale_id)).action == "asset.expire"
 
         job = client.post(f"/v1/projects/{project_id}/jobs", headers=headers, json={"asset_ids": [ready_id]})
         assert job.status_code == 201
         refused = client.delete(f"/v1/assets/{ready_id}", headers=headers)
         assert refused.status_code == 409
         assert refused.headers["x-error-code"] == "asset.in_use"
+
+
+def test_stale_upload_expiry_retries_storage_failures(monkeypatch) -> None:
+    store = RecordingStore()
+
+    def unavailable_storage():
+        raise HTTPException(503, "OSS is not configured")
+
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            owner = User(email="cleanup-owner@example.com", password_hash=hash_password("correct-horse"))
+            outsider = User(email="cleanup-outsider@example.com", password_hash=owner.password_hash)
+            db.add_all([owner, outsider])
+            db.commit()
+        headers = {"Authorization": f"Bearer {issue_token(owner.id)}"}
+        project_id = client.post("/v1/projects", headers=headers, json={"name": "Upload cleanup"}).json()["id"]
+        route = f"/v1/projects/{project_id}/assets"
+        detail_route = f"/v1/projects/{project_id}"
+        old = now() - timedelta(days=2)
+        with SessionLocal() as db:
+            assets = {
+                key: Asset(
+                    project_id=project_id,
+                    object_key=f"cleanup/{key}",
+                    filename=f"{key}.jpg",
+                    size=10,
+                    content_type="image/jpeg",
+                    status=asset_status,
+                    created_at=created_at,
+                )
+                for key, asset_status, created_at in (
+                    ("retry", "UPLOADING", old),
+                    ("expired", "UPLOADING", old),
+                    ("ready", "READY", old),
+                    ("young", "UPLOADING", now()),
+                )
+            }
+            db.add_all(assets.values())
+            db.commit()
+        monkeypatch.setattr(main, "storage", lambda: store)
+        assert client.get(route).status_code == 401
+        assert client.get(route, headers={"Authorization": f"Bearer {issue_token(outsider.id)}"}).status_code == 403
+        assert client.get(f"{detail_route}?view=summary", headers=headers).json()["asset_count"] == 4
+        assert store.deleted == []
+
+        monkeypatch.setattr(main, "storage", unavailable_storage)
+        unavailable = client.get(route, headers=headers)
+        assert unavailable.status_code == 200
+        assert {item["id"] for item in unavailable.json()["items"]} == {asset.id for asset in assets.values()}
+        with SessionLocal() as db:
+            assert db.scalars(select(AuditLog).where(AuditLog.action == "asset.expire")).all() == []
+
+        monkeypatch.setattr(main, "storage", lambda: store)
+        retry_key = assets["retry"].object_key
+        store.errors[retry_key] = oss2.exceptions.RequestError(TimeoutError())
+        partial = client.get(route, headers=headers)
+        assert partial.status_code == 200
+        remaining = {assets[key].id for key in ("retry", "young", "ready")}
+        assert {item["id"] for item in partial.json()["items"]} == remaining
+        assert store.deleted == [assets["expired"].object_key]
+        with SessionLocal() as db:
+            assert db.scalars(select(AuditLog.target_id).where(AuditLog.action == "asset.expire")).all() == [
+                assets["expired"].id
+            ]
+
+        store.errors[retry_key] = oss2.exceptions.NoSuchBucket(404, {}, "", {"Code": "NoSuchBucket"})
+        wrong_bucket = client.get(route, headers=headers)
+        assert wrong_bucket.status_code == 200
+        assert {item["id"] for item in wrong_bucket.json()["items"]} == remaining
+
+        del store.errors[retry_key]
+        detail = client.get(detail_route, headers=headers)
+        assert detail.status_code == 200
+        assert {item["id"] for item in detail.json()["assets"]} == remaining - {assets["retry"].id}
+        assert store.deleted == [assets["expired"].object_key, retry_key]
+        with SessionLocal() as db:
+            assert db.get(Asset, assets["retry"].id) is None
+            audit_ids = db.scalars(select(AuditLog.target_id).where(AuditLog.action == "asset.expire")).all()
+            assert sorted(audit_ids) == sorted([assets["expired"].id, assets["retry"].id])
 
 
 def test_password_change_revokes_other_sessions() -> None:

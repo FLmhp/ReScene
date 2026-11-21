@@ -2,6 +2,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Barrier, Event
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -270,3 +271,125 @@ def test_postgres_invitation_upgrade_preserves_inert_legacy_rows(postgres_sessio
     with postgres_sessions() as db:
         pending = db.scalars(select(ProjectInvitation)).all()
         assert len(pending) == 1 and pending[0].id == "reissue" and pending[0].claim_digest
+
+
+@pytest.fixture
+def stale_upload(postgres_sessions):
+    with postgres_sessions.begin() as db:
+        owner = User(email="expiry@example.com", password_hash=hash_password("correct-horse"))
+        db.add(owner)
+        db.flush()
+        project = Project(name="Upload expiry", owner_id=owner.id)
+        db.add(project)
+        db.flush()
+        asset = Asset(
+            project_id=project.id,
+            object_key="expiry/frame.jpg",
+            filename="frame.jpg",
+            size=10,
+            content_type="image/jpeg",
+            created_at=datetime.now(UTC) - timedelta(days=2),
+        )
+        db.add(asset)
+        db.flush()
+        return project.id, asset.id, asset.object_key, {"Authorization": f"Bearer {issue_token(owner.id)}"}
+
+
+@pytest.mark.parametrize("commit_before_recheck", [False, True])
+def test_postgres_stale_upload_preserves_completed_asset(
+    postgres_sessions, stale_upload, monkeypatch, commit_before_recheck
+):
+    project_id, asset_id, object_key, headers = stale_upload
+    objects = {object_key}
+    checking_object, allow_completion = Event(), Event()
+
+    def head(key):
+        assert key in objects
+        checking_object.set()
+        assert allow_completion.wait(timeout=15)
+        return 10, "image/jpeg"
+
+    monkeypatch.setattr(main, "storage", lambda: SimpleNamespace(head=head, delete=objects.remove))
+    with TestClient(main.app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        completion = pool.submit(
+            client.post, f"/v1/assets/{asset_id}/complete", headers=headers, json={"size": 10, "sha256": "a" * 64}
+        )
+
+        @event.listens_for(postgres_sessions.kw["bind"], "before_cursor_execute")
+        def complete_before_recheck(_connection, _cursor, statement, _parameters, _context, _executemany):
+            if commit_before_recheck and "FROM assets" in statement and "FOR UPDATE SKIP LOCKED" in statement:
+                allow_completion.set()
+                assert completion.result(timeout=10).status_code == 200
+
+        try:
+            assert checking_object.wait(timeout=10)
+            cleanup = pool.submit(client.get, f"/v1/projects/{project_id}/assets", headers=headers)
+            listing = cleanup.result(timeout=10)
+            assert listing.status_code == 200
+            expected_status = "READY" if commit_before_recheck else "UPLOADING"
+            assert [(item["id"], item["status"]) for item in listing.json()["items"]] == [(asset_id, expected_status)]
+            assert objects == {object_key}
+        finally:
+            allow_completion.set()
+        completed = completion.result(timeout=10)
+        assert completed.status_code == 200
+        detail = client.get(f"/v1/projects/{project_id}", headers=headers)
+        assert detail.status_code == 200
+        assert [(item["id"], item["status"]) for item in detail.json()["assets"]] == [(asset_id, "READY")]
+
+    assert objects == {object_key}
+    with postgres_sessions() as db:
+        assert db.get(Asset, asset_id).status == "READY"
+        assert db.scalars(select(AuditLog.action).where(AuditLog.target_id == asset_id)).all() == [
+            "asset.upload.complete"
+        ]
+
+
+def test_postgres_stale_upload_cleanup_fences_completion(postgres_sessions, stale_upload, monkeypatch):
+    project_id, asset_id, object_key, headers = stale_upload
+    objects = {object_key}
+    deleted: list[str] = []
+    deleting, allow_cleanup, completion_lock_query = Event(), Event(), Event()
+
+    def delete(key):
+        deleting.set()
+        assert allow_cleanup.wait(timeout=15)
+        objects.remove(key)
+        deleted.append(key)
+
+    def head(key):
+        pytest.fail(f"Completion reached OSS after expiry of {key}")
+
+    @event.listens_for(postgres_sessions.kw["bind"], "before_cursor_execute")
+    def observe_completion_lock(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if "FROM assets" in statement and "FOR UPDATE" in statement and "SKIP LOCKED" not in statement:
+            completion_lock_query.set()
+
+    monkeypatch.setattr(main, "storage", lambda: SimpleNamespace(head=head, delete=delete))
+    details = f"/v1/projects/{project_id}"
+    with TestClient(main.app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        cleanup = pool.submit(client.get, details, headers=headers)
+        try:
+            assert deleting.wait(timeout=10)
+            assert objects == {object_key}
+            completion = pool.submit(
+                client.post, f"/v1/assets/{asset_id}/complete", headers=headers, json={"size": 10, "sha256": "a" * 64}
+            )
+            assert completion_lock_query.wait(timeout=10)
+        finally:
+            allow_cleanup.set()
+        cleaned = cleanup.result(timeout=10)
+        assert cleaned.status_code == 200 and cleaned.json()["assets"] == []
+        missing = completion.result(timeout=10)
+        assert missing.status_code == 404 and missing.json()["detail"] == "Asset not found"
+
+        detail = client.get(details, headers=headers)
+        listing = client.get(f"{details}/assets", headers=headers)
+        assert detail.status_code == 200 and detail.json()["assets"] == []
+        assert listing.status_code == 200 and listing.json()["items"] == []
+
+    assert objects == set()
+    assert deleted == [object_key]
+    with postgres_sessions() as db:
+        assert db.get(Asset, asset_id) is None
+        assert db.scalars(select(AuditLog.action).where(AuditLog.target_id == asset_id)).all() == ["asset.expire"]
