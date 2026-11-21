@@ -306,7 +306,7 @@ describe("collaboration surfaces", () => {
     expect(screen.getByText("密码已更新，其他设备已退出登录。")).toBeTruthy();
   });
 
-  it("reports an invited address after adding an unknown member", async () => {
+  it("asks for reissue when the server's invitation response has no code", async () => {
     stubFetch(
       routeTable({
         "POST /v1/projects/p1/members": { status: 201, body: { status: "invited", email: "guest@example.com", role: "viewer" } },
@@ -317,9 +317,58 @@ describe("collaboration surfaces", () => {
     await waitFor(() => expect(screen.getByRole("navigation", { name: "项目" }).querySelector("button")).toBeTruthy());
     await userEvent.click(screen.getByRole("button", { name: /Kitchen ·/ }));
     await userEvent.type(screen.getByLabelText("成员邮箱"), "guest@example.com");
-    await userEvent.click(screen.getByText("添加成员"));
+    await userEvent.click(screen.getByRole("button", { name: "签发邀请" }));
 
-    await waitFor(() => expect(screen.getByText(/对方注册后自动加入/)).toBeTruthy());
+    expect(await screen.findByText(/当前服务端版本无法提供领取码/)).toBeTruthy();
+    expect(screen.queryByLabelText("新邀请领取码")).toBeNull();
+  });
+
+  it("displays a new code in its own project and clears it when switching", async () => {
+    const secondProject = { ...project, id: "p2", name: "Studio" };
+    stubFetch(routeTable({
+      "/v1/projects": [project, secondProject],
+      "/v1/projects/p2": { ...projectDetail("owner"), id: "p2", name: "Studio" },
+      "/v1/projects/p2/members": [],
+      "/v1/projects/p2/invitations": [],
+      "POST /v1/projects/p1/members": {
+        status: 201,
+        body: {
+          status: "invited", email: "guest@example.com", role: "viewer",
+          claim_code: "issued-invitation", expires_at: "2026-11-27T00:00:00Z",
+        },
+      },
+    }));
+    const store = renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+    await userEvent.click(await screen.findByRole("button", { name: /Kitchen ·/ }));
+    await userEvent.type(await screen.findByLabelText("成员邮箱"), "guest@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "签发邀请" }));
+    expect((await screen.findByLabelText<HTMLInputElement>("新邀请领取码")).value).toBe("issued-invitation");
+    expect([...store.data.values()]).not.toContain("issued-invitation");
+
+    await userEvent.click(screen.getByRole("button", { name: /Studio ·/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Kitchen ·/ }));
+    expect(screen.queryByLabelText("新邀请领取码")).toBeNull();
+  });
+
+  it("claims a project from the authenticated project list", async () => {
+    let joined = false;
+    stubFetch(routeTable({
+      "/v1/projects": () => joined ? [{ ...project, effective_role: "viewer" }] : [],
+      "/v1/projects/p1": projectDetail("viewer"),
+      "POST /v1/project-invitations/accept": () => {
+        joined = true;
+        return { project_id: "p1", role: "viewer" };
+      },
+    }));
+    renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+    await userEvent.click(await screen.findByText("领取项目邀请"));
+    await userEvent.type(screen.getByLabelText("领取码"), "issued-invitation");
+    await userEvent.click(screen.getByRole("button", { name: "领取邀请" }));
+
+    expect(await screen.findByRole("button", { name: /Kitchen · viewer/ })).toBeTruthy();
+    expect((screen.getByLabelText("领取码") as HTMLInputElement).value).toBe("");
+    const request = vi.mocked(fetch).mock.calls.find(([input]) => String(input).endsWith("/v1/project-invitations/accept"));
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ code: "issued-invitation" });
   });
 });
 

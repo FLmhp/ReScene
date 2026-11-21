@@ -55,7 +55,19 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
   const replayed = useRef(false);
   const [timeline, setTimeline] = useState<TimelineRow[]>([]);
   const [inviteNotice, setInviteNotice] = useState("");
+  const [issuedInvitation, setIssuedInvitation] = useState<{ email: string; code: string } | null>(null);
+  const invitationContext = useRef(0);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    setIssuedInvitation(null);
+    return () => { invitationContext.current += 1; };
+  }, [project.id, showManagement]);
+  useEffect(() => {
+    if (!issuedInvitation) return;
+    const timer = setTimeout(() => setIssuedInvitation(null), 120_000);
+    return () => clearTimeout(timer);
+  }, [issuedInvitation]);
 
   const load = useCallback(async () => {
     const request = ++requestId.current;
@@ -233,14 +245,22 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
           {canManage ? <>
             <Field label="成员邮箱" value={email} onChangeText={setEmail} />
             <Pressable onPress={() => setRole(role === "member" ? "viewer" : "member")}><Text style={textStyles.body}>角色：{role}（点击切换）</Text></Pressable>
-            <Button disabled={busy || !email.trim()} label="添加成员" onPress={() => void mutate(async () => {
-              const added = await client.addMember(project.id, email.trim(), role);
-              setEmail("");
-              if (added.status === "invited") { setInviteNotice(`已邀请 ${added.email}，对方注册后自动加入。`); return; }
+            <Button disabled={busy || !email.trim()} label="签发邀请" onPress={() => void mutate(async () => {
+              const context = invitationContext.current;
+              setIssuedInvitation(null);
               setInviteNotice("");
-              await load();
-            })} />
+              const added = await client.addMember(project.id, email.trim(), role);
+              if (context !== invitationContext.current) return;
+              setEmail("");
+              if (added.status === "member") setInviteNotice("该账号已是项目成员，可在成员列表调整角色。");
+              else if (added.claim_code) setIssuedInvitation({ email: added.email, code: added.claim_code });
+              else setInviteNotice("当前服务端版本无法提供领取码。请在升级后重新签发邀请。");
+            }, "签发邀请失败")} />
             {inviteNotice ? <Text accessibilityLiveRegion="polite" style={textStyles.muted}>{inviteNotice}</Text> : null}
+            {issuedInvitation ? <View>
+              <Text accessibilityLiveRegion="polite" style={textStyles.body}>请将领取码交给 {issuedInvitation.email}。领取码 7 天内有效，仅可使用一次。</Text>
+              <Text selectable style={textStyles.body}>{issuedInvitation.code}</Text>
+            </View> : null}
           </> : null}
         </Card> : null}
         {detail ? <Card>

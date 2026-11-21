@@ -87,6 +87,10 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [timeline, setTimeline] = useState<TimelineRow[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [invitations, setInvitations] = useState<ProjectInvitation[]>([]);
+  const [issuedInvitation, setIssuedInvitation] = useState<{ projectId: string; email: string; code: string } | null>(null);
+  const [issuingInvitation, setIssuingInvitation] = useState(false);
+  const [acceptingInvitation, setAcceptingInvitation] = useState(false);
+  const invitationContext = useRef(0);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [workerStatus, setWorkerStatus] = useState<WorkerStatus | null>(null);
   const online = workerStatus?.online ?? null;
@@ -110,6 +114,15 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   selectedRef.current = selected;
   const detailRef = useRef(detail);
   detailRef.current = detail;
+  useEffect(() => {
+    setIssuedInvitation(null);
+    return () => { invitationContext.current += 1; };
+  }, [selected, token, view]);
+  useEffect(() => {
+    if (!issuedInvitation) return;
+    const timer = setTimeout(() => setIssuedInvitation(null), 120_000);
+    return () => clearTimeout(timer);
+  }, [issuedInvitation]);
   useEffect(() => {
     const update = () => setNavigatorOnline(navigator.onLine);
     window.addEventListener("online", update);
@@ -333,6 +346,61 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     return () => { cancelled = true; };
   }, [canWrite, client, expire, loadShares, reconstructionId]);
   function runAction(action: () => Promise<void>) { void action().catch((error: unknown) => { if (error instanceof ResceneApiError && error.status === 401) expire(); else setMessage(explainError(error, "操作失败")); }); }
+  async function issueInvitation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (issuingInvitation) return;
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const context = invitationContext.current;
+    setIssuedInvitation(null);
+    setIssuingInvitation(true);
+    setMessage("");
+    try {
+      const result = await client.addMember(selected, String(data.get("email")), data.get("role") as MemberRole);
+      if (context !== invitationContext.current) return;
+      form.reset();
+      if (result.status === "invited") {
+        if (result.claim_code) setIssuedInvitation({ projectId: selected, email: result.email, code: result.claim_code });
+        else setMessage("当前服务端版本无法提供领取码。请在升级后重新签发邀请。");
+        const pending = await client.listInvitations(selected);
+        if (context === invitationContext.current) setInvitations(pending);
+      } else {
+        setMessage("该账号已是项目成员，可在成员列表调整角色。");
+      }
+    } catch (error) {
+      if (context === invitationContext.current) {
+        if (error instanceof ResceneApiError && error.status === 401) expire();
+        else setMessage(explainError(error, "签发邀请失败"));
+      }
+    } finally {
+      setIssuingInvitation(false);
+    }
+  }
+  async function acceptInvitation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const code = String(new FormData(form).get("code") ?? "").trim();
+    if (!code || acceptingInvitation) return;
+    const context = invitationContext.current;
+    setAcceptingInvitation(true);
+    setMessage("");
+    try {
+      const result = await client.acceptInvitation(code);
+      form.reset();
+      if (context !== invitationContext.current) return;
+      setSearch("");
+      selectProject(result.project_id);
+      setMessage("已领取邀请。");
+      if (result.project_id === selected) await refresh();
+    } catch (error) {
+      if (context === invitationContext.current) {
+        if (error instanceof ResceneApiError && error.status === 401) expire();
+        else setMessage(explainError(error, "领取邀请失败"));
+      }
+    } finally {
+      setAcceptingInvitation(false);
+    }
+  }
   function selectProject(id: string) {
     setView("project");
     setNavOpen(false);
@@ -583,6 +651,13 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
           <input name="name" placeholder="新项目名称" aria-label="新项目名称" required />
           <button aria-label="创建项目" type="submit">＋</button>
         </form>
+        <details>
+          <summary>领取项目邀请</summary>
+          <form onSubmit={(event) => void acceptInvitation(event)}>
+            <label>领取码<input name="code" autoComplete="off" maxLength={128} required /></label>
+            <button type="submit" disabled={acceptingInvitation}>{acceptingInvitation ? "正在领取…" : "领取邀请"}</button>
+          </form>
+        </details>
         <label>搜索项目<input value={search} onChange={(event) => setSearch(event.target.value)} /></label>
         <nav className="project-nav" aria-label="项目">
           {projects.filter((project) => project.name.toLowerCase().includes(search.toLowerCase())).map((project) => (
@@ -693,15 +768,25 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                     <div className="member-row" key={invite.id}>
                       <span>{invite.email}</span>
                       <span>{invite.role}</span>
-                      <button type="button" onClick={() => runAction(async () => { await client.revokeInvitation(selected, invite.id); setInvitations(await client.listInvitations(selected)); })}>撤销</button>
+                      <button type="button" onClick={() => runAction(async () => {
+                        await client.revokeInvitation(selected, invite.id);
+                        setIssuedInvitation((current) => current?.projectId === selected && current.email === invite.email ? null : current);
+                        setInvitations(await client.listInvitations(selected));
+                      })}>撤销</button>
                     </div>
                   ))}
                   {canManage && (
-                    <form onSubmit={(event) => { event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); runAction(async () => { const result = await client.addMember(selected, String(data.get("email")), data.get("role") as MemberRole); form.reset(); if (result.status === "invited") { setMessage(`已邀请 ${result.email}，对方注册后自动加入。`); setInvitations(await client.listInvitations(selected)); } else setMembers(await client.listMembers(selected)); }); }}>
+                    <form onSubmit={(event) => void issueInvitation(event)}>
                       <label>成员邮箱<input name="email" type="email" required /></label>
                       <label>角色<select name="role"><option value="member">member</option><option value="viewer">viewer</option></select></label>
-                      <button>添加成员</button>
+                      <button type="submit" disabled={issuingInvitation}>{issuingInvitation ? "正在签发…" : "签发邀请"}</button>
                     </form>
+                  )}
+                  {canManage && issuedInvitation?.projectId === selected && (
+                    <div role="status">
+                      <p>请将领取码交给 {issuedInvitation.email}。领取码 7 天内有效，仅可使用一次。</p>
+                      <label>新邀请领取码<input value={issuedInvitation.code} readOnly onFocus={(event) => event.currentTarget.select()} /></label>
+                    </div>
                   )}
                 </details>
                 <nav className="workspace-panes" aria-label="项目工作区">

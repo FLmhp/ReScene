@@ -190,3 +190,5 @@ class ProjectInvitation(Base):
     role: Mapped[str] = mapped_column(String(20))
     invited_by: Mapped[str] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    claim_digest: Mapped[str | None] = mapped_column(String(64), index=True, unique=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

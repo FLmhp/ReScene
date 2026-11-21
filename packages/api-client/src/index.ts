@@ -7,6 +7,7 @@
  */
 
 import {
+  AcceptInvitationResultSchema,
   AddMemberResultSchema,
   AdminUserDetailSchema,
   AdminUserPageSchema,
@@ -38,6 +39,7 @@ import {
   UploadGrantSchema,
   UserSchema,
   WorkerStatusSchema,
+  type AcceptInvitationResult,
   type AddMemberResult,
   type AdminUser,
   type AdminUserDetail,
@@ -131,6 +133,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   "user.not_found": "账号不存在。",
   "admin.self_locked": "不能停用或降级当前登录的管理员。",
   "share.not_found": "分享链接不存在或已撤销。",
+  "invitation.unavailable": "邀请不可领取。请确认登录邮箱和领取码，或联系项目管理者重新签发。",
   "announcement.not_found": "公告不存在或已删除。",
   "audit.invalid_time": "时间格式不正确。",
 };
@@ -382,6 +385,13 @@ export class ResceneClient {
       AddMemberResultSchema,
       { method: "POST", body: JSON.stringify({ email, role }) },
     );
+  }
+
+  async acceptInvitation(code: string): Promise<AcceptInvitationResult> {
+    return this.send("/v1/project-invitations/accept", AcceptInvitationResultSchema, {
+      method: "POST",
+      body: JSON.stringify({ code: code.trim() }),
+    });
   }
 
   async listInvitations(projectId: string): Promise<ProjectInvitation[]> {

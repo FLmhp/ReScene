@@ -2,9 +2,10 @@ import base64
 import hashlib
 import hmac
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -13,7 +14,16 @@ from rescene_api.auth import hash_password
 from rescene_api.config import Settings
 from rescene_api.db import SessionLocal
 from rescene_api.main import app
-from rescene_api.models import Asset, JobStage, Notification, Reconstruction, ReconstructionJob, User, now
+from rescene_api.models import (
+    Asset,
+    JobStage,
+    Notification,
+    ProjectInvitation,
+    Reconstruction,
+    ReconstructionJob,
+    User,
+    now,
+)
 from rescene_api.storage import OssStorage, TemporaryCredentials
 
 
@@ -412,45 +422,108 @@ def test_admin_governance() -> None:
         assert client.patch("/v1/users/missing", headers=admin, json={"active": False}).status_code == 404
 
 
-def test_invitation_is_consumed_on_registration() -> None:
+def test_invitation_requires_one_time_claim_by_the_matching_account(monkeypatch) -> None:
+    clock = datetime(2026, 11, 20, tzinfo=UTC)
+    monkeypatch.setattr(main, "now", lambda: clock)
     with TestClient(app) as client:
         owner = client.post("/v1/auth/register", json={"email": "lead@example.com", "password": "correct-horse"})
         headers = {"Authorization": f"Bearer {owner.json()['access_token']}"}
         project_id = client.post("/v1/projects", headers=headers, json={"name": "Invite"}).json()["id"]
         route = f"/v1/projects/{project_id}/members"
-
+        pending_route = f"/v1/projects/{project_id}/invitations"
+        accept_route = "/v1/project-invitations/accept"
         invited = client.post(route, headers=headers, json={"email": " Guest@Example.com ", "role": "viewer"})
         assert invited.status_code == 201
-        assert invited.json() == {"status": "invited", "email": "guest@example.com", "role": "viewer"}
-        assert [
-            item["email"] for item in client.get(f"/v1/projects/{project_id}/invitations", headers=headers).json()
-        ] == ["guest@example.com"]
-
-        dropped = client.post(route, headers=headers, json={"email": "cancel@example.com"})
-        assert dropped.json()["status"] == "invited"
-        pending = client.get(f"/v1/projects/{project_id}/invitations", headers=headers).json()
-        cancelled = next(item for item in pending if item["email"] == "cancel@example.com")
-        assert (
-            client.delete(f"/v1/projects/{project_id}/invitations/{cancelled['id']}", headers=headers).status_code
-            == 204
-        )
+        assert invited.headers["cache-control"] == "no-store"
+        issued = invited.json()
+        code = issued.pop("claim_code")
+        assert datetime.fromisoformat(issued.pop("expires_at")) == clock + timedelta(days=7)
+        assert issued == {"status": "invited", "email": "guest@example.com", "role": "viewer"}
+        digest = hashlib.sha256(code.encode()).hexdigest()
+        with SessionLocal() as db:
+            assert db.scalar(select(ProjectInvitation)).claim_digest == digest
+        pending = client.get(pending_route, headers=headers)
+        assert [item["email"] for item in pending.json()] == ["guest@example.com"]
+        assert code not in pending.text and digest not in pending.text
+        assert client.post(accept_route, json={"code": code}).status_code == 401
+        wrong = client.post(accept_route, headers=headers, json={"code": code})
+        assert wrong.status_code == 404
 
         guest = client.post("/v1/auth/register", json={"email": "guest@example.com", "password": "correct-horse"})
         guest_headers = {"Authorization": f"Bearer {guest.json()['access_token']}"}
+        assert client.get("/v1/projects", headers=guest_headers).json() == []
+        claimed = client.post(accept_route, headers=guest_headers, json={"code": code})
+        assert claimed.status_code == 200
+        assert claimed.json() == {"project_id": project_id, "role": "viewer"}
+        reused = client.post(accept_route, headers=guest_headers, json={"code": code})
+        assert reused.status_code == wrong.status_code
+        assert reused.json() == wrong.json()
+        assert reused.headers["x-error-code"] == wrong.headers["x-error-code"] == "invitation.unavailable"
         assert [item["id"] for item in client.get("/v1/projects", headers=guest_headers).json()] == [project_id]
         members = client.get(route, headers=headers).json()
         assert [(item["email"], item["role"]) for item in members] == [
             ("lead@example.com", "owner"),
             ("guest@example.com", "viewer"),
         ]
-        assert client.get(f"/v1/projects/{project_id}/invitations", headers=headers).json() == []
+        assert client.get(pending_route, headers=headers).json() == []
+        audit = client.get(f"/v1/projects/{project_id}/audit", headers=headers)
+        assert code not in audit.text and digest not in audit.text
+        assert [item["action"] for item in audit.json()["items"]].count("project.member.invite.accept") == 1
 
         known = client.post(route, headers=headers, json={"email": "guest@example.com", "role": "member"})
         guest_id = client.get("/v1/auth/me", headers=guest_headers).json()["id"]
-        assert known.json() == {"status": "member", "user_id": guest_id, "role": "member"}
+        assert known.json() == {"status": "member", "user_id": guest_id, "role": "viewer"}
         assert [
             item["role"] for item in client.get(route, headers=headers).json() if item["email"] == "guest@example.com"
-        ] == ["member"]
+        ] == ["viewer"]
+
+
+@pytest.mark.parametrize("reason", ["revoked", "rotated", "expired", "deleted", "disabled", "legacy"])
+def test_existing_account_invitation_requires_active_code(monkeypatch, reason: str) -> None:
+    clock = datetime(2026, 11, 20, tzinfo=UTC)
+    monkeypatch.setattr(main, "now", lambda: clock)
+    with TestClient(app) as client:
+        owner = client.post("/v1/auth/register", json={"email": "lead@example.com", "password": "correct-horse"})
+        owner_headers = {"Authorization": f"Bearer {owner.json()['access_token']}"}
+        guest = client.post("/v1/auth/register", json={"email": "guest@example.com", "password": "correct-horse"})
+        guest_headers = {"Authorization": f"Bearer {guest.json()['access_token']}"}
+        project_id = client.post("/v1/projects", headers=owner_headers, json={"name": "Invite"}).json()["id"]
+        route = f"/v1/projects/{project_id}"
+        invitation = {"email": "guest@example.com", "role": "member"}
+        issued = client.post(f"{route}/members", headers=owner_headers, json=invitation).json()
+        assert issued["status"] == "invited"
+        assert client.get(route, headers=guest_headers).status_code == 403
+        invitation_id = client.get(f"{route}/invitations", headers=owner_headers).json()[0]["id"]
+        code = issued["claim_code"]
+        if reason == "revoked":
+            assert client.delete(f"{route}/invitations/{invitation_id}", headers=owner_headers).status_code == 204
+        elif reason == "rotated":
+            new = client.post(f"{route}/members", headers=owner_headers, json=invitation).json()
+            assert new["claim_code"] != code
+        elif reason == "expired":
+            clock += timedelta(days=7)
+        elif reason == "deleted":
+            assert client.delete(route, headers=owner_headers).status_code == 204
+        elif reason == "disabled":
+            with SessionLocal.begin() as db:
+                db.scalar(select(User).where(User.email == invitation["email"])).active = False
+        elif reason == "legacy":
+            with SessionLocal.begin() as db:
+                legacy = db.get(ProjectInvitation, invitation_id)
+                legacy.claim_digest = None
+                legacy.expires_at = None
+        response = client.post("/v1/project-invitations/accept", headers=guest_headers, json={"code": code})
+        if reason == "disabled":
+            assert response.status_code == 401
+        else:
+            assert response.status_code == 404
+            assert response.headers["x-error-code"] == "invitation.unavailable"
+            assert client.get("/v1/projects", headers=guest_headers).json() == []
+        if reason == "rotated":
+            response = client.post(
+                "/v1/project-invitations/accept", headers=guest_headers, json={"code": new["claim_code"]}
+            )
+            assert response.json() == {"project_id": project_id, "role": "member"}
 
 
 def test_job_stages_and_notifications(monkeypatch) -> None:
@@ -601,11 +674,14 @@ def test_share_qr_and_audit() -> None:
             db.commit()
         reader = client.post("/v1/auth/login", json={"email": "reader@example.com", "password": "correct-horse"})
         reader_headers = {"Authorization": f"Bearer {reader.json()['access_token']}"}
+        invitation = client.post(
+            f"/v1/projects/{project_id}/members", headers=headers, json={"email": "reader@example.com"}
+        ).json()
         assert (
             client.post(
-                f"/v1/projects/{project_id}/members", headers=headers, json={"email": "reader@example.com"}
-            ).json()["status"]
-            == "member"
+                "/v1/project-invitations/accept", headers=reader_headers, json={"code": invitation["claim_code"]}
+            ).status_code
+            == 200
         )
         assert client.get(f"/v1/projects/{project_id}/audit", headers=reader_headers).status_code == 403
 
@@ -643,13 +719,13 @@ def test_user_directory_pagination_and_detail() -> None:
         bob_headers = {"Authorization": f"Bearer {bob.json()['access_token']}"}
         alpha = client.post("/v1/projects", headers=alice_headers, json={"name": "Alpha"}).json()["id"]
         beta = client.post("/v1/projects", headers=bob_headers, json={"name": "Beta"}).json()["id"]
-        invite = {"email": "bob@example.com"}
-        assert client.post(f"/v1/projects/{alpha}/members", headers=alice_headers, json=invite).status_code == 201
+        invite = client.post(f"/v1/projects/{beta}/members", headers=bob_headers, json={"email": "alice@example.com"})
+        assert invite.status_code == 201
         assert (
             client.post(
-                f"/v1/projects/{beta}/members", headers=bob_headers, json={"email": "alice@example.com"}
+                "/v1/project-invitations/accept", headers=alice_headers, json={"code": invite.json()["claim_code"]}
             ).status_code
-            == 201
+            == 200
         )
 
         alice_id = client.get("/v1/users?query=alice", headers=admin).json()["items"][0]["id"]

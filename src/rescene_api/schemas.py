@@ -60,6 +60,10 @@ class AddMemberRequest(BaseModel):
     role: Literal["member", "viewer"] = "member"
 
 
+class AcceptInvitationRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=128)
+
+
 class MarkNotificationsRequest(BaseModel):
     ids: list[str] = Field(default_factory=list, max_length=200)
 
