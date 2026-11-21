@@ -1,3 +1,4 @@
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -20,6 +21,7 @@ from rescene_api.models import (
     Asset,
     AssetCleanup,
     AuditLog,
+    JobStage,
     Notification,
     Project,
     ProjectInvitation,
@@ -28,6 +30,7 @@ from rescene_api.models import (
     User,
 )
 from rescene_api.schemas import ChangePasswordRequest
+from rescene_api.storage import TemporaryCredentials
 
 
 def migrate(connection, revision):
@@ -185,6 +188,145 @@ def test_postgres_notifications_follow_committed_membership(postgres_sessions):
         removing.commit()
         assert client.get("/v1/notifications", headers=headers).json() == []
         assert client.get("/v1/notifications/count", headers=headers).json() == {"unread": 0}
+
+
+@pytest.fixture
+def worker_storage(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "storage",
+        lambda: SimpleNamespace(
+            worker_credentials=lambda *_: TemporaryCredentials(
+                access_key_id="ak",
+                access_key_secret="sk",
+                security_token="sts",
+                expiration="2030-01-01T00:00:00Z",
+            )
+        ),
+    )
+
+
+def test_postgres_lease_locks_only_the_next_candidate(postgres_sessions, worker_storage, monkeypatch):
+    with postgres_sessions.begin() as db:
+        owner = User(email="lease-scope@example.com", password_hash=hash_password("correct-horse"))
+        db.add(owner)
+        db.flush()
+        project = Project(name="Lease scope", owner_id=owner.id)
+        db.add(project)
+        db.flush()
+        assets = [
+            Asset(
+                project_id=project.id,
+                object_key=f"lease-{index}",
+                filename=f"{index}.jpg",
+                size=1,
+                content_type="image/jpeg",
+                status="READY",
+            )
+            for index in range(2)
+        ]
+        db.add_all(assets)
+        db.flush()
+        jobs = []
+        for index, asset in enumerate(assets):
+            job = ReconstructionJob(
+                project_id=project.id,
+                profile="balanced",
+                status="QUEUED",
+                priority=1 - index,
+                created_at=datetime.now(UTC) + timedelta(seconds=index),
+            )
+            db.add(job)
+            db.flush()
+            db.add(JobStage(job_id=job.id, stage="queued", status="QUEUED", message=json.dumps([asset.id])))
+            jobs.append(job)
+        owner_id = owner.id
+        first_job, second_job = jobs[0].id, jobs[1].id
+    headers = {"Authorization": f"Bearer {issue_token(owner_id)}"}
+    worker = {"Authorization": f"Bearer {settings().worker_token}", "X-Worker-ID": "lease-scope-worker"}
+
+    original_ids = main.queued_asset_ids
+    claimed = Event()
+    release = Event()
+
+    def blocking_ids(db, job_id):
+        if not claimed.is_set():
+            claimed.set()
+            assert release.wait(10), "test did not release the claim"
+        return original_ids(db, job_id)
+
+    monkeypatch.setattr(main, "queued_asset_ids", blocking_ids)
+    with TestClient(main.app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        leasing = pool.submit(client.post, "/v1/worker/lease", headers=worker)
+        assert claimed.wait(10), "claim never reached the locked row"
+        cancelling = pool.submit(client.post, f"/v1/jobs/{second_job}/cancel", headers=headers)
+        try:
+            cancelled = cancelling.result(timeout=5)
+        except Exception as error:
+            release.set()
+            leasing.result(timeout=15)
+            raise AssertionError("cancelling another queued job waited for the claim transaction") from error
+        release.set()
+        leased = leasing.result(timeout=15)
+        assert cancelled.status_code == 200
+        assert leased.status_code == 200 and leased.json()["job"]["job_id"] == first_job
+
+    with postgres_sessions() as db:
+        assert db.get(ReconstructionJob, first_job).status == "LEASED"
+        assert db.get(ReconstructionJob, second_job).status == "CANCELLED"
+
+
+def test_postgres_concurrent_leases_claim_one_job(postgres_sessions, worker_storage):
+    with postgres_sessions.begin() as db:
+        owner = User(email="lease-race@example.com", password_hash=hash_password("correct-horse"))
+        db.add(owner)
+        db.flush()
+        project = Project(name="Lease race", owner_id=owner.id)
+        db.add(project)
+        db.flush()
+        assets = [
+            Asset(
+                project_id=project.id,
+                object_key=f"race-{index}",
+                filename=f"{index}.jpg",
+                size=1,
+                content_type="image/jpeg",
+                status="READY",
+            )
+            for index in range(2)
+        ]
+        db.add_all(assets)
+        db.flush()
+        for index, asset in enumerate(assets):
+            job = ReconstructionJob(
+                project_id=project.id,
+                profile="balanced",
+                status="QUEUED",
+                priority=1 - index,
+                created_at=datetime.now(UTC) + timedelta(seconds=index),
+            )
+            db.add(job)
+            db.flush()
+            db.add(JobStage(job_id=job.id, stage="queued", status="QUEUED", message=json.dumps([asset.id])))
+    barrier = Barrier(2)
+
+    with TestClient(main.app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+
+        def claim(worker_id):
+            barrier.wait(timeout=10)
+            return client.post(
+                "/v1/worker/lease",
+                headers={"Authorization": f"Bearer {settings().worker_token}", "X-Worker-ID": worker_id},
+            ).json()
+
+        futures = [pool.submit(claim, name) for name in ("race-a", "race-b")]
+        results = [future.result(timeout=30) for future in futures]
+
+    leased = [result["job"] for result in results if result["job"]]
+    assert len(leased) == 1, "two concurrent workers must not both lease a job"
+    with postgres_sessions() as db:
+        active = db.scalars(select(ReconstructionJob).where(ReconstructionJob.status.in_(["LEASED", "RUNNING"]))).all()
+        assert len(active) == 1 and active[0].id == leased[0]["job_id"]
 
 
 @pytest.mark.parametrize("operation", ["create", "retry"])

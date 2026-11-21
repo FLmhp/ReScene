@@ -1677,8 +1677,9 @@ def lease_job(db: Db, worker_id: WorkerDep, gpu_name: Annotated[str | None, Head
     job = db.scalar(
         select(ReconstructionJob)
         .where(ReconstructionJob.status == "QUEUED")
-        .order_by(ReconstructionJob.priority.desc(), ReconstructionJob.created_at)
+        .order_by(ReconstructionJob.priority.desc(), ReconstructionJob.created_at, ReconstructionJob.id)
         .with_for_update(skip_locked=True)
+        .limit(1)
     )
     if not job:
         db.commit()
