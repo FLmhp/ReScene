@@ -110,8 +110,8 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 | [017](017-poll-miniapp-logs-from-empty.md) | A12 | 微信任务日志从空列表开始追踪 | P2 | S | 无 | TODO |
 | [018](018-verify-experiment-process-group-exit.md) | A13 | 试验退出时确认所属进程组停止 | P2 | M | 无 | DONE · `2a18993`（Linux 进程组待实测） |
 | [019](019-stop-worker-between-artifact-uploads.md) | A14 | 取消或失租后停止后续产物上传 | P2 | S–M | 无 | DONE · `0f7f91f`（真实 5090 待验收） |
-| [020](020-request-initial-viewer-url-over-native-bridge.md) | A15 | 通过原生桥加载 Android 私有场景 | P2 | S–M | 无 | TODO |
-| [021](021-show-retry-on-native-viewer-load-error.md) | A16 | Android Viewer 主页面加载失败时显示重试 | P2 | S | 无 | TODO |
+| [020](020-request-initial-viewer-url-over-native-bridge.md) | A15 | 通过原生桥加载 Android 私有场景 | P2 | S–M | 无 | DONE · `17008c8`(真机复测待验收) |
+| [021](021-show-retry-on-native-viewer-load-error.md) | A16 | Android Viewer 主页面加载失败时显示重试 | P2 | S | 无 | DONE · `17008c8`(真机复测待验收) |
 | [022](022-verify-legacy-database-adoption.md) | A17 | 按固定基线接管无版本标记的旧数据库 | P2 | M | 无 | DONE · `d10b698`(真实旧库采用待人工验收) |
 | [023](023-lock-only-next-lease-candidate.md) | A18 | 领取任务时仅锁一个候选 | P2 | S | 无 | DONE · `0ab1bda` |
 | [024](024-bound-worker-gpu-probes.md) | A19 | 为 Worker GPU 探测设置超时 | P2 | S | 无 | DONE · `ccf3587`（真实驱动超时待验收） |
