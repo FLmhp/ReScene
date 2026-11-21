@@ -8,11 +8,11 @@
 
 | 计划 | 工作项 | 优先级 | 工作量 | 依赖 | 状态 |
 |---|---|---|---|---|---|
-| [001](001-verify-project-invitations.md) | 校验项目邀请领取资格 | P1 | L | 无 | DONE · `7404d8b`（设备复测见实施记录） |
-| [002](002-isolate-native-offline-queues.md) | 按账户隔离 Android 与微信离线队列 | P1 | M | 无 | DONE · `072030b` |
-| [003](003-fence-stale-upload-cleanup.md) | 串行化过期上传清理与完成 | P1 | M | 无 | DONE · `2d2ff23` |
-| [004](004-restart-from-corrupt-checkpoint.md) | 损坏的 checkpoint 回退到干净重建 | P1 | S–M | 无 | DONE · `ecc88b6` |
-| [005](005-make-native-replay-concurrency-safe.md) | 防止离线重放覆盖新入队项 | P1 | M | 002 | DONE · `cced25e` |
+| [001](001-verify-project-invitations.md) | 校验项目邀请领取资格 | P1 | L | 无 | DONE · `7404d8b`，已并入集成分支 `13bfa65`（设备复测见实施记录） |
+| [002](002-isolate-native-offline-queues.md) | 按账户隔离 Android 与微信离线队列 | P1 | M | 无 | DONE · `072030b`，随 005 并入集成分支 |
+| [003](003-fence-stale-upload-cleanup.md) | 串行化过期上传清理与完成 | P1 | M | 无 | DONE · `2d2ff23`，已并入集成分支 `19d5224` |
+| [004](004-restart-from-corrupt-checkpoint.md) | 损坏的 checkpoint 回退到干净重建 | P1 | S–M | 无 | DONE · `ecc88b6`，已并入集成分支 `3c0925a` |
+| [005](005-make-native-replay-concurrency-safe.md) | 防止离线重放覆盖新入队项 | P1 | M | 002 | DONE · `cced25e`，已并入集成分支 `d9e2121` |
 
 001、002、003、004 的行为可独立验证。001 与 002 同时修改原生页面，001 与 003 同时修改 API 主模块和测试文件。先落对应变更后再基于最新分支核对另一份计划的锚点。005 使用 002 的账户存储键、会话代次和重放上下文。
 
@@ -31,6 +31,19 @@
 Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 PostgreSQL 16.16。前端复核使用 Node 22.23.5、pnpm 10.18.3。001 的首次冻结安装选到了 React 18 类型，将该工作树忽略目录中的 junction 对齐到 React 19.2.2 后，类型和 Web 构建通过。001 的收件人测试使用合成账户。Android `SLT_API35` 模拟器使用本地签名的 x86_64 测试包、合成账户和回环 API，网络故障由测试代理控制。测试包 SHA-256 为 `9d3aec8afb600d7c8e58da07b3fe3e3e24afdd4042c841e9afbb6ec5aeaddff4`。微信编译产物回归使用模拟原生 API，开发者工具的自动化连接未建立。真实 OSS、原生设备正式包和新 5090 运行仍待验收。
 
 各项已分别保存在本地分支。005 已包含 002。组合检查发现 001 与 003 在 `tests/test_api.py`、`tests/test_api_postgres.py` 有冲突，001 与 005 在 `apps/miniapp/src/pages/index/index.tsx` 有冲突。原工作区的 HEAD 为 `21b2052`。
+
+### 集成分支（001–005）
+
+集成工作树 `C:/rs-audit-integration`，分支 `codex/audit-integration`，起点 `21b2052`。合并顺序 001 → 003 → 004 → 005（005 已含 002），每步 `git merge --no-ff` 后运行该计划聚焦命令。
+
+| 计划 | 合并提交 | 冲突处理 | 聚焦验证 |
+|---|---|---|---|
+| 001 | `13bfa65` | 无 | API/契约/PostgreSQL 测试与 workbench 17 项通过 |
+| 003 | `19d5224` | `tests/test_api.py`、`tests/test_api_postgres.py` 导入并集；以 001 的 Alembic `migrate()` 夹具为准，删除失效的 `from rescene_api.db import Base`，双方测试函数均保留 | 含 PostgreSQL 夹具 35 项通过 |
+| 004 | `3c0925a` | 无 | preprocess 与 worker 52 项通过 |
+| 005 | `d9e2121` | `apps/miniapp/src/pages/index/index.tsx` 以 005 的 owner/会话结构为基底，重加 `inviteCode` 状态、`currentQueueOwner()` 栅栏的 `acceptInvitation()` 与领取码卡片；登出改用 `signOutSession()` 并清空领取码 | 全量 282 项通过（7 项跳过为可选引擎依赖）、11 个类型检查、68→79 项 workspace 测试、Android 导出、小程序生产构建与 `check-miniapp-login` 通过 |
+
+环境：Python 3.11.18（uv 虚拟环境 + `infra/api/constraints.txt`）、Node 26.13.1、pnpm 10.18.3、PostgreSQL 16.16（scoop 隔离实例，端口 55432，schema 级隔离夹具）。Ruff lint/format、`mypy` schema、`pnpm check:versions` 通过。Docker 守护进程在本机未启动，镜像构建与容器日志抽查记录为待验收。
 
 ## 审计发现
 
