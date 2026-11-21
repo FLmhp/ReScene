@@ -142,31 +142,160 @@ function isConflict(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { status?: number }).status === 409;
 }
 
-/**
- * Replay in enqueue order. One failing entry never blocks the ones behind it:
- * projects that fail and uploads that fail for network reasons stay queued.
- */
+type ReplayCounts = Omit<ReplayResult, "remaining">;
+type CompletedEntry = keyof ReplayCounts;
+
+async function finishEntry(entry: QueuedEntry, handle: (entry: QueuedEntry) => Promise<void>): Promise<CompletedEntry> {
+  try {
+    await handle(entry);
+    return entry.kind === "project" ? "created" : "uploaded";
+  } catch (reason) {
+    if (entry.kind === "upload" && isConflict(reason)) return "dropped";
+    throw reason;
+  }
+}
+
 export async function replayQueue(entries: QueuedEntry[], handlers: QueueHandlers): Promise<ReplayResult> {
-  const remaining: QueuedEntry[] = [];
-  let created = 0;
-  let uploaded = 0;
-  let dropped = 0;
+  const result: ReplayResult = { remaining: [], created: 0, uploaded: 0, dropped: 0 };
   for (const entry of entries) {
     try {
-      if (entry.kind === "project") {
-        await handlers.createProject(entry.name);
-        created += 1;
-      } else {
-        await handlers.upload(entry);
-        uploaded += 1;
-      }
-    } catch (error) {
-      if (entry.kind === "upload" && isConflict(error)) {
-        dropped += 1;
-        continue;
-      }
-      remaining.push(entry);
+      const outcome = await finishEntry(entry, (row) => row.kind === "project" ? handlers.createProject(row.name) : handlers.upload(row));
+      result[outcome] += 1;
+    } catch {
+      result.remaining.push(entry);
     }
   }
-  return { remaining, created, uploaded, dropped };
+  return result;
+}
+
+type QueueStorage = {
+  read(owner: QueueOwner): Promise<QueuedEntry[]>;
+  write(owner: QueueOwner, entries: QueuedEntry[]): Promise<void>;
+  isCurrent(owner: QueueOwner): boolean;
+};
+
+type NativeUpload = (entry: QueuedUpload, rememberAsset: (assetId: string) => Promise<void>) => Promise<void>;
+type EntryResult = CompletedEntry | "missing" | "busy";
+
+class QueueStorageError extends Error {
+  constructor(cause: unknown) {
+    super("无法保存或读取本地离线队列，请检查设备存储后重试。", { cause });
+  }
+}
+
+export function createNativeQueue(storage: QueueStorage) {
+  const writes = new Map<string, Promise<void>>();
+  const claimed = new Map<string, { generation: number; task: Promise<EntryResult> }>();
+  const replaying = new Map<string, { generation: number; task: Promise<ReplayCounts> }>();
+
+  function assertCurrent(owner: QueueOwner): void {
+    if (!storage.isCurrent(owner)) throw new Error(QUEUE_PAUSED);
+  }
+
+  async function read(owner: QueueOwner): Promise<QueuedEntry[]> {
+    try { return await storage.read(owner); }
+    catch (reason) { throw new QueueStorageError(reason); }
+  }
+
+  function mutate(owner: QueueOwner, change: (entries: QueuedEntry[]) => QueuedEntry[]): Promise<void> {
+    const previous = writes.get(owner.id) ?? Promise.resolve();
+    const task = previous.catch(() => undefined).then(async () => {
+      const entries = await read(owner);
+      const next = change(entries);
+      if (next === entries) return;
+      try { await storage.write(owner, next); }
+      catch (reason) { throw new QueueStorageError(reason); }
+    }).finally(() => {
+      if (writes.get(owner.id) === task) writes.delete(owner.id);
+    });
+    writes.set(owner.id, task);
+    return task;
+  }
+
+  async function load(owner: QueueOwner): Promise<QueuedEntry[]> {
+    await writes.get(owner.id)?.catch(() => undefined);
+    return read(owner);
+  }
+
+  function enqueue(owner: QueueOwner, entry: QueuedEntry): Promise<void> {
+    return mutate(owner, (entries) => {
+      assertCurrent(owner);
+      return entries.some((row) => row.id === entry.id) ? entries : [...entries, entry];
+    });
+  }
+
+  function remove(owner: QueueOwner, id: string): Promise<void> {
+    return mutate(owner, (entries) => entries.filter((row) => row.id !== id));
+  }
+
+  function remember(owner: QueueOwner, id: string, assetId: string): Promise<void> {
+    return mutate(owner, (entries) => entries.map((row) => row.id === id && row.kind === "upload" ? { ...row, assetId } : row));
+  }
+
+  function runEntry(
+    owner: QueueOwner,
+    id: string,
+    handle: (entry: QueuedEntry) => Promise<void>,
+    skipClaimed: boolean,
+  ): Promise<EntryResult> {
+    const key = JSON.stringify([owner.id, id]);
+    const existing = claimed.get(key);
+    if (existing) {
+      if (skipClaimed) return Promise.resolve("busy");
+      if (existing.generation === owner.generation) return existing.task;
+      return existing.task.catch(() => undefined).then(() => runEntry(owner, id, handle, skipClaimed));
+    }
+
+    const task = (async (): Promise<EntryResult> => {
+      assertCurrent(owner);
+      const entry = (await load(owner)).find((row) => row.id === id);
+      if (!entry) return "missing";
+      assertCurrent(owner);
+      const outcome = await finishEntry(entry, handle);
+      await remove(owner, id);
+      return outcome;
+    })().finally(() => { claimed.delete(key); });
+    claimed.set(key, { generation: owner.generation, task });
+    return task;
+  }
+
+  function upload(owner: QueueOwner, id: string, handle: NativeUpload): Promise<EntryResult> {
+    return runEntry(owner, id, async (entry) => {
+      if (entry.kind !== "upload") throw new Error("找不到待上传素材。");
+      await handle(entry, (assetId) => remember(owner, entry.id, assetId));
+    }, false);
+  }
+
+  async function replayOnce(owner: QueueOwner, handlers: { createProject: QueueHandlers["createProject"]; upload: NativeUpload }): Promise<ReplayCounts> {
+    assertCurrent(owner);
+    const ids = (await load(owner)).map((entry) => entry.id);
+    const result = { created: 0, uploaded: 0, dropped: 0 };
+    let storageError: QueueStorageError | undefined;
+    for (const id of ids) {
+      if (!storage.isCurrent(owner)) break;
+      try {
+        const outcome = await runEntry(owner, id, (entry) => entry.kind === "project"
+          ? handlers.createProject(entry.name)
+          : handlers.upload(entry, (assetId) => remember(owner, entry.id, assetId)), true);
+        if (outcome !== "busy" && outcome !== "missing") result[outcome] += 1;
+      } catch (reason) {
+        if (reason instanceof QueueStorageError) storageError ??= reason;
+      }
+    }
+    if (storageError) throw storageError;
+    return result;
+  }
+
+  function replay(owner: QueueOwner, handlers: Parameters<typeof replayOnce>[1]): Promise<ReplayCounts> {
+    const existing = replaying.get(owner.id);
+    if (existing) {
+      if (existing.generation === owner.generation) return existing.task;
+      return existing.task.catch(() => undefined).then(() => replay(owner, handlers));
+    }
+    const task = replayOnce(owner, handlers).finally(() => { replaying.delete(owner.id); });
+    replaying.set(owner.id, { generation: owner.generation, task });
+    return task;
+  }
+
+  return { enqueue, load, replay, upload };
 }

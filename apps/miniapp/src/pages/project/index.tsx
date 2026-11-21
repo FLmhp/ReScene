@@ -8,12 +8,11 @@ import { Button, Image, Input, Progress, ScrollView, Text, View } from "@tarojs/
 import Taro, { useDidHide, useDidShow, useRouter } from "@tarojs/taro";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { apiBaseUrl, assertQueueOwner, client, currentQueueOwner, isQueueOwnerCurrent, onSessionExpired, queueClient, webBaseUrl } from "../../api";
-import { enqueue, loadQueue, replayQueued, saveQueue } from "../../queue";
+import { apiBaseUrl, assertQueueOwner, client, currentQueueOwner, isQueueOwnerCurrent, onSessionExpired, webBaseUrl } from "../../api";
+import { enqueue, replayQueued, uploadQueued } from "../../queue";
 import {
   chooseMedia,
   inspectChosenFiles,
-  uploadFile,
   UploadError,
   UploadSelectionError,
   MINIAPP_FILE_COUNT,
@@ -265,7 +264,6 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
 
   async function runUploads(owner: QueueOwner, items: UploadItem[], indexes: number[]) {
     if (uploadLock.current || !isQueueOwnerCurrent(owner)) return;
-    const scopedClient = queueClient(owner);
     uploadLock.current = true;
     setUploading(true);
     try {
@@ -273,52 +271,16 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
         const item = items[index];
         if (!isQueueOwnerCurrent(owner)) return;
         if (item.owner.id !== owner.id || item.owner.generation !== owner.generation) continue;
-        const file = item.file;
         setUploads((current) => current.map((row, i) => i === index ? { ...row, status: "uploading", progress: 0, error: undefined } : row));
         try {
-          const entries = await loadQueue(owner);
-          const queued = entries.find((entry) => entry.kind === "upload" && entry.id === item.id);
-          const assetId = queued && queued.kind === "upload" ? queued.assetId : undefined;
-          if (!queued) {
-            // A retry of a row that failed online still needs its queue slot so an
-            // offline retry is durable rather than only announced.
-            await enqueue(owner, {
-              kind: "upload",
-              id: item.id,
-              projectId,
-              uri: file.path,
-              name: file.name,
-              mimeType: file.contentType,
-              size: file.size,
-              createdAt: Date.now(),
-            });
-          }
-          await uploadFile(owner, scopedClient, projectId, file, (progress) => setUploads((current) => current.map((row, i) => i === index ? { ...row, progress } : row)), {
-            assetId,
-            onAsset: async (id) => {
-              const stored = await loadQueue(owner);
-              await saveQueue(owner, stored.map((entry) => entry.kind === "upload" && entry.id === item.id ? { ...entry, assetId: id } : entry));
-            },
-          });
-          const remaining = (await loadQueue(owner)).filter((entry) => entry.id !== item.id);
-          if (!isQueueOwnerCurrent(owner)) return;
-          await saveQueue(owner, remaining);
+          await uploadQueued(owner, item.id, (progress) => setUploads((current) => current.map((row, i) => i === index ? { ...row, progress } : row)));
           if (!isQueueOwnerCurrent(owner)) return;
           setUploads((current) => current.map((row, i) => i === index ? { ...row, status: "done", progress: 100 } : row));
         } catch (reason) {
           if (!isQueueOwnerCurrent(owner)) return;
-          const failedFile = reason instanceof UploadError ? reason.file : file;
           const offline = isOfflineError(reason) || (reason instanceof UploadError && reason.offline);
-          const credentialExpired = reason instanceof UploadError && reason.status === 401;
-          if (!offline && !credentialExpired) {
-            const remaining = (await loadQueue(owner)).filter((entry) => entry.id !== item.id);
-            if (!isQueueOwnerCurrent(owner)) return;
-            await saveQueue(owner, remaining);
-          }
-          if (!isQueueOwnerCurrent(owner)) return;
           setUploads((current) => current.map((row, i) => i === index ? {
             ...row,
-            file: failedFile,
             status: "failed",
             error: offline ? "已保存，联网后自动重试。" : message(reason, "上传失败"),
           } : row));

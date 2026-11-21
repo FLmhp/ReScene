@@ -36,6 +36,7 @@ await runInContext(`
     const oldIdentityPending = new Promise(resolve => { oldIdentityStarted = resolve; });
     const oldIdentityResponse = new Promise(resolve => { finishOldIdentity = resolve; });
     const legacy = JSON.stringify([{ kind: "project", id: "old", name: "Legacy fixture", createdAt: 1 }]);
+    const createdDrafts = [];
     const storage = new Map([["rescene-queue", legacy]]);
     let storageUnavailable = true;
     require.m[runtime[0]] = module => { module.exports = { navigator: { userAgent: "WeChat" } }; };
@@ -59,7 +60,7 @@ await runInContext(`
             getImageData: () => ({ data: new Uint8Array(width * height * 4).fill(255) }),
           }),
         }),
-        request: async ({url, header, data}) => {
+        request: async ({url, header, method, data}) => {
           if (url.endsWith("/v1/auth/login")) {
             const email = JSON.parse(data).email;
             return { statusCode: 200, data: { access_token: email === "stale@example.org" ? "fixture-old-token" : "fixture-token", token_type: "bearer" } };
@@ -71,6 +72,11 @@ await runInContext(`
           }
           if (header.Authorization !== "Bearer fixture-token") throw new Error("Missing login token");
           if (url.endsWith("/v1/auth/me")) return { statusCode: 200, data: { id: "user", email: "test@example.org", is_admin: false } };
+          if (url.endsWith("/v1/projects") && method === "POST") {
+            const { name } = JSON.parse(data);
+            createdDrafts.push(name);
+            return { statusCode: 201, data: { id: "replayed", name, owner_id: "user", effective_role: "owner" } };
+          }
           if (url.endsWith("/v1/projects")) return { statusCode: 200, data: [{ id: "project", name: "Fixture", owner_id: "user", effective_role: "member" }] };
           if (url.endsWith("/project?view=summary")) return { statusCode: 200, data: { id: "project", name: "Fixture", owner_id: "user", effective_role: "member", asset_count: 1, job_count: 0, has_active_jobs: false, cover: null, latest_job: null } };
           if (url.endsWith("/project/assets?cursor=")) return { statusCode: 200, data: { items: [{ id: "a1", filename: "reference.jpg", size: 150, status: "READY" }], next_cursor: null } };
@@ -83,8 +89,8 @@ await runInContext(`
     const client = api.find(value => typeof value?.login === "function");
     const authenticate = api.find(value => typeof value === "function" && value.length === 3);
     const currentOwner = api.find(value => typeof value === "function" && String(value).includes(".owner()"));
-    const loadQueue = Object.values(require(queue[0])).find(value => typeof value === "function" && value.length === 1);
-    if (!client || !authenticate || !currentOwner || !loadQueue) throw new Error("Cannot locate compiled auth or queue API");
+    const replay = Object.values(require(queue[0])).find(value => typeof value === "function" && String(value).includes(".replay("));
+    if (!client || !authenticate || !currentOwner || !replay) throw new Error("Cannot locate compiled auth or queue API");
     globalThis.loginResult = (async () => {
       const openHome = Object.values(require(navigation[0])).find(value => typeof value === "function");
       await openHome();
@@ -98,7 +104,10 @@ await runInContext(`
       if (credential.token !== "fixture-token" || credential.owner !== user.id) throw new Error("Verified account was not bound to its credential");
       if (storage.get("rescene-queue") !== legacy) throw new Error("Unowned legacy queue changed");
       storage.set("rescene-queue-old-user", legacy);
-      if ((await loadQueue(currentOwner())).length !== 0) throw new Error("New account can read another account's queue");
+      storage.set("rescene-queue-user", JSON.stringify([{ kind: "project", id: "mine", name: "Current account draft", createdAt: 2 }]));
+      const replayed = await replay(currentOwner(), () => {});
+      if (replayed.created !== 1 || createdDrafts.join() !== "Current account draft") throw new Error("Replay did not isolate the current account");
+      if (storage.get("rescene-queue-old-user") !== legacy || storage.get("rescene-queue-user") !== "[]") throw new Error("Replay did not persist the current account's completion");
       const [project] = await client.listProjects();
       const workspace = await client.getWorkspace(project.id);
       const inspect = Object.values(require(uploader[0])).find(value => typeof value === "function" && String(value).includes("createOffscreenCanvas"));
