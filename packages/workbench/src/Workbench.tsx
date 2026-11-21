@@ -21,7 +21,7 @@ import type {
   WorkerStatus,
 } from "@rescene/schemas";
 import { inspectMedia, newIdempotencyKey, SAMPLE_SIDE, summarizeMediaWarnings, type UploadAdapter } from "@rescene/uploader";
-import { type ComponentType, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type ComponentType, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { AdminConsole } from "./AdminConsole";
 import { BrandMark } from "./BrandMark";
@@ -113,6 +113,11 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [loaded, setLoaded] = useState(false);
   const [view, setView] = useState<"project" | "admin">("project");
   const [navOpen, setNavOpen] = useState(false);
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 1024px)").matches);
+  const asideRef = useRef<HTMLElement>(null);
+  const navToggleRef = useRef<HTMLButtonElement>(null);
+  const projectHeadingRef = useRef<HTMLHeadingElement>(null);
+  const navReturnFocus = useRef<"toggle" | "content" | null>(null);
   const [notifyFilter, setNotifyFilter] = useState<NotifyFilter>("all");
   const [notifyOffset, setNotifyOffset] = useState(0);
   const [notifyLoading, setNotifyLoading] = useState(false);
@@ -154,11 +159,37 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     return () => dialog.close();
   }, [scene]);
   useEffect(() => {
+    const query = window.matchMedia("(max-width: 1024px)");
+    const sync = () => {
+      setNarrow(query.matches);
+      if (!query.matches) setNavOpen(false);
+    };
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
+  useEffect(() => {
     if (!navOpen) return;
-    const close = (event: KeyboardEvent) => { if (event.key === "Escape") setNavOpen(false); };
+    const close = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      navReturnFocus.current = "toggle";
+      setNavOpen(false);
+    };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [navOpen]);
+  useEffect(() => {
+    if (!narrow) return;
+    if (navOpen) {
+      const first = asideRef.current?.querySelector<HTMLElement>('button:not([disabled]), select:not([disabled]), input:not([disabled]), [href]');
+      first?.focus();
+      return;
+    }
+    const target = navReturnFocus.current === "content" ? projectHeadingRef.current : navReturnFocus.current === "toggle" ? navToggleRef.current : null;
+    if (!target) return;
+    navReturnFocus.current = null;
+    target.focus();
+  }, [detail?.name, narrow, navOpen, view]);
 
   useEffect(() => {
     const saved = tokenStore.get(TOKEN_KEY);
@@ -456,6 +487,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   }
   function selectProject(id: string) {
     setView("project");
+    if (narrow && navOpen) navReturnFocus.current = id ? "content" : "toggle";
     setNavOpen(false);
     setSelected(id);
     setSelectedJob("");
@@ -623,6 +655,16 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       return [...older.filter((line) => !seen.has(line.id)), ...current];
     });
   }
+  function trapDrawerFocus(event: ReactKeyboardEvent<HTMLElement>) {
+    if (!narrow || event.key !== "Tab") return;
+    const nodes = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), select:not([disabled]), input:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'))
+      .filter((node) => !node.closest("details:not([open])"));
+    if (!nodes.length) return;
+    const first = nodes[0];
+    const last = nodes[nodes.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  }
   const artifact = scene && artifacts.find((item) => item.kind === scene.kind);
   const derivedUnread = notifications.filter((item) => item.read_at === null).length;
   const unread = unreadCount ?? derivedUnread;
@@ -668,14 +710,14 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
 
   return (
     <main className={`shell${navOpen ? " nav-open" : ""}`}>
-      <header className="mobile-bar">
-        <button className="nav-toggle" type="button" aria-label="打开导航" aria-expanded={navOpen} onClick={() => setNavOpen(true)}>☰</button>
+      <header className="mobile-bar" inert={narrow && navOpen}>
+        <button ref={navToggleRef} className="nav-toggle" type="button" aria-label="打开导航" aria-expanded={navOpen} onClick={() => setNavOpen(true)}>☰</button>
         <span className="mark"><BrandMark size={18} /></span>
         <strong>ReScene</strong>
         {unread > 0 && <span className="badge">{unread}</span>}
       </header>
-      <button className="nav-backdrop" type="button" aria-label="关闭导航" onClick={() => setNavOpen(false)} />
-      <aside>
+      <button className="nav-backdrop" type="button" tabIndex={-1} aria-label="关闭导航" onClick={() => { navReturnFocus.current = "toggle"; setNavOpen(false); }} />
+      <aside ref={asideRef} tabIndex={-1} inert={narrow && !navOpen} onKeyDown={trapDrawerFocus}>
         <ThemeControl />
         <div className="brand">
           <span className="mark"><BrandMark size={22} /></span>
@@ -760,7 +802,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
         </details>
         <button className="signout" onClick={() => runAction(signOut)}>退出登录</button>
       </aside>
-      <section className="workspace">
+      <section className="workspace" inert={narrow && navOpen}>
         {view === "admin" ? (
           <AdminConsole client={client} onMessage={setMessage} />
         ) : (
@@ -788,7 +830,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                 <header className="project-header">
                   <div>
                     <button className="back-link" type="button" onClick={() => selectProject("")}>← 所有项目</button>
-                    <h1>{detail.name}</h1>
+                    <h1 ref={projectHeadingRef} tabIndex={-1}>{detail.name}</h1>
                   </div>
                   <p className="project-summary">{detail.asset_count} 个素材 · {detail.job_count} 个任务</p>
                 </header>
