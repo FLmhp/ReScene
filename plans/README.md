@@ -98,7 +98,7 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 |---|---|---|---|---|---|---|
 | [006](006-redact-share-access-logs.md) | A01 | 从 API 访问日志移除分享凭证 | P1 | S | 无 | DONE · `dd2607e`（镜像构建待验收） |
 | [007](007-bind-share-state-to-reconstruction.md) | A02 | 将分享状态绑定到当前重建 | P1 | M | 无 | DONE · `2c172bb`（微信 DevTools 场景切换待验收） |
-| [008](008-persist-asset-deletion-intent.md) | A03 | 持久化素材删除意图并重试 OSS 清理 | P1 | M | 无 | TODO |
+| [008](008-persist-asset-deletion-intent.md) | A03 | 持久化素材删除意图并重试 OSS 清理 | P1 | M | 无 | DONE · `afe1691`（真实 OSS 删除待验收） |
 | [009](009-make-create-requests-idempotent.md) | A04 | 为项目与重建创建增加幂等重试 | P1 | L | [005](005-make-native-replay-concurrency-safe.md) 的原生集成基线 | TODO |
 | [010](010-fence-targeted-deployment-rollback.md) | A05 | 确保定向部署可以安全停止与回滚 | P1 | M | 无 | DONE · `53cf75d`（真实服务器演练待验收） |
 | [011](011-preserve-evaluation-in-regenerated-reports.md) | A06 | 重生成报告时保留匹配产物的评估证据 | P2 | S–M | 无 | TODO |
