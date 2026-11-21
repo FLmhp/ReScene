@@ -123,6 +123,8 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [logsLoading, setLogsLoading] = useState(false);
   const notifyFilterRef = useRef<NotifyFilter>(notifyFilter);
   notifyFilterRef.current = notifyFilter;
+  const notifyRequest = useRef(0);
+  const notifyLoaded = useRef(false);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const detailRef = useRef(detail);
@@ -170,15 +172,21 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   }, [client, tokenStore]);
   const expire = useCallback(() => { client.setToken(null); tokenStore.remove(TOKEN_KEY); setToken(""); setMe(null); setMessage("登录已过期，请重新登录。"); }, [client, tokenStore]);
   const loadNotifications = useCallback(async (filter: NotifyFilter = notifyFilterRef.current, offset = 0): Promise<AppNotification[]> => {
+    const request = ++notifyRequest.current;
     setNotifyLoading(true);
     try {
       const list = await client.listNotifications(filter === "unread", NOTIFY_PAGE_SIZE, offset);
-      setNotifications((current) => (offset > 0 ? [...current, ...list] : list));
+      if (request !== notifyRequest.current) return list;
+      setNotifications((current) => {
+        if (offset === 0) { notifyLoaded.current = true; return list; }
+        const seen = new Set(current.map((item) => item.id));
+        return [...current, ...list.filter((item) => !seen.has(item.id))];
+      });
       setNotifyOffset(offset);
       setNotifyHasMore(list.length >= NOTIFY_PAGE_SIZE);
       return list;
     } finally {
-      setNotifyLoading(false);
+      if (request === notifyRequest.current) setNotifyLoading(false);
     }
   }, [client]);
   const loadUnread = useCallback(async () => {
@@ -201,7 +209,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       ]);
       if (request !== workspaceRequest.current) return;
       setMe(user); setProjects(list); setWorkerStatus(worker); setLoaded(true);
-      await loadNotifications();
+      if (!notifyLoaded.current) void loadNotifications().catch((error: unknown) => { if (error instanceof ResceneApiError && error.status === 401) expire(); });
       void loadUnread();
       if (selected && selectedRef.current === selected && request === workspaceRequest.current) {
         if (!detailRef.current) setDetailLoading(true);
@@ -233,6 +241,12 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     }
   }, [assetPages, client, expire, jobPages, loadNotifications, loadUnread, selected, token]);
   useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 15000); return () => clearInterval(timer); }, [refresh]);
+  useEffect(() => {
+    if (token) return;
+    notifyRequest.current += 1;
+    notifyLoaded.current = false;
+    setNotifications([]); setUnreadCount(null); setNotifyHasMore(false); setNotifyOffset(0); setNotifyLoading(false);
+  }, [token]);
   useEffect(() => {
     if (!token) return;
     const timer = setInterval(() => {
