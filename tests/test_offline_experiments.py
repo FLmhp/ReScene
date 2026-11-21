@@ -116,6 +116,61 @@ def test_monitor_keeps_phase_memory_peaks_between_utilization_samples(tmp_path, 
     assert result["phase_gpu"]["training"] == {"samples": 1, "peak_owned_mib": 120, "mean_utilization_percent": 45}
 
 
+@pytest.mark.parametrize(
+    "initial, failure, expected",
+    [
+        ((True, True), None, "manual"),
+        ((True, False), "stop", "unsafe"),
+        ((True, False), "popen", "start"),
+        ((True, False), None, "start"),
+        ((False, False), None, "stopped"),
+    ],
+)
+def test_worker_recovery_respects_ownership(tmp_path, monkeypatch, capsys, initial, failure, expected):
+    spec = tmp_path / "spec.json"
+    spec.write_text("{}")
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps([{"name": "one", "spec": str(spec), "profile": "fast", "repeat": 1}]))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setattr(supervisor, "DATA", tmp_path)
+    monkeypatch.setattr(supervisor, "ROOT", tmp_path)
+    monkeypatch.setattr(supervisor, "RUNS", tmp_path / "runs-root")
+    monkeypatch.setattr(supervisor, "require_free", Mock())
+    monkeypatch.setattr(supervisor, "require_idle_worker", Mock())
+    monkeypatch.setattr(supervisor, "worker_state", Mock(side_effect=[initial, (False, True)]))
+    monkeypatch.setattr(supervisor, "stop_trial", Mock())
+    monkeypatch.setattr(supervisor.signal, "SIGHUP", 1, raising=False)
+    monkeypatch.setattr(supervisor.signal, "signal", Mock(return_value=None))
+    monkeypatch.setattr(sys, "argv", ["supervisor", str(plan)])
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[-1] == "stop" and failure == "stop":
+            raise supervisor.subprocess.TimeoutExpired(command, 60)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(supervisor.subprocess, "run", run)
+    proc = Mock(pid=123, wait=Mock(return_value=0))
+    popen = Mock(side_effect=OSError("launch failed")) if failure == "popen" else Mock(return_value=proc)
+    monkeypatch.setattr(supervisor.subprocess, "Popen", popen)
+    if expected == "manual":
+        with pytest.raises(RuntimeError, match="manually drained"):
+            supervisor.main()
+        assert "restore=skipped reason=pre-existing-drain" in capsys.readouterr().out
+    elif expected == "unsafe":
+        with pytest.raises(RuntimeError, match="stop did not complete"):
+            supervisor.main()
+    elif failure == "popen":
+        with pytest.raises(OSError, match="launch failed"):
+            supervisor.main()
+    else:
+        assert supervisor.main() == 0
+    starts = [command for command in calls if command[-1] == "start"]
+    assert bool(starts) == (expected == "start")
+
+
 def test_freeze_nested_subsets_keep_the_same_validation_views(tmp_path):
     scene = tmp_path / "scene"
     scene.mkdir()
