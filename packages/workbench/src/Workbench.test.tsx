@@ -806,3 +806,73 @@ describe("notification pagination", () => {
     expect(screen.queryByText("通知 99")).toBeNull();
   });
 });
+
+describe("narrow navigation drawer", () => {
+  function stubNarrowViewport(narrow: boolean) {
+    vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
+      matches: narrow && query.includes("1024px"),
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })));
+  }
+
+  it("keeps the closed drawer out of the focus order", async () => {
+    stubNarrowViewport(true);
+    stubFetch(routeTable());
+    renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "我的项目" })).toBeTruthy());
+    const aside = document.querySelector("aside");
+    expect(aside?.hasAttribute("inert")).toBe(true);
+    expect(document.querySelector("header.mobile-bar")?.hasAttribute("inert")).toBe(false);
+    expect(document.querySelector("section.workspace")?.hasAttribute("inert")).toBe(false);
+  });
+
+  it("focuses the open drawer, traps Tab and restores the toggle on Escape", async () => {
+    stubNarrowViewport(true);
+    stubFetch(routeTable());
+    renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "我的项目" })).toBeTruthy());
+    const toggle = screen.getByRole("button", { name: "打开导航" });
+    toggle.focus();
+    await userEvent.click(toggle);
+
+    const aside = document.querySelector("aside")!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(aside.hasAttribute("inert")).toBe(false);
+    expect(aside.contains(document.activeElement)).toBe(true);
+    expect(document.querySelector("section.workspace")?.hasAttribute("inert")).toBe(true);
+
+    const focusable = Array.from(aside.querySelectorAll<HTMLElement>('button:not([disabled]), select:not([disabled]), input:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'))
+      .filter((node) => !node.closest("details:not([open])"));
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    last.focus();
+    await userEvent.tab();
+    expect(document.activeElement).toBe(first);
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("false"));
+    expect(document.activeElement).toBe(toggle);
+    expect(aside.hasAttribute("inert")).toBe(true);
+  });
+
+  it("moves focus into the selected project after choosing it in the drawer", async () => {
+    stubNarrowViewport(true);
+    stubFetch(routeTable());
+    renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "我的项目" })).toBeTruthy());
+    await userEvent.click(screen.getByRole("button", { name: "打开导航" }));
+    await userEvent.click(screen.getByRole("button", { name: /Kitchen ·/ }));
+
+    const heading = await screen.findByRole("heading", { name: "Kitchen" });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+  });
+});
