@@ -12,7 +12,7 @@ import tarfile
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -92,24 +92,48 @@ class Api:
         raise AssertionError("Worker API retry loop exhausted")
 
 
+_last_gpu_probe_warning: float | None = None
+
+
+def warn_gpu_probe(message: str) -> None:
+    global _last_gpu_probe_warning
+    now = time.monotonic()
+    if _last_gpu_probe_warning is None or now - _last_gpu_probe_warning >= 60:
+        print(f"worker GPU probe: {message}", file=sys.stderr, flush=True)
+        _last_gpu_probe_warning = now
+
+
 def gpu_name() -> str:
-    result = subprocess.run(
-        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        warn_gpu_probe("device name timed out")
+        return "unknown"
     return result.stdout.strip().splitlines()[0] if result.returncode == 0 and result.stdout.strip() else "unknown"
 
 
 def gpu_has_compute_process() -> bool:
-    result = subprocess.run(
-        ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader,nounits"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.returncode != 0 or bool(result.stdout.strip())
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        warn_gpu_probe("compute process query timed out; skipping lease")
+        return True
+    if result.returncode != 0:
+        warn_gpu_probe("compute process query failed; skipping lease")
+        return True
+    return bool(result.stdout.strip())
 
 
 @contextmanager
@@ -337,7 +361,7 @@ def monitor_job(
         events[0].wait(2)
 
 
-def artifacts(job_dir: Path, bucket: oss2.Bucket, output_prefix: str) -> list[dict]:
+def artifacts(job_dir: Path, bucket: oss2.Bucket, output_prefix: str, check: Callable[[], None]) -> list[dict]:
     candidates: list[tuple[str, Path]] = []
     for kind, name in (("spz", "scene.spz"), ("metrics", "metrics.json"), ("report", "report.md")):
         path = job_dir / name
@@ -352,6 +376,7 @@ def artifacts(job_dir: Path, bucket: oss2.Bucket, output_prefix: str) -> list[di
             candidates.append((kind, path))
     result = []
     for kind, path in candidates:
+        check()
         key = f"{output_prefix}artifacts/{kind}/{path.name}"
         oss2.resumable_upload(bucket, key, str(path), multipart_threshold=64 * 1024**2, num_threads=1)
         result.append(
@@ -366,6 +391,7 @@ def artifacts(job_dir: Path, bucket: oss2.Bucket, output_prefix: str) -> list[di
     manifest = job_dir / "manifest.json"
     manifest.write_text(json.dumps({"version": 1, "artifacts": result}, indent=2), encoding="utf-8")
     key = f"{output_prefix}artifacts/manifest/manifest.json"
+    check()
     bucket.put_object_from_file(key, str(manifest), headers={"Content-Type": "application/json"})
     result.append(
         {
@@ -525,7 +551,7 @@ def execute_attempt(
         return
     metrics_path = output_dir / "metrics.json"
     metrics = json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.exists() else {}
-    published = artifacts(output_dir, bucket, job["output_prefix"])
+    published = artifacts(output_dir, bucket, job["output_prefix"], lambda: check_lease(events))
     check_lease(events)
     api.post(f"{endpoint}/complete", {"artifacts": published, "quality_score": metrics.get("psnr")})
 

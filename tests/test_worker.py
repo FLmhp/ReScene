@@ -52,13 +52,110 @@ def test_publication_uses_declared_final_ply_not_largest_or_lexical_file(tmp_pat
         "rescene_worker.main.oss2.resumable_upload",
         lambda bucket, key, filename, **kwargs: bucket.put_object_from_file(key, filename),
     )
-    published = artifacts(tmp_path, Bucket(), "projects/p/jobs/j/")
+    published = artifacts(tmp_path, Bucket(), "projects/p/jobs/j/", lambda: None)
     record = next(item for item in published if item["kind"] == "ply")
     assert uploaded[record["object_key"]] == final
     assert record["sha256"] == hashlib.sha256(final).hexdigest()
     assert record["size"] == len(final)
     manifest = json.loads(uploaded["projects/p/jobs/j/artifacts/manifest/manifest.json"])
     assert next(item for item in manifest["artifacts"] if item["kind"] == "ply") == record
+
+
+@pytest.mark.parametrize("interruption", [JobCancelled, LeaseLost])
+@pytest.mark.parametrize("stop_after", [0, 1, 4])
+def test_artifact_upload_stops_at_object_boundaries(tmp_path, monkeypatch, interruption, stop_after):
+    from rescene_worker.main import check_lease
+
+    for name in ("scene.spz", "metrics.json", "report.md", "final.ply"):
+        (tmp_path / name).write_bytes(b"fixture")
+    monkeypatch.setattr("rescene_worker.main.final_ply_path", lambda _path: tmp_path / "final.ply")
+    events = (Event(), Event())
+    event = events[0 if interruption is JobCancelled else 1]
+    if stop_after == 0:
+        event.set()
+    uploaded = []
+
+    def upload(_bucket, key, _filename, **_kwargs):
+        uploaded.append(key)
+        if len(uploaded) == stop_after:
+            event.set()
+
+    bucket = Mock()
+    monkeypatch.setattr("rescene_worker.main.oss2.resumable_upload", upload)
+    with pytest.raises(interruption):
+        artifacts(tmp_path, bucket, "attempt/", lambda: check_lease(events))
+    assert len(uploaded) == stop_after
+    bucket.put_object_from_file.assert_not_called()
+
+
+def test_gpu_probe_timeouts_and_warning_throttle(monkeypatch, capsys):
+    import subprocess
+
+    import rescene_worker.main as worker
+
+    clock = iter([0, 1, 59, 60])
+    monkeypatch.setattr(worker.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(worker, "_last_gpu_probe_warning", None)
+    run = Mock(side_effect=subprocess.TimeoutExpired("nvidia-smi", 10))
+    monkeypatch.setattr(worker.subprocess, "run", run)
+    assert worker.gpu_name() == "unknown"
+    assert worker.gpu_has_compute_process()
+    assert worker.gpu_has_compute_process()
+    assert worker.gpu_has_compute_process()
+    assert all(call.kwargs["timeout"] == 10 for call in run.call_args_list)
+    assert capsys.readouterr().err.count("worker GPU probe:") == 2
+
+
+@pytest.mark.parametrize("returncode,stdout,busy", [(0, "123\n", True), (0, "", False), (1, "", True)])
+def test_gpu_compute_probe_results(monkeypatch, returncode, stdout, busy):
+    import rescene_worker.main as worker
+
+    run = Mock(return_value=SimpleNamespace(returncode=returncode, stdout=stdout))
+    monkeypatch.setattr(worker.subprocess, "run", run)
+    assert worker.gpu_has_compute_process() is busy
+    assert run.call_args.kwargs["timeout"] == 10
+
+
+def test_gpu_timeout_releases_slot_and_next_idle_poll_leases(tmp_path, monkeypatch):
+    import subprocess
+    from contextlib import contextmanager
+
+    import rescene_worker.main as worker
+
+    config = SimpleNamespace(work_root=tmp_path, poll_seconds=1)
+    api = Mock()
+    api.post.return_value = {"job": None}
+    monkeypatch.setattr(worker, "load_config", lambda: config)
+    monkeypatch.setattr(worker, "Api", lambda _config: api)
+    monkeypatch.setenv("RESCENE_DRAIN_FILE", str(tmp_path / "drain"))
+    state = {"held": False, "released": 0}
+
+    @contextmanager
+    def slot():
+        assert not state["held"]
+        state["held"] = True
+        try:
+            yield 7
+        finally:
+            state["held"] = False
+            state["released"] += 1
+
+    run = Mock(side_effect=[subprocess.TimeoutExpired("nvidia-smi", 10), SimpleNamespace(returncode=0, stdout="")])
+    monkeypatch.setattr(worker, "gpu_slot", slot)
+    monkeypatch.setattr(worker.subprocess, "run", run)
+
+    def sleep(_seconds):
+        assert not state["held"]
+        if state["released"] == 1:
+            api.post.assert_not_called()
+        else:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(worker.time, "sleep", sleep)
+    with pytest.raises(KeyboardInterrupt):
+        worker.run_forever()
+    assert state["released"] == 2
+    api.post.assert_called_once_with("/v1/worker/lease")
 
 
 def test_stage_progress_is_bounded():
@@ -336,6 +433,34 @@ def test_execute_attempt_restarts_corrupt_checkpoint_when_lease_allows(tmp_path,
     assert (job_dir / "input" / "input.mp4").read_bytes() == b"downloaded input"
     assert list((job_dir / "output").iterdir()) == []
     assert not (job_dir / "output.resume.tar.gz").exists()
+
+
+def test_execute_attempt_does_not_complete_after_upload_lease_loss(tmp_path, monkeypatch):
+    events = (Event(), Event())
+    bucket = Mock()
+    monkeypatch.setattr("rescene_worker.main.oss2.Bucket", Mock(return_value=bucket))
+    monkeypatch.setattr("rescene_worker.main.download_inputs", Mock(return_value=tmp_path / "input.mp4"))
+    monkeypatch.setattr("rescene_worker.main.subprocess.Popen", Mock(return_value=SimpleNamespace(returncode=0)))
+    monkeypatch.setattr("rescene_worker.main.LogShipper", Mock())
+    monkeypatch.setattr("rescene_worker.main.monitor_job", Mock())
+
+    def lose_lease(_directory, _bucket, _prefix, check):
+        events[1].set()
+        check()
+
+    monkeypatch.setattr("rescene_worker.main.artifacts", lose_lease)
+    job = {
+        "job_id": "first",
+        "profile": "fast",
+        "attempt": 1,
+        "assets": [],
+        "output_prefix": "attempt/",
+        "oss": {"endpoint": "oss.example", "bucket": "fixture"},
+    }
+    api = Mock()
+    with pytest.raises(LeaseLost):
+        execute_attempt(api, "/first", job, tmp_path / "job", events, lock_fd=7)
+    api.post.assert_not_called()
 
 
 def test_failed_oss_archive_does_not_publish_a_resume_key(tmp_path, monkeypatch):
