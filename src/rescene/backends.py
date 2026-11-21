@@ -11,11 +11,20 @@ from rescene.config import ProfileConfig
 
 
 class BackendError(RuntimeError):
-    """An upstream reconstruction command failed."""
+    """An upstream reconstruction command failed.
+
+    ``log_offset`` marks where this attempt started appending, so failure
+    classifiers read only the text this run produced.
+    """
+
+    def __init__(self, message: str, *, log_offset: int | None = None) -> None:
+        super().__init__(message)
+        self.log_offset = log_offset
 
 
 def run_command(command: list[str], log_path: Path, *, cwd: Path | None = None) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    offset = log_path.stat().st_size if log_path.exists() else 0
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
     with log_path.open("a", encoding="utf-8") as log:
@@ -28,7 +37,7 @@ def run_command(command: list[str], log_path: Path, *, cwd: Path | None = None) 
             check=False,
         )
     if result.returncode:
-        raise BackendError(f"command failed ({result.returncode}); see {log_path}")
+        raise BackendError(f"command failed ({result.returncode}); see {log_path}", log_offset=offset)
 
 
 def vggt_command(
@@ -175,16 +184,32 @@ def gsplat_command(
     return command
 
 
+LOG_TAIL_LIMIT = 50_000
+
+
+def _attempt_log_tail(error: Exception, log_path: Path, limit: int = LOG_TAIL_LIMIT) -> str:
+    """Read the bounded tail this attempt appended, never an earlier run's text."""
+    offset = getattr(error, "log_offset", None)
+    if not isinstance(offset, int) or offset < 0:
+        return ""
+    try:
+        size = log_path.stat().st_size
+        start = max(offset, size - limit)
+        if start >= size:
+            return ""
+        with log_path.open("rb") as stream:
+            stream.seek(start)
+            return stream.read(size - start).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
 def is_cuda_oom(error: Exception, log_path: Path) -> bool:
-    text = str(error)
-    if log_path.exists():
-        text += log_path.read_text(encoding="utf-8", errors="replace")[-50_000:]
+    text = str(error) + _attempt_log_tail(error, log_path)
     lowered = text.lower()
     return "out of memory" in lowered and ("cuda" in lowered or "cublas" in lowered)
 
 
 def is_vggt_ba_failure(error: Exception, log_path: Path) -> bool:
-    text = str(error)
-    if log_path.exists():
-        text += log_path.read_text(encoding="utf-8", errors="replace")[-50_000:]
+    text = str(error) + _attempt_log_tail(error, log_path)
     return "No reconstruction can be built with BA" in text
