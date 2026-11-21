@@ -9,12 +9,12 @@ import oss2
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, event, select, update
 
 from rescene_api import main
 from rescene_api.auth import hash_password, issue_token, verify_password
 from rescene_api.config import Settings
-from rescene_api.db import SessionLocal
+from rescene_api.db import SessionLocal, engine
 from rescene_api.main import app
 from rescene_api.models import (
     Asset,
@@ -707,6 +707,63 @@ def test_session_version_grows_with_every_revocation() -> None:
         after_deactivate = version()
         assert after_deactivate > after_reset
         assert client.get("/v1/auth/me", headers=member).status_code == 401
+
+
+def test_project_list_resolves_roles_in_one_batch() -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            owner = User(email="owner@example.com", password_hash=hash_password("correct-horse"))
+            member = User(email="member@example.com", password_hash=hash_password("correct-horse"))
+            db.add_all([owner, member])
+            db.flush()
+            owned = Project(name="Owned", owner_id=member.id)
+            db.add(owned)
+            for index in range(4):
+                project = Project(name=f"Shared {index}", owner_id=owner.id)
+                db.add(project)
+                db.flush()
+                db.add(ProjectMember(project_id=project.id, user_id=member.id, role="member"))
+            hidden = Project(name="Hidden", owner_id=owner.id)
+            deleted = Project(name="Deleted", owner_id=owner.id, deleted_at=now())
+            db.add_all([hidden, deleted])
+            db.commit()
+            member_id = member.id
+        headers = {
+            "Authorization": f"Bearer {client.post('/v1/auth/login', json={'email': 'member@example.com', 'password': 'correct-horse'}).json()['access_token']}"
+        }
+
+        def count_queries() -> tuple[int, list[str]]:
+            statements: list[str] = []
+
+            def record(_conn, _cursor, statement, _parameters, _context, _executemany):
+                statements.append(statement)
+
+            event.listen(engine, "before_cursor_execute", record)
+            try:
+                response = client.get("/v1/projects", headers=headers)
+            finally:
+                event.remove(engine, "before_cursor_execute", record)
+            assert response.status_code == 200
+            return len(statements), [statement.lower() for statement in statements]
+
+        with_many, statements = count_queries()
+        projects = client.get("/v1/projects", headers=headers).json()
+        assert {item["name"] for item in projects} == {"Owned", "Shared 0", "Shared 1", "Shared 2", "Shared 3"}
+        assert [item["created_at"] for item in projects] == sorted(
+            (item["created_at"] for item in projects), reverse=True
+        )
+        assert {item["effective_role"] for item in projects} == {"owner", "member"}
+
+        with SessionLocal() as db:
+            db.execute(delete(ProjectMember).where(ProjectMember.user_id == member_id))
+            db.commit()
+        with_fewer, _ = count_queries()
+        assert with_fewer == with_many, "the list query count must not grow with collaborations"
+        assert sum("project_members" in statement for statement in statements) == 2, (
+            "one membership filter plus one batched role projection"
+        )
+
+        assert [item["name"] for item in client.get("/v1/projects", headers=headers).json()] == ["Owned"]
 
 
 def test_admin_governance() -> None:

@@ -183,12 +183,19 @@ def require_project_manager(project: Project, user: User) -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Project owner or administrator access required")
 
 
-def project_view(db: Session, project: Project, user: User) -> dict[str, object]:
+_UNRESOLVED = object()
+
+
+def project_view(
+    db: Session, project: Project, user: User, *, role: str | None | object = _UNRESOLVED
+) -> dict[str, object]:
+    """Serialize one project; list routes pass a role resolved in one batch."""
+    effective = effective_role(db, project, user) if role is _UNRESOLVED else role
     return {
         "id": project.id,
         "name": project.name,
         "owner_id": project.owner_id,
-        "effective_role": effective_role(db, project, user),
+        "effective_role": effective,
         "created_at": project.created_at,
     }
 
@@ -452,7 +459,28 @@ def list_projects(db: Db, user: UserDep) -> list[dict[str, object]]:
     if not user.is_admin:
         query = query.where(or_(Project.owner_id == user.id, Project.id.in_(membership)))
     rows = db.scalars(query.order_by(Project.created_at.desc())).all()
-    return [project_view(db, item, user) for item in rows]
+    ids = [item.id for item in rows]
+    memberships = (
+        dict(
+            db.execute(
+                select(ProjectMember.project_id, ProjectMember.role).where(
+                    ProjectMember.user_id == user.id, ProjectMember.project_id.in_(ids)
+                )
+            ).all()
+        )
+        if ids
+        else {}
+    )
+
+    def role_for(project: Project) -> str | None:
+        if project.owner_id == user.id:
+            return "owner"
+        if user.is_admin:
+            return "admin"
+        role = memberships.get(project.id)
+        return role if role in {"member", "viewer"} else None
+
+    return [project_view(db, item, user, role=role_for(item)) for item in rows]
 
 
 IDEMPOTENCY_MAX_LENGTH = 128
