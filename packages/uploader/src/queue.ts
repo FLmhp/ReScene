@@ -88,13 +88,27 @@ export type QueuedUpload = {
   kind: "upload";
   id: string;
   projectId: string;
+  /** App-owned copy while `managed` is true; a picker temporary otherwise. */
   uri: string;
   name: string;
   mimeType: string;
   size: number;
+  managed?: boolean;
   assetId?: string;
   createdAt: number;
 };
+
+/** The queued copy is gone; the user has to pick that file again. */
+export class QueuedMediaMissing extends Error {
+  constructor() {
+    super("本地素材副本已丢失，请重新选择该文件。");
+    this.name = "QueuedMediaMissing";
+  }
+}
+
+export function isQueuedMediaMissing(error: unknown): boolean {
+  return error instanceof QueuedMediaMissing;
+}
 
 export type QueuedProject = { kind: "project"; id: string; name: string; createdAt: number; idempotencyKey?: string };
 
@@ -118,7 +132,8 @@ function isEntry(value: unknown): value is QueuedEntry {
       typeof entry.uri === "string" &&
       typeof entry.name === "string" &&
       typeof entry.mimeType === "string" &&
-      typeof entry.size === "number"
+      typeof entry.size === "number" &&
+      (entry.managed === undefined || typeof entry.managed === "boolean")
     );
   }
   return false;
@@ -315,5 +330,10 @@ export function createNativeQueue(storage: QueueStorage, options: NativeQueueOpt
     return task;
   }
 
-  return { enqueue, load, replay, upload };
+  /** Remove one entry the user explicitly abandoned. */
+  function discard(owner: QueueOwner, id: string): Promise<void> {
+    return remove(owner, id);
+  }
+
+  return { enqueue, discard, load, replay, upload };
 }

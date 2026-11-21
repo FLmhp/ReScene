@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  accountQueueKey, createNativeQueue, createQueueSession, parseQueue, readQueueCredential, replayQueue, serializeQueue,
-  sessionExpiry, type QueuedEntry, type QueuedUpload, type QueueOwner,
+  accountQueueKey, createNativeQueue, createQueueSession, isQueuedMediaMissing, parseQueue, QueuedMediaMissing,
+  readQueueCredential, replayQueue, serializeQueue, sessionExpiry, type QueuedEntry, type QueuedUpload, type QueueOwner,
 } from "./queue";
 
 function upload(overrides: Partial<QueuedUpload> = {}): QueuedUpload {
@@ -163,6 +163,31 @@ describe("queue account ownership", () => {
   });
 });
 
+
+describe("managed media", () => {
+  it("round-trips the managed flag and rejects other types", () => {
+    const managed = upload({ managed: true });
+    expect(parseQueue(serializeQueue([managed]))).toEqual([managed]);
+    expect(parseQueue(JSON.stringify([{ ...upload(), managed: "yes" }]))).toEqual([]);
+  });
+
+  it("discards only the abandoned entry and keeps the rest", async () => {
+    const { owner, queue } = queueFixture();
+    const kept = upload({ id: "kept" });
+    await queue.enqueue(owner, kept);
+    await queue.enqueue(owner, upload({ id: "abandoned" }));
+
+    await queue.discard(owner, "abandoned");
+
+    expect(await queue.load(owner)).toEqual([kept]);
+  });
+
+  it("surfaces a typed error for a missing copy", () => {
+    const error = new QueuedMediaMissing();
+    expect(isQueuedMediaMissing(error)).toBe(true);
+    expect(isQueuedMediaMissing(new Error("其它"))).toBe(false);
+  });
+});
 
 describe("idempotency keys", () => {
   it("gives a legacy project draft a key before the first attempt and reuses it on retry", async () => {

@@ -1,6 +1,7 @@
 import type { ResceneClient } from "@rescene/api-client";
-import { inspectMedia, SAMPLE_SIDE, type QueueOwner } from "@rescene/uploader";
+import { accountQueueKey, inspectMedia, QueuedMediaMissing, SAMPLE_SIDE, type QueueOwner } from "@rescene/uploader";
 import { File, Paths } from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import { decode } from "jpeg-js";
 
@@ -14,6 +15,59 @@ export type PickedFile = {
 };
 
 export type JobFile = { uri: string; name: string; type: string };
+
+const MEDIA_ROOT = `${FileSystem.documentDirectory}rescene-media/`;
+
+/** Keep the queue-owned copy inside the account's directory, never the picker cache. */
+export function managedMediaDirectory(owner: QueueOwner): string {
+  return MEDIA_ROOT + accountQueueKey("queue", owner) + "/";
+}
+
+function managedMediaName(id: string, name: string): string {
+  const safe = name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "media";
+  return `${id}-${safe}`;
+}
+
+/**
+ * Copy a picked file into app storage before the queue may promise to keep it.
+ * Returns the stored size so the entry records what was actually persisted.
+ */
+export async function persistPickedFile(
+  owner: QueueOwner,
+  id: string,
+  file: PickedFile,
+): Promise<{ uri: string; size: number }> {
+  const directory = managedMediaDirectory(owner);
+  await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+  const uri = directory + managedMediaName(id, file.name);
+  try {
+    await FileSystem.copyAsync({ from: file.uri, to: uri });
+    const stored = new File(uri);
+    if (!stored.exists) throw new Error("素材副本不可读，请检查设备存储。");
+    const size = stored.size;
+    if (typeof size !== "number" || size <= 0) throw new Error("素材副本不可读，请检查设备存储。");
+    if (file.size > 0 && size !== file.size) throw new Error("素材副本不完整，请重新选择该文件。");
+    return { uri, size };
+  } catch (reason) {
+    await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
+    throw reason;
+  }
+}
+
+export async function managedMediaExists(uri: string): Promise<boolean> {
+  return (await FileSystem.getInfoAsync(uri)).exists;
+}
+
+/** Best effort: a leftover copy must never fail a successful upload. */
+export async function removeManagedMedia(uri: string): Promise<void> {
+  try {
+    await FileSystem.deleteAsync(uri, { idempotent: true });
+  } catch { /* the entry is already complete; an orphan file is harmless */ }
+}
+
+export async function requireQueuedMedia(uri: string): Promise<void> {
+  if (!(await managedMediaExists(uri))) throw new QueuedMediaMissing();
+}
 
 export function inspectPickedFiles(files: PickedFile[]): Promise<string[]> {
   return inspectMedia(files, async (file) => {

@@ -4,6 +4,8 @@ import type { UploadGrant } from "@rescene/schemas";
 import { inspectMedia, mediaType, SAMPLE_SIDE, type QueueOwner } from "@rescene/uploader";
 import Taro from "@tarojs/taro";
 
+import { accountQueueKey, QueuedMediaMissing, type QueueOwner as MediaQueueOwner } from "@rescene/uploader";
+
 import { assertQueueOwner, isQueueOwnerCurrent } from "./api";
 
 export const MINIAPP_FILE_LIMIT = 10 * 1024 * 1024;
@@ -15,6 +17,49 @@ export type ChosenFile = {
   name: string;
   contentType: string;
 };
+
+/** Keep the queue-owned copy in app user storage, not the temporary picker path. */
+export function managedMediaDirectory(owner: MediaQueueOwner): string {
+  const root = (Taro.env as { USER_DATA_PATH?: string }).USER_DATA_PATH ?? "wxfile://usr";
+  return `${root}/rescene-media/${accountQueueKey("queue", owner)}/`;
+}
+
+function managedMediaName(id: string, name: string): string {
+  const safe = name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-80) || "media";
+  return `${id}-${safe}`;
+}
+
+/** Copy a chosen file into app storage before the queue may promise to keep it. */
+export function persistChosenFile(owner: MediaQueueOwner, id: string, file: ChosenFile): { path: string; size: number } {
+  const fs = Taro.getFileSystemManager();
+  const directory = managedMediaDirectory(owner);
+  fs.mkdirSync(directory, true);
+  const path = directory + managedMediaName(id, file.name);
+  try {
+    fs.copyFileSync(file.path, path);
+    const stats = fs.statSync(path) as { size?: number };
+    const size = typeof stats.size === "number" ? stats.size : 0;
+    if (size <= 0) throw new Error("素材副本不可读，请检查设备存储。");
+    if (file.size > 0 && size !== file.size) throw new Error("素材副本不完整，请重新选择该文件。");
+    return { path, size };
+  } catch (reason) {
+    try { fs.unlinkSync(path); } catch { /* nothing to roll back */ }
+    throw reason;
+  }
+}
+
+export function managedMediaExists(path: string): boolean {
+  try { Taro.getFileSystemManager().accessSync(path); return true; } catch { return false; }
+}
+
+/** Best effort: an orphan copy must never fail a successful upload. */
+export function removeManagedMedia(path: string): void {
+  try { Taro.getFileSystemManager().unlinkSync(path); } catch { /* already gone */ }
+}
+
+export function requireQueuedMedia(path: string): void {
+  if (!managedMediaExists(path)) throw new QueuedMediaMissing();
+}
 
 /** Selection refused; `cancelled` means the user backed out, not a failure. */
 export class UploadSelectionError extends Error {

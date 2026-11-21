@@ -38,10 +38,23 @@ await runInContext(`
     const legacy = JSON.stringify([{ kind: "project", id: "old", name: "Legacy fixture", createdAt: 1 }]);
     const createdDrafts = [];
     const storage = new Map([["rescene-queue", legacy]]);
+    const mediaFiles = new Map([["wxfile://tmp/kept.jpg", 12]]);
+    const copiedMedia = [];
+    const accessChecks = [];
+    const readFiles = [];
+    const mediaFs = {
+      readFileSync: path => { readFiles.push(path); return new Uint8Array(path === "bad" ? [1, 2, 3] : [255, 216, 255]).buffer; },
+      accessSync: path => { accessChecks.push(path); if (!mediaFiles.has(path)) throw new Error("file missing"); },
+      mkdirSync: () => {},
+      copyFileSync: (src, dest) => { mediaFiles.set(dest, mediaFiles.get(src)); copiedMedia.push([src, dest]); },
+      statSync: path => { if (!mediaFiles.has(path)) throw new Error("file missing"); return { size: mediaFiles.get(path) }; },
+      unlinkSync: path => { mediaFiles.delete(path); },
+    };
     let storageUnavailable = true;
     require.m[runtime[0]] = module => { module.exports = { navigator: { userAgent: "WeChat" } }; };
     require.m[taro[0]] = module => {
       module.exports = {
+        env: { USER_DATA_PATH: "wxfile://usr" },
         getStorageSync: key => {
           if (storageUnavailable) {
             storageUnavailable = false;
@@ -52,7 +65,7 @@ await runInContext(`
         setStorageSync: (key, value) => { storage.set(key, value); },
         removeStorageSync: key => { storage.delete(key); },
         reLaunch: async ({url}) => { homeUrl = url; },
-        getFileSystemManager: () => ({ readFileSync: path => new Uint8Array(path === "bad" ? [1, 2, 3] : [255, 216, 255]).buffer }),
+        getFileSystemManager: () => mediaFs,
         createOffscreenCanvas: ({ width, height }) => ({
           createImage: () => ({ set src(_) { this.onload(); } }),
           getContext: () => ({
@@ -116,10 +129,21 @@ await runInContext(`
       const warnings = await inspect(files);
       let rejected = false;
       try { await inspect([{path: "bad", name: "bad.jpg", size: 12}]); } catch (error) { rejected = error.message.includes("bad.jpg") && error.message.includes("内容与扩展名不符"); }
-      return [client.getToken(), user.id, project.effective_role, workspace.asset_count, workspace.assets[0].id, warnings.length, rejected];
+
+      storage.set("rescene-queue-user", JSON.stringify([{ kind: "upload", id: "kept", projectId: "project", uri: "wxfile://tmp/kept.jpg", name: "kept.jpg", mimeType: "image/jpeg", size: 12, createdAt: 4 }]));
+      await replay(currentOwner(), () => {});
+      const adopted = JSON.parse(storage.get("rescene-queue-user")).find(entry => entry.id === "kept");
+      const migrated = Boolean(adopted?.managed) && adopted.uri.includes("/rescene-media/")
+        && copiedMedia.some(([, dest]) => dest === adopted.uri);
+
+      storage.set("rescene-queue-user", JSON.stringify([{ kind: "upload", id: "lost", projectId: "project", uri: "wxfile://tmp/lost.jpg", name: "lost.jpg", mimeType: "image/jpeg", size: 12, createdAt: 5 }]));
+      await replay(currentOwner(), () => {});
+      const keptLost = JSON.parse(storage.get("rescene-queue-user")).some(entry => entry.id === "lost");
+      const checkedMissing = accessChecks.includes("wxfile://tmp/lost.jpg") && !readFiles.includes("wxfile://tmp/lost.jpg");
+      return [client.getToken(), user.id, project.effective_role, workspace.asset_count, workspace.assets[0].id, warnings.length, rejected, migrated, checkedMissing, keptLost];
     })();
   }]);
   loginResult;
-`, context, { displayErrors: false }).then(result => assert.deepEqual([...result], ["fixture-token", "user", "member", 1, "a1", 3, true]));
+`, context, { displayErrors: false }).then(result => assert.deepEqual([...result], ["fixture-token", "user", "member", 1, "a1", 3, true, true, true, true]));
 assert.equal(runInContext("evalAttempts", context), 0);
-console.log("Built miniapp validates startup recovery, account-bound login and queue storage, paged workspace, and media preflight using native API fixtures");
+console.log("Built miniapp validates startup recovery, account-bound login, managed queue media, paged workspace, and media preflight using native API fixtures");
