@@ -1,5 +1,6 @@
 import { ResceneClient, type JobEvent } from "@rescene/api-client";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import type { AppNotification } from "@rescene/schemas";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -730,5 +731,78 @@ describe("job status reconciliation", () => {
     act(() => handler()({ stage: "training", status: "running", progress: 0.9, message: null, metrics: {} }));
     await waitFor(() => expect(screen.getByRole("progressbar", { name: "任务进度" }).getAttribute("aria-valuenow")).toBe("90"));
     expect(document.querySelector(".job-state")?.getAttribute("data-status")).toBe("FAILED");
+  });
+});
+
+describe("notification pagination", () => {
+  function notice(id: string, index: number): AppNotification {
+    return {
+      id,
+      kind: "announcement",
+      title: `通知 ${index}`,
+      body: null,
+      project_id: null,
+      job_id: null,
+      announcement_id: "a1",
+      read_at: null,
+      created_at: "2026-01-01T00:00:00Z",
+    };
+  }
+
+  it("keeps expanded notification pages across the timed refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      const page = (start: number, count: number) => Array.from({ length: count }, (_, index) => notice(`n${start + index}`, start + index));
+      let pageRequests = 0;
+      stubFetch(routeTable({
+        "/v1/notifications/count": { unread: 44 },
+        "/v1/notifications": (url: URL) => {
+          pageRequests += 1;
+          const offset = Number(url.searchParams.get("offset") ?? "0");
+          if (offset === 20) return page(20, 20);
+          if (offset === 40) return page(39, 5);
+          return page(0, 20);
+        },
+      }));
+      renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByText("通知（44）")).toBeTruthy();
+      fireEvent.click(screen.getByText("通知（44）"));
+      expect(document.querySelectorAll(".notify li")).toHaveLength(20);
+      fireEvent.click(screen.getByRole("button", { name: "加载更多" }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(document.querySelectorAll(".notify li")).toHaveLength(40);
+      fireEvent.click(screen.getByRole("button", { name: "加载更多" }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(document.querySelectorAll(".notify li")).toHaveLength(44);
+      expect(screen.queryByRole("button", { name: "加载更多" })).toBeNull();
+
+      const loaded = pageRequests;
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(pageRequests).toBe(loaded);
+      expect(document.querySelectorAll(".notify li")).toHaveLength(44);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops a stale filter page after the selection changes", async () => {
+    const client = new ResceneClient("https://api.example", "token-1");
+    let resolveUnread: (value: AppNotification[]) => void = () => {};
+    vi.spyOn(client, "listNotifications").mockImplementation((unread) => unread
+      ? new Promise<AppNotification[]>((resolve) => { resolveUnread = resolve; })
+      : Promise.resolve([notice("n1", 1)]));
+    stubFetch(routeTable({ "/v1/notifications/count": { unread: 2 } }));
+    renderWorkbench(client);
+
+    await waitFor(() => expect(screen.getByText("通知（2）")).toBeTruthy());
+    await userEvent.click(screen.getByText("通知（2）"));
+    await userEvent.click(screen.getByRole("tab", { name: "未读" }));
+    await userEvent.click(screen.getByRole("tab", { name: "全部" }));
+    await waitFor(() => expect(screen.getByText("通知 1")).toBeTruthy());
+
+    await act(async () => { resolveUnread([notice("stale", 99)]); });
+    expect(screen.queryByText("通知 99")).toBeNull();
   });
 });
