@@ -8,7 +8,9 @@ from rescene.metrics import (
     _mean_reprojection_error,
     _photometric_metrics,
     collect_metrics,
+    evaluation_artifacts,
     final_ply_path,
+    merge_evaluation_evidence,
     validation_registration,
 )
 
@@ -236,3 +238,34 @@ def test_final_ply_requires_matching_run_metadata(tmp_path: Path) -> None:
     (tmp_path / "gsplat" / "run.json").write_text(json.dumps({"ply_step": 999, "eval_step": 9}), encoding="utf-8")
     with pytest.raises(ValueError, match="final step"):
         final_ply_path(tmp_path)
+
+
+def test_merge_evaluation_evidence_requires_identical_artifacts(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "scene.spz").write_bytes(b"scene")
+    artifacts = evaluation_artifacts(run_dir)
+    previous = {
+        "evaluation_evidence": {
+            "schema_version": 1,
+            "artifacts": artifacts,
+            "fields": {"pose_ate": 0.5, "point_fscore": 0.9, "unknown": 1},
+        }
+    }
+
+    metrics: dict[str, object] = {"total_seconds": 2.0}
+    merge_evaluation_evidence(metrics, previous, run_dir)
+    assert metrics["pose_ate"] == 0.5
+    assert metrics["point_fscore"] == 0.9
+    assert "unknown" not in metrics
+    assert metrics["evaluation_evidence"] is previous["evaluation_evidence"]
+
+    (run_dir / "scene.spz").write_bytes(b"scene-v2")
+    stale: dict[str, object] = {}
+    merge_evaluation_evidence(stale, previous, run_dir)
+    assert "pose_ate" not in stale
+    assert stale["evaluation_needs_recompute"] is True
+
+    legacy: dict[str, object] = {}
+    merge_evaluation_evidence(legacy, {"timings": {"training": 1.0}}, run_dir)
+    assert legacy == {}

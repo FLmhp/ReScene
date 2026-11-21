@@ -291,6 +291,62 @@ def collect_metrics(run_dir: Path, degraded: dict[str, object] | None = None) ->
     return metrics
 
 
+EVALUATION_FIELDS = (
+    "pose_ate",
+    "pose_rotation_error",
+    "evaluation_registered_images",
+    "point_accuracy",
+    "point_completeness",
+    "point_fscore",
+    "point_threshold",
+    "point_metric_method",
+    "evaluation_point_cloud_frame",
+    "evaluation_artifact_to_reference",
+    "evaluation_point_cloud",
+    "point_accuracy_distance",
+    "point_completeness_distance",
+    "point_fscore_proxy",
+    "official_evaluator_sha256",
+)
+"""Fields written by ``evaluate_run`` that a report must not lose or invent."""
+
+
+def evaluation_artifacts(run_dir: Path) -> dict[str, str | None]:
+    """Digests that prove which artifacts an evaluation was computed from."""
+    try:
+        final = final_ply_path(run_dir)
+    except (OSError, ValueError, KeyError):
+        final = None
+    paths = {
+        "scene_spz_sha256": run_dir / "scene.spz",
+        "final_ply_sha256": final,
+        "dense_ply_sha256": run_dir / "dense" / "fused.ply",
+    }
+    return {name: sha256_file(path) if path is not None and path.is_file() else None for name, path in paths.items()}
+
+
+def merge_evaluation_evidence(metrics: dict[str, object], previous: dict[str, object], run_dir: Path) -> None:
+    """Copy a recorded evaluation into ``metrics`` only while it matches the artifacts.
+
+    A regenerated report recomputes live metrics; the expensive evaluation fields
+    come back only when the artifacts are byte-identical to the evaluated ones.
+    """
+    evidence = previous.get("evaluation_evidence")
+    if not isinstance(evidence, dict):
+        return
+    fields = evidence.get("fields")
+    artifacts = evidence.get("artifacts")
+    if not isinstance(fields, dict) or not isinstance(artifacts, dict):
+        metrics["evaluation_needs_recompute"] = True
+        return
+    current = evaluation_artifacts(run_dir)
+    if set(artifacts) != set(current) or any(artifacts[name] != digest for name, digest in current.items()):
+        metrics["evaluation_needs_recompute"] = True
+        return
+    metrics.update({key: value for key, value in fields.items() if key in EVALUATION_FIELDS})
+    metrics["evaluation_evidence"] = evidence
+
+
 def write_report(run_dir: Path, metrics: dict[str, object]) -> Path:
     profile = "unknown"
     config_path = run_dir / "config.json"

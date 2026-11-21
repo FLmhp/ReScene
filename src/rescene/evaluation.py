@@ -10,7 +10,15 @@ from xml.etree import ElementTree
 import numpy as np
 
 from rescene.coordinate_frames import artifact_to_colmap
-from rescene.metrics import _photometric_metrics, collect_metrics, final_ply_path, sha256_file, write_report
+from rescene.metrics import (
+    EVALUATION_FIELDS,
+    _photometric_metrics,
+    collect_metrics,
+    evaluation_artifacts,
+    final_ply_path,
+    sha256_file,
+    write_report,
+)
 
 
 def similarity_alignment(source: np.ndarray, target: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
@@ -324,6 +332,13 @@ def evaluate_run(
                     "official_evaluator_sha256": sha256_file(official_evaluator),
                 }
             )
+    fields = {name: metrics[name] for name in EVALUATION_FIELDS if name in metrics}
+    if fields:
+        metrics["evaluation_evidence"] = {
+            "schema_version": 1,
+            "artifacts": evaluation_artifacts(run_dir),
+            "fields": fields,
+        }
     if persist:
         metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
         write_report(run_dir, metrics)

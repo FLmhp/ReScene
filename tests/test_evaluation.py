@@ -156,6 +156,12 @@ def test_evaluation_composes_artifact_and_pose_transforms(tmp_path: Path, monkey
 
     assert metrics["evaluation_point_cloud_frame"] == "trainer"
     assert np.allclose(_read_ply_xyz(run_dir / "evaluation" / "aligned-reconstruction.ply"), [[6, 7, 6]])
+    evidence = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))["evaluation_evidence"]
+    assert evidence["schema_version"] == 1
+    assert evidence["fields"]["point_fscore"] == 0.75
+    assert evidence["fields"]["official_evaluator_sha256"]
+    assert set(evidence["artifacts"]) == {"scene_spz_sha256", "final_ply_sha256", "dense_ply_sha256"}
+    assert evidence["artifacts"]["dense_ply_sha256"]
 
 
 def test_evaluation_rejects_missing_coordinate_metadata(tmp_path: Path) -> None:
