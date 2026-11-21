@@ -214,6 +214,38 @@ def test_summary_records_a_failure_without_metrics(tmp_path):
     assert result["failures"] == [{"run": "failed", "reason": "algorithm", "validation": {"valid": False}}]
 
 
+def test_summary_groups_scenes_and_validation_sets_without_guessing_identity(tmp_path):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    for name, scene, score, sources in (
+        ("fern1", "fern", 10, ["a"]),
+        ("fern2", "fern", 20, ["a"]),
+        ("fern3", "fern", 30, ["b"]),
+        ("flower", "flower", 40, ["a"]),
+        ("unknown", None, 50, ["a"]),
+    ):
+        run = runs / name
+        run.mkdir()
+        (run / "metrics.json").write_text(json.dumps({"psnr": score, "candidate_id": "wrong"}))
+        (run / "benchmark.json").write_text(
+            json.dumps({"dataset_id": "dataset", "scene_id": scene, "candidate_id": "f2-5k", "repeat": 1})
+        )
+        (run / "environment.json").write_text('{"source_tree_sha256": "hash"}')
+        (run / "trial_validation.json").write_text(json.dumps({"valid": True, "validation_sources": sources}))
+    output = tmp_path / "summary.json"
+    summarize(runs, tmp_path / "resources", output)
+    result = json.loads(output.read_text())
+    assert result["version"] == 2
+    assert len(result["groups"]) == 3
+    assert sorted((g["scene_id"], g["repeats"], g["medians"]["psnr"]) for g in result["groups"]) == [
+        ("fern", 1, 30),
+        ("fern", 2, 15),
+        ("flower", 1, 40),
+    ]
+    assert len(result["candidates"]) == 3
+    assert result["failures"][0]["reason"] == "missing benchmark identity"
+
+
 def test_global_colmap_uses_a_private_copy_and_never_runs_incremental_fallback(tmp_path, monkeypatch):
     original = tmp_path / "matching.db"
     original.write_bytes(b"closed database")

@@ -144,7 +144,7 @@ SUMMARY_FIELDS = (
 
 def summarize(runs: Path, resources: Path, output: Path) -> None:
     """Summarize valid repeats per candidate and report per-run medians."""
-    grouped: dict[str, dict[str, list[object]]] = {}
+    grouped: dict[tuple[str, str, str, str, str], dict] = {}
     failures: list[dict[str, object]] = []
     run_names = {path.name for path in runs.iterdir() if path.is_dir()} if runs.is_dir() else set()
     run_names.update(path.stem for path in resources.glob("*.json"))
@@ -166,17 +166,28 @@ def summarize(runs: Path, resources: Path, output: Path) -> None:
                 }
             )
             continue
+        benchmark_path = run_dir / "benchmark.json"
+        try:
+            benchmark = json.loads(benchmark_path.read_text())
+        except (OSError, ValueError):
+            benchmark = {}
+        identity = tuple(benchmark.get(field) for field in ("dataset_id", "scene_id", "candidate_id"))
+        if any(not isinstance(value, str) or not value.strip() for value in identity):
+            failures.append({"run": name, "reason": "missing benchmark identity", "validation": validation})
+            continue
         metrics = json.loads(metrics_path.read_text())
         row = {field: metrics.get(field) for field in SUMMARY_FIELDS}
-        row["repeat"] = json.loads((run_dir / "benchmark.json").read_text()).get("repeat")
+        row["repeat"] = benchmark.get("repeat")
         row["config_hash"] = metrics.get("config_hash")
         row["source_tree_sha256"] = json.loads((run_dir / "environment.json").read_text())["source_tree_sha256"]
         row["peak_full_pipeline_gpu_mib_sampled"] = resource.get("peak_owned_gpu_mib_sampled")
         row["wall_seconds"] = resource.get("wall_seconds")
         row["final_step"] = validation.get("final_step")
         row["validation_sources"] = validation.get("validation_sources")
-        candidate = str(metrics.get("candidate_id"))
-        bucket = grouped.setdefault(candidate, {"runs": [], "values": {field: [] for field in SUMMARY_FIELDS}})
+        validation_key = json.dumps(row["validation_sources"], sort_keys=True, separators=(",", ":"))
+        group_key = json.dumps(benchmark.get("group"), sort_keys=True, separators=(",", ":"))
+        key = (*identity, group_key, validation_key)
+        bucket = grouped.setdefault(key, {"runs": [], "values": {field: [] for field in SUMMARY_FIELDS}})
         bucket["runs"].append({"run": run_dir.name, **row})
         for field in SUMMARY_FIELDS:
             value = row[field]
@@ -184,10 +195,20 @@ def summarize(runs: Path, resources: Path, output: Path) -> None:
                 bucket["values"][field].append(float(value))
     import statistics
 
-    summary = {"candidates": {}, "failures": failures}
-    for candidate, bucket in sorted(grouped.items()):
+    summary = {"version": 2, "groups": [], "candidates": {}, "failures": failures}
+    candidate_counts = {candidate: sum(key[2] == candidate for key in grouped) for _, _, candidate, _, _ in grouped}
+    base_counts = {
+        (dataset, scene, candidate): sum(key[:3] == (dataset, scene, candidate) for key in grouped)
+        for dataset, scene, candidate, _, _ in grouped
+    }
+    for (dataset, scene, candidate, group_key, validation_key), bucket in sorted(grouped.items()):
         medians = {field: (statistics.median(values) if values else None) for field, values in bucket["values"].items()}
-        summary["candidates"][candidate] = {
+        entry = {
+            "dataset_id": dataset,
+            "scene_id": scene,
+            "candidate_id": candidate,
+            "group": json.loads(group_key),
+            "validation_sources": json.loads(validation_key),
             "repeats": len(bucket["runs"]),
             "medians": medians,
             "ranges": {
@@ -195,6 +216,12 @@ def summarize(runs: Path, resources: Path, output: Path) -> None:
             },
             "runs": bucket["runs"],
         }
+        summary["groups"].append(entry)
+        name = candidate if candidate_counts[candidate] == 1 else f"{dataset}/{scene}/{candidate}"
+        if base_counts[(dataset, scene, candidate)] > 1:
+            suffix = hashlib.sha256(f"{group_key}:{validation_key}".encode()).hexdigest()
+            name = f"{name}/{suffix}"
+        summary["candidates"][name] = entry
     output.parent.mkdir(parents=True, exist_ok=True)
     atomic_json(output, summary)
     print(
