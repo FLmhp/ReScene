@@ -87,7 +87,9 @@ export function ViewerScreen({ reconstructionId, onBack }: { reconstructionId: s
   }
 
   return <View style={{ flex: 1, backgroundColor: theme.bg }}>
-    <Button label="返回任务" tone="ghost" onPress={onBack} />
+    <View style={{ paddingHorizontal: 16, paddingVertical: 8, backgroundColor: theme.panel, borderBottomWidth: 1, borderBottomColor: theme.divider }}>
+      <Button label="返回任务" tone="ghost" onPress={onBack} />
+    </View>
     {viewer && viewer.scene === scene && !error ? <WebView
       key={viewer.generation}
       ref={webview}
@@ -109,7 +111,7 @@ export function ViewerScreen({ reconstructionId, onBack }: { reconstructionId: s
           setError(`Viewer 加载失败 (${event.nativeEvent.statusCode})`);
         }
       }}
-      renderLoading={() => <ActivityIndicator accessibilityLabel="正在加载三维场景" />}
+      renderLoading={() => <View style={{ flex: 1, justifyContent: "center", alignItems: "center", gap: 12, backgroundColor: theme.bg }}><ActivityIndicator accessibilityLabel="正在加载三维场景" /><Text style={textStyles.muted}>正在加载三维场景…</Text></View>}
       startInLoadingState
       source={{ uri: viewer.url }}
       style={{ flex: 1, backgroundColor: theme.bg }}
@@ -117,7 +119,7 @@ export function ViewerScreen({ reconstructionId, onBack }: { reconstructionId: s
       {error ? <>
         <Text accessibilityRole="alert" style={textStyles.error}>{error}</Text>
         <Button label="重试 Viewer" onPress={load} />
-      </> : <ActivityIndicator accessibilityLabel="正在获取三维场景" />}
+      </> : <><ActivityIndicator accessibilityLabel="正在获取三维场景" /><Text style={textStyles.muted}>正在获取三维场景…</Text></>}
     </View>}
   </View>;
 }

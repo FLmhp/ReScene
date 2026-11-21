@@ -194,6 +194,7 @@ describe("session gate", () => {
     expect(keys[2]).toBe(keys[0]);
 
     await submit.mock.results[2]?.value;
+    await userEvent.click(await screen.findByRole("button", { name: "素材", pressed: false }));
     await userEvent.click(await screen.findByRole("button", { name: "开始三维重建" }));
     await waitFor(() => expect(submit).toHaveBeenCalledTimes(4));
     expect(submit.mock.calls[3]?.[3]).not.toBe(keys[0]);
@@ -274,6 +275,7 @@ describe("project roles", () => {
     const quality = screen.getByRole("button", { name: /精细重建/ });
     await userEvent.click(quality);
     expect(quality.getAttribute("aria-pressed")).toBe("true");
+    await userEvent.click(await screen.findByText("成员（2）"));
     await waitFor(() => expect(screen.getByLabelText("teammate@example.com 的角色")).toBeTruthy());
     expect(screen.getByText("owner")).toBeTruthy();
   });
@@ -295,7 +297,7 @@ describe("project roles", () => {
     expect(screen.queryByText("开始三维重建")).toBeNull();
     expect(screen.queryByText("选择图片或视频")).toBeNull();
     expect(screen.queryByText("项目设置")).toBeNull();
-    await waitFor(() => expect(screen.getByText("成员（2）")).toBeTruthy());
+    await userEvent.click(await screen.findByText("成员（2）"));
     expect(screen.getByText("teammate@example.com")).toBeTruthy();
     expect(screen.queryByLabelText("teammate@example.com 的角色")).toBeNull();
     expect(screen.queryByText("frame.jpg")).toBeTruthy();
@@ -364,6 +366,7 @@ describe("collaboration surfaces", () => {
     const store = renderWorkbench(new ResceneClient("https://api.example", "token-1"));
     await waitFor(() => expect(screen.getByRole("navigation", { name: "项目" }).querySelector("button")).toBeTruthy());
 
+    await userEvent.click(screen.getByText("账户"));
     await userEvent.type(screen.getByLabelText("当前密码"), "correct-horse");
     await userEvent.type(screen.getByLabelText("新密码（至少 12 位）"), "correct-horse-2");
     await userEvent.type(screen.getByLabelText("确认新密码"), "correct-horse-2");
@@ -389,6 +392,7 @@ describe("collaboration surfaces", () => {
     renderWorkbench(new ResceneClient("https://api.example", "token-1"));
     await waitFor(() => expect(screen.getByRole("navigation", { name: "项目" }).querySelector("button")).toBeTruthy());
     await userEvent.click(screen.getByRole("button", { name: /Kitchen ·/ }));
+    await userEvent.click(await screen.findByText("成员（2）"));
     await userEvent.type(screen.getByLabelText("成员邮箱"), "guest@example.com");
     await userEvent.click(screen.getByRole("button", { name: "签发邀请" }));
 
@@ -413,6 +417,7 @@ describe("collaboration surfaces", () => {
     }));
     const store = renderWorkbench(new ResceneClient("https://api.example", "token-1"));
     await userEvent.click(await screen.findByRole("button", { name: /Kitchen ·/ }));
+    await userEvent.click(await screen.findByText("成员（2）"));
     await userEvent.type(await screen.findByLabelText("成员邮箱"), "guest@example.com");
     await userEvent.click(screen.getByRole("button", { name: "签发邀请" }));
     expect((await screen.findByLabelText<HTMLInputElement>("新邀请领取码")).value).toBe("issued-invitation");
@@ -475,7 +480,9 @@ describe("share state", () => {
   async function openScene(client: ResceneClient) {
     renderWorkbench(client);
     await userEvent.click(await screen.findByRole("button", { name: /Kitchen ·/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "结果" }));
     await screen.findByLabelText("任务记录");
+    await userEvent.click(await screen.findByText("管理分享"));
   }
 
   it("hides a created link and its QR code when the scene changes", async () => {
@@ -766,6 +773,7 @@ describe("job status reconciliation", () => {
     vi.spyOn(client, "subscribeJob").mockImplementation((_id, onEvent) => { handler = onEvent; return vi.fn(); });
     renderWorkbench(client);
     await userEvent.click(await screen.findByRole("button", { name: /Kitchen ·/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "任务" }));
     await waitFor(() => expect(document.querySelector(".job-state")?.getAttribute("data-status")).toBe("QUEUED"));
     await waitFor(() => expect(handler).toBeDefined());
     return () => handler;
@@ -784,6 +792,7 @@ describe("job status reconciliation", () => {
     await userEvent.click(await screen.findByRole("button", { name: /Kitchen ·/ }));
     await waitFor(() => expect(handler).toBeDefined());
 
+    await userEvent.click(screen.getByRole("button", { name: "任务" }));
     const done = { ...jobFixture("SUCCEEDED", 1, "2026-01-01T00:10:00Z"), reconstruction_id: "r1" };
     act(() => handler(done as JobEvent));
     await waitFor(() => expect(document.querySelector(".job-state")?.getAttribute("data-status")).toBe("SUCCEEDED"));
@@ -821,6 +830,8 @@ describe("job status reconciliation", () => {
     renderWorkbench(client);
     await userEvent.click(await screen.findByRole("button", { name: /Kitchen ·/ }));
     await waitFor(() => expect(handler).toBeDefined());
+    await userEvent.click(screen.getByRole("button", { name: "任务" }));
+    await userEvent.click(await screen.findByText("阶段记录"));
     await waitFor(() => expect(document.querySelectorAll(".timeline li")).toHaveLength(1));
 
     act(() => handler({ stage: "training", status: "running", progress: 0.4, message: null, metrics: {} }));
@@ -828,9 +839,12 @@ describe("job status reconciliation", () => {
     act(() => handler({ stage: "training", status: "running", progress: 0.65, message: null, metrics: {} }));
     expect(document.querySelectorAll(".timeline li")).toHaveLength(2);
 
+    await userEvent.click(screen.getByRole("button", { name: "素材" }));
     await userEvent.click(screen.getByRole("button", { name: "下一页" }));
     await waitFor(() => expect(screen.getByRole("checkbox", { name: /second.jpg/ })).toBeTruthy());
     expect(subscribe).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole("button", { name: "任务" }));
+    await userEvent.click(await screen.findByText("阶段记录"));
     expect(document.querySelectorAll(".timeline li")).toHaveLength(2);
   });
 });
@@ -858,6 +872,8 @@ describe("job log paging", () => {
     }));
     renderWorkbench(client);
     await userEvent.click(await screen.findByRole("button", { name: /Kitchen ·/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "任务" }));
+    await userEvent.click(await screen.findByText(/运行日志（/));
     await waitFor(() => expect(screen.getByText(/j1 latest/)).toBeTruthy());
 
     const earlierButton = screen.getByRole("button", { name: "加载更早" });

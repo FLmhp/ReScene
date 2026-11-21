@@ -43,7 +43,7 @@ export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
   const LOG_TEXT = {
   color: theme.muted,
   fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
-  fontSize: 12,
+  fontSize: 13,
   paddingVertical: 4,
   borderBottomWidth: 1,
   borderBottomColor: theme.border,
@@ -223,6 +223,29 @@ export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
         })} /> : null}
         {job?.reconstruction_id && artifacts.some((a) => a.kind === "spz" || a.kind === "ply") ? <Button label="打开三维场景" onPress={() => onOpenScene(job.reconstruction_id!)} /> : null}
       </Card>
+      {artifacts.length > 0 ? <Card>
+        <Text accessibilityRole="header" style={textStyles.heading}>下载</Text>
+        {artifacts.map((artifact) => <View key={artifact.kind} style={{ paddingVertical: 8, gap: 8, borderBottomWidth: 1, borderBottomColor: theme.divider }}>
+          <Text style={textStyles.body}>{artifact.kind.toUpperCase()} · {artifact.size == null ? "大小未知" : `${(artifact.size / 1024 / 1024).toFixed(1)} MB`}</Text>
+          <Text selectable style={textStyles.muted}>SHA-256: {artifact.sha256 ?? "未提供"}</Text>
+          <Button label={`下载 ${artifact.kind.toUpperCase()}`} disabled={busy} onPress={() => void action(() => download(artifact.kind))} />
+        </View>)}
+      </Card> : null}
+      {writer && job?.reconstruction_id && job.status === "SUCCEEDED" ? <Card>
+        <Text accessibilityRole="header" style={textStyles.heading}>分享管理</Text>
+        <Text style={textStyles.muted}>新链接有效期（已有链接不会显示原始令牌）</Text>
+        <Segmented value={sharePreset} onChange={setSharePreset} options={SHARE_PRESETS.map(({ value, label }) => ({ value, label }))} />
+        <Button label="创建并分享链接" disabled={busy} onPress={() => void action(createShare)} />
+        {shareToken ? <Image
+          accessibilityLabel="分享二维码"
+          source={{ uri: client.shareQrUrl(shareToken) }}
+          style={{ width: 160, height: 160, backgroundColor: "#fff", borderRadius: 8, marginTop: 12 }}
+        /> : null}
+        {shares.map((share) => <View key={share.id} style={{ paddingVertical: 8, gap: 8, borderBottomWidth: 1, borderBottomColor: theme.divider }}>
+          <Text style={textStyles.muted}>{share.revoked_at ? "已撤销" : "有效或等待到期"} · 到期：{share.expires_at ? new Date(share.expires_at).toLocaleString() : "无期限"}</Text>
+          {!share.revoked_at ? <Button label="撤销分享" disabled={busy} tone="ghost" onPress={() => Alert.alert("撤销分享", "撤销后链接将立即失效。", [{ text: "返回", style: "cancel" }, { text: "撤销", style: "destructive", onPress: () => void action(async () => { await client.revokeShare(share.id); setShares(await client.listShares(job.reconstruction_id!)); if (shareToken) setShareToken(""); }) }])} /> : null}
+        </View>)}
+      </Card> : null}
       {timeline.length > 0 ? <Card>
         <Text accessibilityRole="header" style={textStyles.heading}>阶段记录</Text>
         {timeline.map((row) => <View key={row.key} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: theme.border }}>
@@ -244,26 +267,6 @@ export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
       {error ? <Card>
         <Text accessibilityRole="alert" style={textStyles.error}>{error}</Text>
         <Button label="重新加载任务" onPress={() => { setError(""); setReload((value) => value + 1); }} />
-      </Card> : null}
-      {artifacts.map((artifact) => <Card key={artifact.kind}>
-        <Text style={textStyles.body}>{artifact.kind.toUpperCase()} · {artifact.size == null ? "大小未知" : `${(artifact.size / 1024 / 1024).toFixed(1)} MB`}</Text>
-        <Text selectable style={textStyles.muted}>SHA-256: {artifact.sha256 ?? "未提供"}</Text>
-        <Button label={`下载 ${artifact.kind.toUpperCase()}`} disabled={busy} onPress={() => void action(() => download(artifact.kind))} />
-      </Card>)}
-      {writer && job?.reconstruction_id && job.status === "SUCCEEDED" ? <Card>
-        <Text style={textStyles.body}>分享管理</Text>
-        <Text style={textStyles.muted}>新链接有效期（已有链接不会显示原始令牌）</Text>
-        <Segmented value={sharePreset} onChange={setSharePreset} options={SHARE_PRESETS.map(({ value, label }) => ({ value, label }))} />
-        <Button label="创建并分享链接" disabled={busy} onPress={() => void action(createShare)} />
-        {shareToken ? <Image
-          accessibilityLabel="分享二维码"
-          source={{ uri: client.shareQrUrl(shareToken) }}
-          style={{ width: 160, height: 160, backgroundColor: "#fff", borderRadius: 8, marginTop: 12 }}
-        /> : null}
-        {shares.map((share) => <Card key={share.id}>
-          <Text style={textStyles.muted}>{share.revoked_at ? "已撤销" : "有效或等待到期"} · 到期：{share.expires_at ? new Date(share.expires_at).toLocaleString() : "无期限"}</Text>
-          {!share.revoked_at ? <Button label="撤销分享" disabled={busy} tone="ghost" onPress={() => Alert.alert("撤销分享", "撤销后链接将立即失效。", [{ text: "返回", style: "cancel" }, { text: "撤销", style: "destructive", onPress: () => void action(async () => { await client.revokeShare(share.id); setShares(await client.listShares(job.reconstruction_id!)); if (shareToken) setShareToken(""); }) }])} /> : null}
-        </Card>)}
       </Card> : null}
       <Button label="返回项目" onPress={onBack} tone="ghost" />
     </Screen>

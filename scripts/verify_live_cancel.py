@@ -18,8 +18,13 @@ API = "https://api.rescene.xyz"
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--job-id", help="Resume monitoring the existing acceptance job")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--job-id", help="Resume monitoring the existing acceptance job")
+    source.add_argument("--video", type=Path, help="Local MP4 used to create a disposable acceptance job")
     args = parser.parse_args()
+    video = args.video
+    if video is not None and not video.is_file():
+        parser.error("--video must point to an existing file")
     token = admin_token()
 
     def request(path: str, body: dict | None = None, *, retry: bool = False) -> dict:
@@ -43,8 +48,7 @@ def main() -> None:
         raise AssertionError("Unreachable retry state")
 
     job = args.job_id
-    if not job:
-        video = Path(".cache/kitchen-v1-acceptance.mp4")
+    if video is not None:
         data = video.read_bytes()
         digest = hashlib.sha256(data).hexdigest()
         project = request("/v1/projects", {"name": "Release V1 Cancellation Acceptance"})["id"]

@@ -5,11 +5,11 @@ import {
   BackHandler,
   KeyboardAvoidingView,
   Platform,
-  SafeAreaView,
   StatusBar,
   Text,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
   apiBaseUrl,
@@ -277,13 +277,7 @@ export function AppRoot() {
   }
 
   return (
-    <SafeAreaView
-      style={{
-        flex: 1,
-        backgroundColor: theme.bg,
-        paddingTop: Platform.OS === "android" ? StatusBar.currentHeight ?? 0 : 0,
-      }}
-    >
+    <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }}>
       <StatusBar barStyle={dark ? "light-content" : "dark-content"} />
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
         <View style={{ backgroundColor: theme.bg, flex: 1 }}>{content}</View>

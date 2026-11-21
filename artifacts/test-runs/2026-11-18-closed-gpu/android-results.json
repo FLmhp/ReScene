@@ -1,9 +1,0 @@
-{
-  "environment": "Android API 35 emulator, signed fixture build, isolated API",
-  "apk_sha256": "69f6672a96ab48697c1cfdd9ce030f970feaa11d4e09fb9be4b6dce7d818770b",
-  "checks": [
-    "project login and paged workspace",
-    "invalid image rejected with file name",
-    "blur and duplicate warning confirmed visible, canceled before upload"
-  ]
-}

@@ -1,6 +1,6 @@
 import { Screen } from "../../screen";
 import { explainError, isOfflineError, ResceneApiError } from "@rescene/api-client";
-import type { AppNotification, Project, User } from "@rescene/schemas";
+import { JOB_STATUS_LABELS, type AppNotification, type Project, type ProjectSummary, type User } from "@rescene/schemas";
 import { Button, Input, Text, View } from "@tarojs/components";
 import Taro, { useDidShow } from "@tarojs/taro";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -37,6 +37,25 @@ function message(reason: unknown, fallback: string): string {
     return explainError(reason, reason.detail || fallback);
   }
   return reason instanceof Error ? reason.message : fallback;
+}
+
+function ProjectTile({ project }: { project: Project }) {
+  const [summary, setSummary] = useState<ProjectSummary | null>(null);
+  const [summaryFailed, setSummaryFailed] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setSummary(null);
+    setSummaryFailed(false);
+    void client.getProjectSummary(project.id).then((value) => {
+      if (active) setSummary(value);
+    }).catch(() => { if (active) setSummaryFailed(true); });
+    return () => { active = false; };
+  }, [project.id]);
+  return <View className="project-tile" role="button" onClick={() => void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(project.id)}&name=${encodeURIComponent(project.name)}` })}>
+    <Text className="label">{project.name}</Text>
+    <Text className="muted">{ROLE_LABEL[project.effective_role]} · 打开项目</Text>
+    <Text className="muted">{summary ? `${summary.asset_count} 个素材 · ${summary.job_count} 个任务${summary.latest_job ? ` · ${JOB_STATUS_LABELS[summary.latest_job.status]}` : " · 暂无任务"}` : summaryFailed ? "项目概况暂不可用" : "正在加载项目概况…"}</Text>
+  </View>;
 }
 
 export default function IndexPage() {
@@ -391,8 +410,8 @@ export default function IndexPage() {
   
         <View className="card">
           <View className="segmented">
-            <View className={mode === "login" ? "tab active" : "tab"} onClick={() => { setMode("login"); setError(""); }}>登录</View>
-            <View className={mode === "register" ? "tab active" : "tab"} onClick={() => { setMode("register"); setError(""); }}>注册</View>
+            <Button className={mode === "login" ? "button tab active" : "button tab"} aria-pressed={mode === "login"} onClick={() => { setMode("login"); setError(""); }}>登录</Button>
+            <Button className={mode === "register" ? "button tab active" : "button tab"} aria-pressed={mode === "register"} onClick={() => { setMode("register"); setError(""); }}>注册</Button>
           </View>
           <Text className="label">邮箱</Text>
           <Input className="input" placeholder="name@example.com" value={email} onInput={(event) => setEmail(event.detail.value)} />
@@ -406,15 +425,15 @@ export default function IndexPage() {
             </>
           ) : null}
           {mode === "login" ? (
-            <Button className="button" loading={busy} disabled={busy} onClick={() => void login()}>邮箱登录</Button>
+            <Button className="button" loading={busy} disabled={busy} onClick={() => void login()}>{busy ? "正在登录…" : "邮箱登录"}</Button>
           ) : (
             <Button className="button" loading={busy} disabled={busy} onClick={() => void register()}>创建账号</Button>
           )}
           <Text className="muted">{mode === "login" ? "首次使用请切换到注册；密码至少 12 位。" : "注册后即可创建项目；密码至少 12 位。"}</Text>
           {hasToken() ? <Button className="button ghost" onClick={() => void recover()}>重试恢复登录</Button> : null}
+          {error ? <Text className="error">{error} · {serverLabel()}</Text> : null}
         </View>
         {hasToken() ? <Text className="muted">{QUEUE_PAUSED}</Text> : null}
-        {error ? <Text className="error">{error} · {serverLabel()}</Text> : null}
         {notice ? <Text>{notice}</Text> : null}
       </Screen>
     );
@@ -422,10 +441,21 @@ export default function IndexPage() {
 
   return (
     <Screen>
-      
       <Text className="title">我的项目</Text>
       {user ? <Text className="muted">{user.email}{user.is_admin ? " · 管理员" : ""}</Text>
         : <Button className="button ghost" onClick={() => void recover()}>重试恢复登录</Button>}
+
+      <View className="field">
+        <Text className="label">搜索项目</Text>
+        <Input className="input" value={search} onInput={(event) => { setSearch(event.detail.value); setProjectPage(0); }} />
+      </View>
+      {visibleProjects.map((project) => <ProjectTile key={project.id} project={project} />)}
+      {projectPageCount > 1 ? <View className="page-controls">
+        <Button className="button ghost compact" disabled={page === 0} onClick={() => setProjectPage(page - 1)}>上一页</Button>
+        <Text className="muted">{page + 1} / {projectPageCount}</Text>
+        <Button className="button ghost compact" disabled={page + 1 === projectPageCount} onClick={() => setProjectPage(page + 1)}>下一页</Button>
+      </View> : null}
+      {filtered.length === 0 ? <Text className="muted">{search.trim() ? "没有匹配的项目。" : "还没有项目。创建第一个项目开始上传素材。"}</Text> : null}
 
       <View className="selection-tools">
         <Button className="button ghost compact" onClick={() => setPanel(panel === "notifications" ? null : "notifications")}>通知（{unread}）</Button>
@@ -445,8 +475,6 @@ export default function IndexPage() {
         ))}
       </View> : null}
       <View className="card">
-        <Text className="label">搜索项目</Text>
-        <Input className="input" value={search} onInput={(event) => { setSearch(event.detail.value); setProjectPage(0); }} />
         <Text className="label">新项目名称</Text>
         <Input className="input" maxlength={200} value={name} onInput={(event) => setName(event.detail.value)} />
         <Button className="button" loading={creatingProject} disabled={creatingProject || !name.trim()} onClick={() => void createProject()}>创建项目</Button>
@@ -454,19 +482,8 @@ export default function IndexPage() {
       <View className="card">
         <Text className="label">领取码</Text>
         <Input className="input" maxlength={128} value={inviteCode} onInput={(event) => setInviteCode(event.detail.value)} />
-        <Button className="button" loading={acceptingInvitation} disabled={acceptingInvitation || !inviteCode.trim()} onClick={() => void acceptInvitation()}>领取邀请</Button>
+        <Button className="button ghost" loading={acceptingInvitation} disabled={acceptingInvitation || !inviteCode.trim()} onClick={() => void acceptInvitation()}>领取邀请</Button>
       </View>
-      {visibleProjects.map((project) => (
-        <View className="project-tile" key={project.id} onClick={() => void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(project.id)}&name=${encodeURIComponent(project.name)}` })}>
-          <Text className="label">{project.name}</Text><Text className="muted">{ROLE_LABEL[project.effective_role]} · 打开 ›</Text>
-        </View>
-      ))}
-      {projectPageCount > 1 ? <View className="page-controls">
-        <Button className="button ghost compact" disabled={page === 0} onClick={() => setProjectPage(page - 1)}>上一页</Button>
-        <Text className="muted">{page + 1} / {projectPageCount}</Text>
-        <Button className="button ghost compact" disabled={page + 1 === projectPageCount} onClick={() => setProjectPage(page + 1)}>下一页</Button>
-      </View> : null}
-      {filtered.length === 0 ? <Text className="muted">{search.trim() ? "没有匹配的项目。" : "还没有项目。"}</Text> : null}
       {user?.is_admin ? (
         <Button className="button ghost" onClick={() => void Taro.navigateTo({ url: "/pages/admin/index" })}>管理控制台</Button>
       ) : null}

@@ -224,7 +224,7 @@ export default (_merge?: unknown, configEnv?: Partial<ConfigEnv>): UserConfigExp
       "process.env.TARO_APP_API_URL": JSON.stringify(resolved.apiUrl),
       "process.env.TARO_APP_WEB_URL": JSON.stringify(resolved.webUrl),
     },
-    copy: { patterns: [], options: {} },
+    copy: { patterns: [{ from: "src/theme.json", to: "dist/theme.json" }], options: {} },
     framework: "react",
     compiler: "webpack5",
     cache: { enable: false },

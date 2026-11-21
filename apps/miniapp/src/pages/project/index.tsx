@@ -1,4 +1,4 @@
-import { Screen, WorkspaceEntry } from "../../screen";
+import { Screen, WorkspaceEntry, useScreenPalette } from "../../screen";
 import { AssetThumbnail } from "../../asset-thumbnail";
 import { explainError, isOfflineError, ResceneApiError } from "@rescene/api-client";
 import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, canRetryJob, jobErrorHint, queuedJobHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
@@ -61,6 +61,11 @@ const message = (reason: unknown, fallback: string) => {
   }
   return reason instanceof Error ? reason.message : fallback;
 };
+
+function TaskProgress({ progress }: { progress: number }) {
+  const palette = useScreenPalette();
+  return <Progress percent={Math.round(progress * 100)} strokeWidth={5} borderRadius={6} activeColor={palette.accent} backgroundColor={palette.divider} />;
+}
 
 export default function ProjectPage() {
   const params = useRouter()?.params ?? {};
@@ -666,7 +671,7 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
         {job ? <View className="task-detail" id="task-detail">
           <Text className={job.status === "SUCCEEDED" ? "success-state" : job.status === "FAILED" ? "error" : "label"}>{JOB_STATUS_LABELS[job.status]} · 第 {job.attempt} 次</Text>
           <Text className="muted">{stageLabel(job.current_stage)} · {Math.round(job.progress * 100)}%</Text>
-          <Progress percent={Math.round(job.progress * 100)} strokeWidth={5} borderRadius={6} activeColor="#7c9bff" backgroundColor="#07080c" />
+          <TaskProgress progress={job.progress} />
           <Text className="muted">更新于 {new Date(job.updated_at).toLocaleString()}</Text>
           {timeline.map((row) => <View key={row.key}>
             <Text className="muted">{stageLabel(row.stage)} · {row.status} · {Math.round(row.progress * 100)}%</Text>
@@ -681,7 +686,7 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
             <Button className="button" onClick={() => void copyViewer(reconstructionId)}>复制浏览器查看链接</Button>
             <Text className="muted">在手机浏览器中粘贴链接，登录后即可查看。</Text>
           </> : null}
-        </View> : <Text className="muted">暂无任务</Text>}
+        </View> : <Text className="muted">还没有任务。选择素材和路线后开始重建。</Text>}
       </View> : null}
       {job && section === "tasks" && !showManagement ? <View className="card">
         <Button className="button ghost" aria-expanded={showLogs} onClick={() => setShowLogs((value) => !value)}>
@@ -690,7 +695,7 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
         {showLogs ? <>
           <View className="segmented">
             {LOG_LEVELS.map(([value, label]) => (
-              <View className={logLevel === value ? "tab active" : "tab"} key={value || "all"} onClick={() => setLogLevel(value)}>{label}</View>
+              <Button className={logLevel === value ? "button tab active" : "button tab"} aria-pressed={logLevel === value} key={value || "all"} onClick={() => setLogLevel(value)}>{label}</Button>
             ))}
           </View>
           <Button className="button ghost" disabled={!logs.length} onClick={() => void loadEarlierLogs()}>加载更早</Button>
@@ -703,7 +708,7 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
       {canWrite && reconstructionId && section === "tasks" && !showManagement ? <View className="card">
         <Text className="label">分享</Text>
         <Text className="label">分享有效期</Text>
-        {SHARE_PRESETS.map((preset) => <Text className={`row profile ${sharePreset === preset.value ? "active" : ""}`} key={preset.value} onClick={() => setSharePreset(preset.value)}>{sharePreset === preset.value ? "● " : "○ "}{preset.label}</Text>)}
+        {SHARE_PRESETS.map((preset) => <Button className={`button ghost${sharePreset === preset.value ? " active" : ""}`} aria-pressed={sharePreset === preset.value} key={preset.value} onClick={() => setSharePreset(preset.value)}>{sharePreset === preset.value ? "已选：" : ""}{preset.label}</Button>)}
         <Button className="button" loading={sharing} disabled={sharing} onClick={createShare}>创建分享</Button>
         {shareUrl ? <View>
           <Text className="muted">链接仅在创建时显示，请及时复制；复制后可粘贴到微信会话发送。</Text>
@@ -723,7 +728,7 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
           <View><Text className="label">已选 {selected.length} 个 · {(selectionBytes(selected) / 1024 ** 2).toFixed(1)} MiB</Text>
             <Text className="muted">{RECONSTRUCTION_PROFILES[profile].title}{worker?.online === false ? " · 离线排队" : ""}</Text></View>
           <Button className="button" disabled={creating || !selected.length || uploading} loading={creating} onClick={section === "materials" ? () => showSection("build") : createJob}>
-            {section === "materials" ? "选择路线" : creating ? "正在创建…" : "开始重建"}
+            {section === "materials" ? "下一步：选择路线" : creating ? "正在创建…" : "开始重建"}
           </Button>
         </View>
       </> : null}

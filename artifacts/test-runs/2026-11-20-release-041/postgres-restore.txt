@@ -1,4 +1,0 @@
-be397b10dafdcd8bac1df891958fe1f6a6c9b856d7cb24b82f5a472dfac2e594  prod-9244495.dump
-0006
-23
-old_image_can_read_restored_schema_0006

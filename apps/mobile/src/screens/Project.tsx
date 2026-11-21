@@ -263,7 +263,7 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
   }
 
   return (
-    <Screen scroll title={detail?.name ?? project.name} footer={canWrite ? <View style={styles.selectionBar}>
+    <Screen scroll contentPaddingBottom={110} title={detail?.name ?? project.name} footer={canWrite ? <View style={styles.selectionBar}>
       <View style={styles.selectionText}>
         <Text accessibilityLiveRegion="polite" style={textStyles.body}>已选 {selected.length} 个 · {(selectionBytes(selected) / 1024 ** 2).toFixed(1)} MiB</Text>
         <Text style={textStyles.muted}>{RECONSTRUCTION_PROFILES[profile].title}{workerOnline === false ? " · 离线排队" : ""}</Text>
@@ -302,7 +302,7 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
           </View>)}
           {canManage ? <>
             <Field label="成员邮箱" value={email} onChangeText={setEmail} />
-            <Pressable onPress={() => setRole(role === "member" ? "viewer" : "member")}><Text style={textStyles.body}>角色：{role}（点击切换）</Text></Pressable>
+            <Pressable accessibilityRole="button" style={styles.roleChoice} onPress={() => setRole(role === "member" ? "viewer" : "member")}><Text style={textStyles.body}>角色：{ROLE_LABEL[role]}（点击切换）</Text></Pressable>
             <Button disabled={busy || !email.trim()} label="签发邀请" onPress={() => void mutate(async () => {
               const context = invitationContext.current;
               setIssuedInvitation(null);
@@ -326,14 +326,14 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
             <Text accessibilityRole="header" style={textStyles.heading}>素材</Text>
             {canWrite ? <Text style={styles.link}>已选 {selected.length} 个</Text> : null}
           </View>
+          {canWrite ? <>
+            <Button tone="ghost" disabled={checkingMedia || uploading} label={checkingMedia ? "正在检查素材…" : uploading ? "正在上传…" : "选择图片或视频上传"} onPress={pickAndUpload} />
+            <Text style={textStyles.muted}>一组 JPG / PNG 图片或一个视频。单文件 ≤ 5 GiB，单任务 ≤ 8 GiB。</Text>
+          </> : null}
           {canWrite && detail.assets.length > 0 ? <View style={styles.rowHeader}>
             <Button tone="ghost" label="全选本页图片" onPress={() => choose(detail.assets, true)} />
             <Button tone="ghost" disabled={!selected.length} label="清空选择" onPress={() => setSelected([])} />
           </View> : null}
-          {canWrite ? <>
-            <Button disabled={checkingMedia || uploading} label={checkingMedia ? "正在检查素材…" : uploading ? "正在上传…" : "选择图片或视频上传"} onPress={pickAndUpload} />
-            <Text style={textStyles.muted}>一组 JPG / PNG 图片或一个视频。单文件 ≤ 5 GiB，单任务 ≤ 8 GiB。</Text>
-          </> : null}
           {uploads.map((item) => <View key={item.id}>
             <Text style={textStyles.muted}>{item.file.name} · {item.progress}% · {item.status === "failed" ? "失败" : item.status === "done" ? "完成" : "上传中"}</Text>
             {item.error ? <Text style={textStyles.error}>{item.error}</Text> : null}
@@ -395,7 +395,7 @@ export function ProjectScreen({ project, draft, onJob, onBack }: {
               {Object.keys(row.metrics).length > 0 ? <Text style={textStyles.muted}>{JSON.stringify(row.metrics)}</Text> : null}
             </View>)}
           </> : null}
-          {!detail?.jobs.length ? <Text style={textStyles.muted}>暂无任务。</Text> : null}
+          {detail && !detail.jobs.length ? <Text style={textStyles.muted}>还没有任务。选择素材和路线后开始重建。</Text> : null}
           {detail?.jobs.map((job) => <Pressable accessibilityRole="button" key={job.id} onPress={() => onJob(job.id, { assets: selected, profile })} style={styles.route}>
             <View style={styles.rowHeader}>
               <Text style={textStyles.body}>{RECONSTRUCTION_PROFILES[job.profile].title}</Text>
@@ -414,13 +414,14 @@ const makeStyles = (theme: Palette) => StyleSheet.create({
   projectHeader: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, justifyContent: "space-between" },
   rowHeader: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, justifyContent: "space-between" },
   action: { minHeight: 44, minWidth: 44, justifyContent: "center", alignItems: "center", paddingHorizontal: 8 },
+  roleChoice: { minHeight: 44, justifyContent: "center" },
   link: { color: theme.accent, fontWeight: "600" },
   online: { color: theme.success },
   assetGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", rowGap: 10 },
   asset: { width: "48.5%", overflow: "hidden", borderWidth: 1, borderColor: theme.borderSoft, borderRadius: 12 },
   assetChoice: { flex: 1, minHeight: 48, padding: 10, gap: 4 },
-  selectionBar: { flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderTopWidth: 1, borderTopColor: theme.borderSoft, backgroundColor: theme.panel },
-  selectionText: { flex: 1, gap: 3 },
+  selectionBar: { gap: 8, padding: 12 },
+  selectionText: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 4 },
   selected: { borderColor: theme.accent, backgroundColor: theme.surfaceStrong },
   route: { gap: 5, minHeight: 48, padding: 12, borderWidth: 1, borderColor: theme.borderSoft, borderRadius: 12 },
 });

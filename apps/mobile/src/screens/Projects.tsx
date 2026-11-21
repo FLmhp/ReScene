@@ -1,6 +1,7 @@
 import { explainError, isOfflineError } from "@rescene/api-client";
 import { LEGACY_QUEUE_NOTICE, QUEUE_PAUSED, newIdempotencyKey } from "@rescene/uploader";
-import type { AppNotification, Project, User } from "@rescene/schemas";
+import { JOB_STATUS_LABELS } from "@rescene/schemas";
+import type { AppNotification, ProjectSummary, User } from "@rescene/schemas";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Pressable, Text, View } from "react-native";
 
@@ -18,7 +19,9 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
   const { theme } = useAppearance();
   const textStyles = useTextStyles();
   const [panel, setPanel] = useState<"notifications" | "account" | null>(null);
-  const [projects, setProjects] = useState<Project[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [listError, setListError] = useState("");
   const [me, setMe] = useState<User | null>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [unread, setUnread] = useState(0);
@@ -47,13 +50,16 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
   }, []);
 
   const load = useCallback(async () => {
-    setError("");
+    setLoading(true);
+    setListError("");
     try {
-      const [nextProjects, user] = await Promise.all([client.listProjects(), client.getMe()]);
+      const [nextProjects, user] = await Promise.all([client.listProjectSummaries(), client.getMe()]);
       setProjects(nextProjects);
       setMe(user);
     } catch (reason) {
-      setError(explainError(reason, "加载项目失败"));
+      setListError(explainError(reason, "加载项目失败"));
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -196,7 +202,27 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
   const visible = projects.filter((project) => project.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   return (
     <Screen scroll title="我的项目">
-      <Text style={textStyles.muted}>把拍摄素材整理成项目，重建并分享三维场景。</Text>
+      <Field label="搜索项目" value={search} onChangeText={setSearch} placeholder="按名称筛选" />
+      {loading ? <Text accessibilityLiveRegion="polite" style={textStyles.muted}>正在加载项目…</Text> : null}
+      {listError ? <Card>
+        <ErrorText>{listError}</ErrorText>
+        <Button label="重新加载" onPress={() => void load()} tone="ghost" />
+      </Card> : null}
+      {!loading && !listError && visible.length === 0 ? <Text style={textStyles.muted}>{search.trim() ? "没有匹配的项目。" : "还没有项目。创建第一个项目开始上传素材。"}</Text> : null}
+      {visible.map((item) => (
+        <Pressable
+          accessibilityHint="打开项目"
+          accessibilityRole="button"
+          key={item.id}
+          onPress={() => onOpen(item)}
+          style={{ padding: 18, gap: 8, borderRadius: 12, backgroundColor: theme.panel, borderWidth: 1, borderColor: theme.borderSoft, minHeight: 112 }}
+        >
+          <Text style={textStyles.heading}>{item.name}</Text>
+          <Text style={textStyles.muted}>{{ owner: "所有者", admin: "管理员", member: "成员", viewer: "只读" }[item.effective_role]} · {item.asset_count} 个素材 · {item.job_count} 个任务</Text>
+          <Text style={textStyles.muted}>{item.latest_job ? `最近任务：${JOB_STATUS_LABELS[item.latest_job.status]}` : "暂无任务"}</Text>
+          <Text style={{ color: theme.accent, fontWeight: "600" }}>打开项目</Text>
+        </Pressable>
+      ))}
       <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
         <Button tone="ghost" label={`通知（${unread}）`} onPress={() => setPanel(panel === "notifications" ? null : "notifications")} />
         <Button tone="ghost" label="账户设置" onPress={() => setPanel(panel === "account" ? null : "account")} />
@@ -219,7 +245,6 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
       </Card> : null}
       <Card>
         <Text style={textStyles.body}>{me ? `${me.email} · ${me.is_admin ? "管理员" : "成员"}` : "正在加载账户…"}</Text>
-        <Field label="搜索项目" value={search} onChangeText={setSearch} placeholder="按名称筛选" />
         <Field label="新项目" value={name} onChangeText={setName} placeholder="项目名称" />
         <Button disabled={busy || !name.trim()} label="创建项目" onPress={create} />
       </Card>
@@ -233,19 +258,6 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
       </Card> : null}
       {legacyQueue ? <Text style={textStyles.muted}>{LEGACY_QUEUE_NOTICE}</Text> : null}
       {notice ? <Text accessibilityLiveRegion="polite" style={textStyles.muted}>{notice}</Text> : null}
-      {visible.length === 0 ? <Text style={textStyles.muted}>{search.trim() ? "没有匹配的项目。" : "还没有项目。"}</Text> : null}
-      {visible.map((item) => (
-        <Pressable
-          accessibilityHint="打开项目"
-          accessibilityRole="button"
-          key={item.id}
-          onPress={() => onOpen(item)}
-          style={{ padding: 22, gap: 14, borderRadius: 16, backgroundColor: theme.panel, borderWidth: 1, borderColor: theme.borderSoft, minHeight: 128 }}
-        >
-          <Text style={textStyles.heading}>{item.name}</Text>
-          <Text style={textStyles.muted}>{{ owner: "所有者", admin: "管理员", member: "成员", viewer: "只读" }[item.effective_role]} · 打开项目 ↗</Text>
-        </Pressable>
-      ))}
       {me?.is_admin ? <View><Button label="管理控制台" onPress={onAdmin} /></View> : null}
       {panel === "account" ? <Card>
         <Text style={textStyles.heading}>账户安全</Text>

@@ -267,13 +267,12 @@ function AdminWorkspace() {
 
   return (
     <Screen>
-      <Text className="eyebrow">RESCENE / ADMIN</Text>
       <Text className="title">管理控制台</Text>
       <Text className="muted">账号、公告与全站操作日志；仅管理员可见。</Text>
       <View className="segmented">
-        <View className={tab === "users" ? "tab active" : "tab"} onClick={() => switchTab("users")}>用户</View>
-        <View className={tab === "announcements" ? "tab active" : "tab"} onClick={() => switchTab("announcements")}>公告</View>
-        <View className={tab === "logs" ? "tab active" : "tab"} onClick={() => switchTab("logs")}>日志</View>
+        <Button className={tab === "users" ? "button tab active" : "button tab"} aria-pressed={tab === "users"} onClick={() => switchTab("users")}>用户</Button>
+        <Button className={tab === "announcements" ? "button tab active" : "button tab"} aria-pressed={tab === "announcements"} onClick={() => switchTab("announcements")}>公告</Button>
+        <Button className={tab === "logs" ? "button tab active" : "button tab"} aria-pressed={tab === "logs"} onClick={() => switchTab("logs")}>日志</Button>
       </View>
 
       {tab === "users" ? (
@@ -283,9 +282,9 @@ function AdminWorkspace() {
             <Input className="input" placeholder="name@example.com" value={query} onInput={(event) => setQuery(event.detail.value)} />
             <Button className="button ghost" onClick={searchUsers}>搜索</Button>
             <View className="segmented">
-              <View className={statusFilter === "all" ? "tab active" : "tab"} onClick={() => filterUsers("all")}>全部</View>
-              <View className={statusFilter === "active" ? "tab active" : "tab"} onClick={() => filterUsers("active")}>启用</View>
-              <View className={statusFilter === "inactive" ? "tab active" : "tab"} onClick={() => filterUsers("inactive")}>停用</View>
+              <Button className={statusFilter === "all" ? "button tab active" : "button tab"} aria-pressed={statusFilter === "all"} onClick={() => filterUsers("all")}>全部</Button>
+              <Button className={statusFilter === "active" ? "button tab active" : "button tab"} aria-pressed={statusFilter === "active"} onClick={() => filterUsers("active")}>启用</Button>
+              <Button className={statusFilter === "inactive" ? "button tab active" : "button tab"} aria-pressed={statusFilter === "inactive"} onClick={() => filterUsers("inactive")}>停用</Button>
             </View>
             <Text className="muted">共 {userTotal} 个账号 · 第 {userPage + 1} 页</Text>
           </View>
@@ -354,7 +353,7 @@ function AdminWorkspace() {
             <Text className="label">级别</Text>
             <View className="segmented">
               {(["info", "warning", "critical"] as const).map((value) => (
-                <View className={level === value ? "tab active" : "tab"} key={value} onClick={() => setLevel(value)}>{LEVEL_LABEL[value]}</View>
+                <Button className={level === value ? "button tab active" : "button tab"} aria-pressed={level === value} key={value} onClick={() => setLevel(value)}>{LEVEL_LABEL[value]}</Button>
               ))}
             </View>
             <Button className="button" loading={publishing} disabled={publishing || !title.trim() || !body.trim()} onClick={() => void publish()}>发布</Button>

@@ -2,7 +2,7 @@
   "expo": {
     "name": "ReScene",
     "slug": "rescene",
-    "version": "0.4.1",
+    "version": "0.5.0",
     "scheme": "rescene",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
@@ -14,7 +14,7 @@
     },
     "android": {
       "package": "app.rescene.mobile",
-      "versionCode": 6,
+      "versionCode": 7,
       "allowBackup": false,
       "blockedPermissions": [
         "android.permission.SYSTEM_ALERT_WINDOW",

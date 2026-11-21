@@ -4,3 +4,9 @@ try {
   document.documentElement.dataset.theme = preference === "light" || preference === "dark"
     ? preference : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 } catch (error) {}
+try {
+  var colorway = localStorage.getItem("rescene-colorway");
+  document.documentElement.dataset.colorway = colorway === "ultramarine" || colorway === "ink" ? colorway : "jade";
+} catch (error) {
+  document.documentElement.dataset.colorway = "jade";
+}

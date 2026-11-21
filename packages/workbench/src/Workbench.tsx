@@ -125,6 +125,12 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [staleRefresh, setStaleRefresh] = useState<RefreshFailure | null>(null);
   const [detailFetchedAt, setDetailFetchedAt] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [libraryError, setLibraryError] = useState("");
+  const [authPending, setAuthPending] = useState(false);
+  const [materialError, setMaterialError] = useState("");
+  const workspaceGridRef = useRef<HTMLDivElement>(null);
+  const materialActionsRef = useRef<HTMLElement>(null);
+  const projectNameRef = useRef<HTMLInputElement>(null);
   const [view, setView] = useState<"project" | "admin">("project");
   const [navOpen, setNavOpen] = useState(false);
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 1024px)").matches);
@@ -211,6 +217,28 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   }, [detail?.name, narrow, navOpen, view]);
 
   useEffect(() => {
+    const grid = workspaceGridRef.current;
+    const actions = materialActionsRef.current;
+    if (!grid || !actions || pane !== "materials" || view !== "project") return;
+    const query = window.matchMedia("(max-width: 640px)");
+    const measure = () => {
+      if (query.matches) grid.style.setProperty("--material-actions-height", `${actions.getBoundingClientRect().height}px`);
+      else grid.style.removeProperty("--material-actions-height");
+    };
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(actions);
+    query.addEventListener("change", measure);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      query.removeEventListener("change", measure);
+      window.removeEventListener("resize", measure);
+      grid.style.removeProperty("--material-actions-height");
+    };
+  }, [pane, view, detail?.id, detail?.effective_role]);
+
+  useEffect(() => {
     const saved = tokenStore.get(TOKEN_KEY);
     if (saved) {
       client.setToken(saved);
@@ -274,7 +302,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
         }),
       ]);
       if (request !== workspaceRequest.current) return;
-      setMe(user); setProjects(list); setWorkerStatus(worker); setLoaded(true);
+      setMe(user); setProjects(list); setWorkerStatus(worker); setLoaded(true); setLibraryError("");
       if (!notifyLoaded.current) void loadNotifications().catch((error: unknown) => { if (error instanceof ResceneApiError && error.status === 401) expire(); });
       void loadUnread();
       if (selected && selectedRef.current === selected && request === workspaceRequest.current) {
@@ -314,7 +342,11 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       setWorkerStatus(null);
       setLoaded(true);
       if (error instanceof ResceneApiError && error.status === 401) expire();
-      else setMessage(error instanceof Error ? error.message : "请求失败，请重试");
+      else {
+        const text = error instanceof Error ? error.message : "请求失败，请重试";
+        setLibraryError(text);
+        if (detailRef.current) setStaleRefresh({ message: text, at: Date.now() });
+      }
     }
   }, [assetPages, client, expire, jobPages, loadNotifications, loadUnread, selected, token]);
   const refreshRef = useRef(refresh);
@@ -561,6 +593,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     setAssetPages([""]);
     setJobPages([""]);
     setPane("materials");
+    setMaterialError("");
     setDetail(null);
     setDetailError("");
     setStaleRefresh(null);
@@ -578,12 +611,14 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     if (which === "jobs") { selectJob(""); tokenStore.remove(JOB_KEY); }
   }
   function chooseAssets(assets: Asset[], imagesOnly = false) {
-    try { setSelectedAssets(selectWorkspaceAssets(selectedAssets, assets, imagesOnly)); }
-    catch (error) { setMessage(explainError(error, "无法选择素材")); }
+    try { setSelectedAssets(selectWorkspaceAssets(selectedAssets, assets, imagesOnly)); setMaterialError(""); }
+    catch (error) { setMaterialError(explainError(error, "无法选择素材")); }
   }
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (authPending) return;
     const form = new FormData(event.currentTarget);
+    setAuthPending(true);
     try {
       const result = await client.login(String(form.get("email") ?? "").trim(), String(form.get("password") ?? ""));
       tokenStore.set(TOKEN_KEY, result.access_token);
@@ -592,11 +627,13 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     } catch (error) {
       if (error instanceof ResceneApiError && (error.status === 401 || error.status === 403)) setMessage("邮箱或密码不正确。");
       else setMessage(error instanceof Error ? error.message : "登录失败");
-    }
+    } finally { setAuthPending(false); }
   }
   async function register(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (authPending) return;
     const form = new FormData(event.currentTarget);
+    setAuthPending(true);
     const email = String(form.get("email") ?? "").trim();
     const password = String(form.get("password") ?? "");
     const confirm = String(form.get("confirm") ?? "");
@@ -612,7 +649,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     } catch (error) {
       if (error instanceof ResceneApiError && error.status === 409) setMessage("该邮箱已注册，请直接登录。");
       else setMessage(error instanceof Error ? error.message : "注册失败");
-    }
+    } finally { setAuthPending(false); }
   }
   async function signOut() { let failed = false; try { await client.logout(); } catch { failed = true; } finally { client.setToken(null); tokenStore.remove(TOKEN_KEY); tokenStore.remove(PROJECT_KEY); tokenStore.remove(JOB_KEY); setToken(""); setMe(null); setSelected(""); setMessage(failed ? "已在本设备退出，但无法确认其他设备的会话已撤销；请重新登录后重试。" : ""); } }
   function changePassword(event: FormEvent<HTMLFormElement>) {
@@ -661,6 +698,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     if (!files?.length || !projectId || uploadBatches[projectId]?.busy || !canWrite) return;
     const list = Array.from(files);
     setUploadBatches((batches) => ({ ...batches, [projectId]: { busy: true, items: [] } }));
+    setMaterialError("");
     try {
       setMessage("正在检查素材…");
       const warnings = await inspectMedia(list, async (file) => new Uint8Array(await file.slice(0, 16).arrayBuffer()), async (file) => {
@@ -681,7 +719,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       for (let index = 0; index < list.length; index++) await transfer(list[index], projectId, index);
       if (selectedRef.current === projectId) await refresh();
     } catch (error) {
-      if (selectedRef.current === projectId) setMessage(error instanceof Error ? error.message : "素材检查失败");
+      if (selectedRef.current === projectId) { setMessage(""); setMaterialError(error instanceof Error ? error.message : "素材检查失败"); }
     } finally {
       setUploadBatches((batches) => batches[projectId] ? { ...batches, [projectId]: { ...batches[projectId], busy: false } } : batches);
     }
@@ -776,22 +814,22 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       <section className="login-card">
         <p className="eyebrow">RESCENE WORKBENCH</p>
         <div className="auth-tabs" role="tablist" aria-label="登录或注册">
-          <button type="button" role="tab" aria-selected={authMode === "login"} className={authMode === "login" ? "auth-tab active" : "auth-tab"} onClick={() => { setAuthMode("login"); setMessage(""); }}>登录</button>
-          <button type="button" role="tab" aria-selected={authMode === "register"} className={authMode === "register" ? "auth-tab active" : "auth-tab"} onClick={() => { setAuthMode("register"); setMessage(""); }}>注册</button>
+          <button type="button" role="tab" disabled={authPending} aria-selected={authMode === "login"} className={authMode === "login" ? "auth-tab active" : "auth-tab"} onClick={() => { setAuthMode("login"); setMessage(""); }}>登录</button>
+          <button type="button" role="tab" disabled={authPending} aria-selected={authMode === "register"} className={authMode === "register" ? "auth-tab active" : "auth-tab"} onClick={() => { setAuthMode("register"); setMessage(""); }}>注册</button>
         </div>
         {authMode === "login" ? (
           <form onSubmit={login}>
             <label>团队邮箱<input name="email" type="email" required autoComplete="email" /></label>
             <label>密码<input name="password" type={showPassword ? "text" : "password"} required autoComplete="current-password" /></label>
             <label className="password-toggle"><input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />显示密码</label>
-            <button type="submit">进入工作台</button>
+            <button type="submit" disabled={authPending}>{authPending ? "正在登录…" : "进入工作台"}</button>
           </form>
         ) : (
           <form onSubmit={register}>
             <label>团队邮箱<input name="email" type="email" required autoComplete="email" /></label>
             <label>密码（至少 12 位）<input name="password" type={showPassword ? "text" : "password"} required minLength={12} autoComplete="new-password" /></label>
             <label>确认密码<input name="confirm" type="password" required minLength={12} autoComplete="new-password" /></label>
-            <button type="submit">创建账号</button>
+            <button type="submit" disabled={authPending}>{authPending ? "正在注册…" : "创建账号"}</button>
           </form>
         )}
         {message && <p className="error" role="alert">{message}</p>}
@@ -810,11 +848,11 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       </header>
       <button className="nav-backdrop" type="button" tabIndex={-1} aria-label="关闭导航" onClick={() => { navReturnFocus.current = "toggle"; setNavOpen(false); }} />
       <aside ref={asideRef} tabIndex={-1} inert={narrow && !navOpen} onKeyDown={trapDrawerFocus}>
-        <ThemeControl />
         <div className="brand">
           <span className="mark"><BrandMark size={22} /></span>
           <strong>ReScene</strong>
         </div>
+        <ThemeControl />
         <div className={`worker ${online ? "online" : ""}`}><i />{workerName} {online === true ? "在线" : online === false ? "离线" : "状态未知"}</div>
         <details
           className="notify"
@@ -858,9 +896,8 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
             <button type="button" className="notify-more" disabled={notifyLoading} onClick={() => runAction(async () => { await loadNotifications(notifyFilter, notifyOffset + NOTIFY_PAGE_SIZE); })}>加载更多</button>
           )}
         </details>
-        <p>{me?.email}{me?.is_admin ? " · 管理员" : ""}</p>
         <form className="new-project" onSubmit={(event) => { event.preventDefault(); const form = event.currentTarget; runAction(() => createProject(form)); }}>
-          <input name="name" placeholder="新项目名称" aria-label="新项目名称" required />
+          <input ref={projectNameRef} name="name" placeholder="新项目名称" aria-label="新项目名称" required />
           <button aria-label="创建项目" type="submit">＋</button>
         </form>
         <details>
@@ -892,6 +929,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
         )}
         <details className="account">
           <summary>账户</summary>
+          <p>{me?.email}{me?.is_admin ? " · 管理员" : ""}</p>
           <form onSubmit={changePassword}>
             <label>当前密码<input name="current" type="password" required autoComplete="current-password" /></label>
             <label>新密码（至少 12 位）<input name="new" type="password" required minLength={12} autoComplete="new-password" /></label>
@@ -913,12 +951,14 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
               ) : detailError ? (
                 <div className="empty" role="alert"><h2>无法打开项目</h2><p>{detailError}</p><button onClick={() => void refresh()}>重试加载</button><button onClick={() => selectProject("")}>返回项目列表</button></div>
               ) : !loaded ? (
-                <div className="empty"><span>…</span><h2>正在加载工作台…</h2></div>
+                <div className="empty" role="status"><h2>正在加载项目…</h2></div>
+              ) : libraryError ? (
+                <div className="empty" role="alert"><h2>无法加载项目</h2><p>{libraryError}</p><button type="button" onClick={() => void refresh()}>重试</button></div>
               ) : (
                 <section className="project-library">
                   <header><div><p className="eyebrow">工作空间</p><h1>我的项目</h1></div><span className="muted">{projects.length} 个项目</span></header>
                   <p className="muted">把拍摄素材整理成项目，重建并分享你的三维场景。</p>
-                  {projects.length === 0 ? <div className="empty"><h2>开始第一个项目</h2><p>在导航中输入项目名称，再上传围绕目标拍摄的照片或视频。</p></div> : null}
+                  {projects.length === 0 ? <div className="empty"><p>还没有项目。创建第一个项目开始上传素材。</p><button type="button" onClick={() => { if (narrow) setNavOpen(true); requestAnimationFrame(() => projectNameRef.current?.focus()); }}>创建项目</button></div> : null}
                   <div className="project-gallery">
                     {projects.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((project) => <ProjectCard key={project.id} client={client} project={project} summary={project} onOpen={() => selectProject(project.id)} />)}
                   </div>
@@ -930,18 +970,9 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                   <div>
                     <button className="back-link" type="button" onClick={() => selectProject("")}>← 所有项目</button>
                     <h1 ref={projectHeadingRef} tabIndex={-1}>{detail.name}</h1>
+                    <p className="project-summary">{detail.effective_role} · {detail.asset_count} 个素材 · {detail.job_count} 个任务</p>
                   </div>
-                  <p className="project-summary">{detail.asset_count} 个素材 · {detail.job_count} 个任务</p>
-                </header>
-                {staleRefresh && (
-                  <div className="offline-banner" role="alert">
-                    <strong>刷新失败：显示的是 {formatClock(detailFetchedAt ?? staleRefresh.at)} 的数据。</strong>{" "}
-                    <span>{staleRefresh.message}</span>{" "}
-                    <button type="button" onClick={() => void refresh()}>重试</button>
-                    <button type="button" aria-label="关闭刷新提示" onClick={() => setStaleRefresh(null)}>×</button>
-                  </div>
-                )}
-                {!canWrite && <p>只读访问：您可以查看素材、任务和结果。</p>}
+                  <button type="button" onClick={() => void refresh()} disabled={detailLoading}>刷新</button>
                 {canManage && (
                   <details>
                     <summary>项目设置</summary>
@@ -1009,10 +1040,21 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                     </div>
                   )}
                 </details>
+                </header>
+                {staleRefresh && (
+                  <div className="offline-banner" role="alert">
+                    <strong>刷新失败：显示的是 {formatClock(detailFetchedAt ?? staleRefresh.at)} 的数据。</strong>{" "}
+                    <span>{staleRefresh.message}</span>{" "}
+                    <button type="button" onClick={() => void refresh()}>重试</button>
+                    <button type="button" aria-label="关闭刷新提示" onClick={() => setStaleRefresh(null)}>×</button>
+                  </div>
+                )}
+                {!canWrite && <p>只读访问：您可以查看素材、任务和结果。</p>}
                 <nav className="workspace-panes" aria-label="项目工作区">
                   {PANES.map((item) => <button type="button" key={item.key} aria-pressed={pane === item.key} onClick={() => setPane(item.key)}>{item.label}</button>)}
                 </nav>
-                <div className={`grid workspace-grid pane-${pane}`} aria-busy={detailLoading}>
+                <div ref={workspaceGridRef} className={`grid workspace-grid pane-${pane}`} aria-busy={detailLoading}>
+                  {pane === "materials" && <>
                   <section className="panel upload-panel">
                     <div className="panel-title"><h2>素材</h2>{canWrite && <small>已选 {selectedAssets.length} 个</small>}</div>
                     {canWrite && detail.assets.length > 0 ? <div className="selection-tools">
@@ -1050,8 +1092,8 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                     </div>
                     <PageControls label="素材" page={assetPages.length} next={detail.nextAssetCursor} busy={detailLoading} onChange={(cursor) => changePage("assets", cursor)} />
                   </section>
-                  <section className="panel route-panel">
-                    <div className="panel-title"><h2>重建路线</h2></div>
+                  {canWrite && <section ref={materialActionsRef} className="panel material-actions route-panel">
+                    <div className="panel-title"><h2>重建路线</h2><span>已选 {selectedAssets.length} 个 · {(selectionBytes(selectedAssets) / 1024 ** 2).toFixed(1)} MiB</span></div>
                     <div className="profiles" role="group" aria-label="重建路线">
                       {PROFILES.map((value) => {
                         const option = RECONSTRUCTION_PROFILES[value];
@@ -1063,12 +1105,12 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                         );
                       })}
                     </div>
-                    {canWrite && <>
-                      <button className="primary" disabled={creating || uploading || !selectedAssets.length} onClick={() => runAction(createJob)}>{creating ? "正在创建…" : "开始三维重建"}</button>
-                      <p className="muted route-note">{selectedAssets.length ? `已选 ${selectedAssets.length} 个素材` : "在素材列表中勾选要重建的文件"}{workerStatus && !online ? " · 计算节点离线，提交后排队" : ""}</p>
-                    </>}
-                  </section>
-                  <section className="panel status-panel">
+                    <button className="primary" disabled={creating || uploading || !selectedAssets.length} onClick={() => { setMaterialError(""); void createJob().catch((error: unknown) => { if (error instanceof ResceneApiError && error.status === 401) expire(); else setMaterialError(explainError(error, "操作失败")); }); }}>{creating ? "正在创建…" : "开始三维重建"}</button>
+                    <p className="muted route-note">{selectedAssets.length ? `已选 ${selectedAssets.length} 个素材` : "在素材列表中勾选要重建的文件"}{workerStatus && !online ? " · 计算节点离线，提交后排队" : ""}</p>
+                    {materialError && <p className="error" role="alert">{materialError}</p>}
+                  </section>}
+                  </>}
+                  {pane !== "materials" && <section className="panel status-panel">
                     <div className="panel-title"><h2>{pane === "results" ? "重建结果" : "重建任务"}</h2></div>
                     {detail.jobs.length > 0 && (
                       <label>任务记录<select value={latest?.id ?? ""} onChange={(event) => selectJob(event.target.value)}>{(latest && !detail.jobs.some((job) => job.id === latest.id) ? [latest, ...detail.jobs] : detail.jobs).map((job) => <option key={job.id} value={job.id}>{RECONSTRUCTION_PROFILES[job.profile].title} · {JOB_STATUS_LABELS[job.status]} · {job.id.slice(0, 8)}</option>)}</select></label>
@@ -1076,7 +1118,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                     <PageControls label="任务" page={jobPages.length} next={detail.nextJobCursor} busy={detailLoading} onChange={(cursor) => changePage("jobs", cursor)} />
                     {latest ? (
                       <>
-                        <div className="task-detail">
+                        {pane === "tasks" && <div className="task-detail">
                         <div className="job-head"><strong className="job-state" data-status={latest.status}>{JOB_STATUS_LABELS[latest.status]}{latest.cancel_requested ? " · 已请求取消" : ""}</strong><small>{stageLabel(latest.current_stage)}</small></div>
                         <div className="bar" role="progressbar" aria-label="任务进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(latest.progress * 100)}><i style={{ width: `${Math.round(latest.progress * 100)}%` }} /></div>
                         <p>{Math.round(latest.progress * 100)}% · {RECONSTRUCTION_PROFILES[latest.profile].title}{latest.attempt > 0 ? ` · 第 ${latest.attempt} 次尝试` : ""}</p>
@@ -1098,7 +1140,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                           {logs.length === 0 ? <p className="muted">{logsLoading ? "正在加载运行日志…" : "暂无运行日志"}</p> : (
                             <ol className="log-list">
                               {logs.map((line) => (
-                                <li key={line.id}><code className="log-line">{new Date(line.created_at).toLocaleTimeString()} · {line.level.toUpperCase()} · {line.message}</code></li>
+                                <li key={line.id} data-level={line.level.toLowerCase()}><code className="log-line">{new Date(line.created_at).toLocaleTimeString()} · {line.level.toUpperCase()} · {line.message}</code></li>
                               ))}
                             </ol>
                           )}
@@ -1108,11 +1150,11 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                         {canWrite && latest.error_code === "INVALID_INPUT" && <button className="task-action" onClick={() => setPane("materials")}>更换素材</button>}
                         {canWrite && canRetryJob(latest) && <button className="task-action" onClick={() => runAction(async () => { setLiveJob(await client.retryJob(latest.id)); await refresh(); })}>重试任务</button>}
                         {reconstructionId && <button className="task-action" onClick={() => setPane("results")}>查看结果</button>}
-                        </div>
-                        {reconstructionId ? (
+                        </div>}
+                        {pane === "results" && (reconstructionId ? (
                           <div className="result-actions result-panel">
                             <div className="scene-tools" role="group" aria-label="场景操作">
-                              <button className="primary" onClick={() => runAction(() => openScene(reconstructionId))}>打开场景</button>
+                              <button className="primary" onClick={() => runAction(() => openScene(reconstructionId))}>打开 Viewer</button>
                               {artifacts.some((item) => item.kind === "ply") ? <button onClick={() => runAction(() => openScene(reconstructionId, "ply"))}>打开 PLY 场景</button> : null}
                               <button onClick={() => runAction(() => copy(`${webBaseUrl.replace(/\/$/, "")}/viewer?reconstruction=${encodeURIComponent(reconstructionId)}`))}>复制 Viewer 链接</button>
                             </div>
@@ -1183,10 +1225,10 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                               </details>
                             )}
                           </div>
-                        ) : <p className="result-panel muted">任务完成后可以查看场景和下载文件。</p>}
+                        ) : <p className="result-panel muted">任务完成后可在这里查看和下载结果</p>)}
                       </>
-                    ) : <p className="muted">尚未创建任务。</p>}
-                  </section>
+                    ) : pane === "tasks" ? <p className="muted">还没有任务。选择素材和路线后开始重建。</p> : <p className="result-panel muted">任务完成后可在这里查看和下载结果</p>}
+                  </section>}
                 </div>
                 {scene && artifact && (
                   <dialog ref={sceneDialog} className="scene" aria-label="场景查看器" onCancel={(event) => { event.preventDefault(); setScene(null); }}>

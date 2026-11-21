@@ -1,5 +1,7 @@
 # ReScene 深度审计与实施计划
 
+历史证据链接固定到归档前的源码提交，需要仓库权限。0.5.0 发布资产与部署尚待核验，见 [发布说明](../docs/0.5.0发布说明.md)。
+
 基线为 `21b2052`，审计日期为 2026-11-20。首批计划覆盖用户选定的前五项。每份计划包含现状锚点、变更范围、分步验证和验收标准。验证通过后更新对应状态。
 
 [2026-11-21 第二轮深度审计](audit-2026-11-21.md) 记录 27 项新增发现及本轮验证。[第二轮实施顺序](#第二轮实施顺序) 对应 `006`–`032`。
@@ -92,7 +94,7 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 
 ### 0.4.1 审计集成补验
 
-候选应用源码：`70e509afb602919fcc577be3f737644d2f6f941a`。不把此前 `e42f505` 的 [六条 GPU 任务与设备验收](../artifacts/test-runs/2026-11-20-release-041/report.md)计入本次候选。
+候选应用源码：`70e509afb602919fcc577be3f737644d2f6f941a`。不把此前 `e42f505` 的 [六条 GPU 任务与设备验收](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-release-041/report.md)计入本次候选。
 
 | 事项 | 环境与结果 |
 |---|---|
@@ -104,7 +106,7 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 | 008 · OSS 素材删除 | 候选独立项目和新对象：STS 上传、完成及读取通过；DELETE 204 后素材行消失，清理队列先有记录，再由后台回收；STS 再读返回对象不存在。真实 OSS 未注入故障，失败和并发路径由隔离夹具覆盖。 |
 | 022 · 迁移与旧库接管 | 在隔离 PostgreSQL 还原本轮生产 `0006` 备份，升级至 `0009`，15 张原表的行数和原列指纹一致。另还原 2026-11-09 无 `alembic_version` 的真实历史备份，自动接管并升级至 `0009`，11 张原表的行数和原列指纹一致。生产 PostgreSQL 16.14 未迁移；本轮部署前演练备份 367,926 字节、root `0600`，SHA-256 `dadb7db5e0a1be6dba660634899cb405126fbd1701b2f8692876e59dadce80ff`。正式切换须重新生成停写后的最终快照。 |
 | 001、002、005、009、020、021 · Android 模拟器 | `SLT_API35` 上的旧候选复现 Viewer 首载超时：WebView 14.0.1 在 Android 只上报发送者 origin，被旧路径校验拒绝。`d87c268` 修正并接入回归脚本，[CI 44896479485](https://github.com/FLmhp/ReScene/actions/runs/44896479485) 五项通过。含修复的内嵌 JS 测试 APK（SHA-256 `738db4e4763ba0be2a04075e5a8664ae1d2b152eb75ca36b6fc2e33c9ae5f9eb`）在真实 WebView 验证无 `src` 导航、原生首载、模拟签名地址 403 后重试换 URL 并收到 200，主文档 503 后也可重试。另验收断网强制退出再启动、A/B 换号无串队列、隔离邀请领取及 A 只重放一个项目。另经回环代理加载真实 FAST 交付的 19,517,631 字节 SPZ（SHA-256 `d63b2de6ddb404ed7a0f128cf5fd8c3c1f3e3d428792479f92902244b4dec15f`），模拟器实际显示彩色高斯场景。未使用物理设备、正式签名或真实移动网络。 |
-| 001、020、021 · Android 真机 | HUAWEI BKY-W10，Android 12 / SDK 31，arm64-v8a；已安装 0.4.1（versionCode 6，APK SHA-256 `249c6ef3e894338ab336d23a123ef663ad95c59344b8e43bf9bd9f739438dcca`），生产 API 与真实 OSS。合成账号登录、`am force-stop` 冷启动保留会话；选择设备本地 8 张 Lego 序列，8/8 PostObject 上传完成；BALANCED 任务 `e301947a-c7cd-4574-9e8a-dc6a226199ce` 第一次领取成功，332.693 秒训练后交付 `e66de4a3-4576-44e7-afee-5a6e8099e9e6`（SPZ 12,515,130 B、PLY 122,788,973 B）。日志从空列表轮询到 328 行；首次点击「打开三维场景」直接加载并渲染，未复现首载超时。8 帧场景质量低，且阶段记录显示原始素材 ID 数组和 metrics JSON，记为可读性问题。[报告](../artifacts/test-runs/2026-11-21-android-device/report.md) |
+| 001、020、021 · Android 真机 | HUAWEI BKY-W10，Android 12 / SDK 31，arm64-v8a；已安装 0.4.1（versionCode 6，APK SHA-256 `249c6ef3e894338ab336d23a123ef663ad95c59344b8e43bf9bd9f739438dcca`），生产 API 与真实 OSS。合成账号登录、`am force-stop` 冷启动保留会话；选择设备本地 8 张 Lego 序列，8/8 PostObject 上传完成；BALANCED 任务 `e301947a-c7cd-4574-9e8a-dc6a226199ce` 第一次领取成功，332.693 秒训练后交付 `e66de4a3-4576-44e7-afee-5a6e8099e9e6`（SPZ 12,515,130 B、PLY 122,788,973 B）。日志从空列表轮询到 328 行；首次点击「打开三维场景」直接加载并渲染，未复现首载超时。8 帧场景质量低，且阶段记录显示原始素材 ID 数组和 metrics JSON，记为可读性问题。[报告](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-21-android-device/report.md) |
 | 012 · Android 素材重放 | 离线选入合成 PNG；强制退出并删除测试原文件及选取缓存后，应用管理副本仍在。重新联网后发送到隔离上传替身，27,769 字节与 SHA-256 一致，接口返回 `READY` 后清掉管理副本。该次不涉及真机或真实 OSS。 |
 | 007、017 · 微信运行时 | DevTools Stable 2.01.2510290 / SDK 3.17.6，候选开发构建、合成账号与回环 API。CLI 已登录；首次启动页面方法超时，最小工程及候选重新打开后都能显示首页，但自动化元素查询仍卡住。DevTools 确认候选登录页渲染；尝试操作登录未到达回环 API，未证实日志追踪或分享切换。编译夹具通过，仍需微信真机及有效 HTTPS 分享配置复测。 |
 | 007、017 · 微信真机 | **BLOCKED（2026-11-21）**：Android 设备已接入，但没有可用的微信开发者工具/登录态、微信测试账号和第二个接收账号，无法上传体验版或验证真机分享切换、任务日志和双账号领取。代码与编译夹具通过，状态不记为真机验收。 |
@@ -152,8 +154,8 @@ Python 复核使用 Windows 上的 Python 3.11.18、仓库约束文件和隔离 
 
 ## 产品方向
 
-- **从注册率低开始试点补拍反馈（M）**。在任务结果里把低注册率和可用视角不足转成可执行的补拍建议，并提供另一路线的选择条件。现有候选记录中同一组微信照片在 QUALITY 注册不足后通过 BALANCED，先用小样本确定提示是否帮助用户完成交付。 [历史需求 W18](../docs/系统剩余任务与实施路线图.md#L551) · [候选验收](../artifacts/test-runs/2026-11-20-release-041/report.md#L16)
-- **用提交与产物身份汇总候选验收（S–M）**。把真机设备、测试 API 类型、安装包 SHA-256、GPU 路线和待验收项收在同一张表，官网只引用已核对状态。先复用现有 release manifest 和验收 Markdown，人工确认真机结果。 [发布清单约定](../CONTRIBUTING.md#L146) · [官网交付表](../apps/site/index.html#L157) · [生产切换门槛](../artifacts/test-runs/2026-11-20-release-041/report.md#L56)
+- **从注册率低开始试点补拍反馈（M）**。在任务结果里把低注册率和可用视角不足转成可执行的补拍建议，并提供另一路线的选择条件。现有候选记录中同一组微信照片在 QUALITY 注册不足后通过 BALANCED，先用小样本确定提示是否帮助用户完成交付。 [历史需求 W18](../docs/系统剩余任务与实施路线图.md#L551) · [候选验收](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-release-041/report.md#L16)
+- **用提交与产物身份汇总候选验收（S–M）**。把真机设备、测试 API 类型、安装包 SHA-256、GPU 路线和待验收项收在同一张表，官网只引用已核对状态。先复用现有 release manifest 和验收 Markdown，人工确认真机结果。 [发布清单约定](../CONTRIBUTING.md#L146) · [官网交付表](../apps/site/index.html#L157) · [生产切换门槛](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-release-041/report.md#L56)
 
 ## 考虑后排除
 

@@ -2,10 +2,11 @@ export default defineAppConfig({
   entryPagePath: "pages/index/index",
   pages: ["pages/index/index", "pages/project/index", "pages/viewer/index", "pages/admin/index"],
   darkmode: true,
+  themeLocation: "theme.json",
   window: {
     navigationBarTitleText: "ReScene",
-    navigationBarBackgroundColor: "#0B0D12",
-    navigationBarTextStyle: "white",
-    backgroundColor: "#0B0D12",
+    navigationBarBackgroundColor: "@navBgColor",
+    navigationBarTextStyle: "@navTxtStyle",
+    backgroundColor: "@bgColor",
   },
 });

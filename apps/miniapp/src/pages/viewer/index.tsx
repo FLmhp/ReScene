@@ -44,7 +44,7 @@ export default function ViewerPage() {
         <Text className="error">查看器地址未配置为有效的 HTTPS 地址，请联系管理员。</Text>
       ) : (
         <View className="card">
-          <Text className="section-heading">在浏览器查看</Text>
+          <Text className="section-heading">在浏览器中查看</Text>
           {share ? (
             <Text className="muted">复制链接到手机浏览器即可查看，无需登录。链接失效时请联系分享者。</Text>
           ) : (

@@ -29,7 +29,7 @@ export function ProjectCard({ client, project, summary, onOpen }: {
     <div className="project-cover">{cover ? <AssetPreview client={client} id={cover.id} filename={cover.filename} ready /> : <span>ReScene</span>}</div>
     <div className="project-card-body">
       <h2>{project.name}</h2>
-      <p>{detail ? `${detail.asset_count} 个素材 · ${detail.job_count} 个任务` : "打开项目查看素材"}</p>
+      <p>{project.effective_role} · {detail ? `${detail.asset_count} 个素材 · ${detail.job_count} 个任务` : "打开项目查看素材"}</p>
       {job ? <p className="project-last-job">{RECONSTRUCTION_PROFILES[job.profile].title} · {JOB_STATUS_LABELS[job.status]}</p> : null}
       <button type="button" onClick={onOpen}>打开项目 <span aria-hidden="true">↗</span></button>
     </div>
