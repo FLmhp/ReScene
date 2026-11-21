@@ -9,7 +9,7 @@ import oss2
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from rescene_api import main
 from rescene_api.auth import hash_password, issue_token, verify_password
@@ -22,7 +22,9 @@ from rescene_api.models import (
     AuditLog,
     JobStage,
     Notification,
+    Project,
     ProjectInvitation,
+    ProjectMember,
     Reconstruction,
     ReconstructionJob,
     User,
@@ -1130,6 +1132,86 @@ def test_announcement_fanout_and_delete() -> None:
         assert client.get("/v1/announcements", headers=admin).json() == []
         missing = client.delete(f"/v1/announcements/{announcement['id']}", headers=admin)
         assert missing.status_code == 404 and missing.headers["x-error-code"] == "announcement.not_found"
+
+
+def test_notifications_follow_current_project_access() -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            root = User(email="root@example.com", password_hash=hash_password("correct-horse"), is_admin=True)
+            owner = User(email="owner@example.com", password_hash=hash_password("correct-horse"))
+            member = User(email="member@example.com", password_hash=hash_password("correct-horse"))
+            db.add_all([root, owner, member])
+            db.flush()
+            project = Project(name="Scope", owner_id=owner.id)
+            db.add(project)
+            db.flush()
+            db.add(ProjectMember(project_id=project.id, user_id=member.id, role="member"))
+            project_notice = Notification(
+                user_id=member.id, kind="job_succeeded", title="项目完成", body="场景已就绪", project_id=project.id
+            )
+            other_notice = Notification(
+                user_id=owner.id, kind="job_succeeded", title="项目完成", body="场景已就绪", project_id=project.id
+            )
+            announcement = Notification(user_id=member.id, kind="announcement", title="公告", body="维护")
+            admin_notice = Notification(
+                user_id=root.id, kind="job_succeeded", title="项目完成", body="场景已就绪", project_id=project.id
+            )
+            db.add_all([project_notice, other_notice, announcement, admin_notice])
+            db.commit()
+            project_id, member_id = project.id, member.id
+            notice_id, announcement_id = project_notice.id, announcement.id
+            admin_notice_id = admin_notice.id
+        admin = client.post("/v1/auth/login", json={"email": "root@example.com", "password": "correct-horse"})
+        admin_headers = {"Authorization": f"Bearer {admin.json()['access_token']}"}
+        member_headers = {
+            "Authorization": f"Bearer {client.post('/v1/auth/login', json={'email': 'member@example.com', 'password': 'correct-horse'}).json()['access_token']}"
+        }
+        owner_headers = {
+            "Authorization": f"Bearer {client.post('/v1/auth/login', json={'email': 'owner@example.com', 'password': 'correct-horse'}).json()['access_token']}"
+        }
+
+        listed = [item["id"] for item in client.get("/v1/notifications", headers=member_headers).json()]
+        assert len(listed) == 2 and set(listed) == {announcement_id, notice_id}
+        assert client.get("/v1/notifications/count", headers=member_headers).json() == {"unread": 2}
+        first_page = client.get("/v1/notifications?limit=1", headers=member_headers).json()
+        second_page = client.get("/v1/notifications?limit=1&offset=1", headers=member_headers).json()
+        assert len(first_page) == len(second_page) == 1
+        assert {first_page[0]["id"], second_page[0]["id"]} == {announcement_id, notice_id}
+
+        with SessionLocal() as db:
+            db.execute(
+                delete(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == member_id)
+            )
+            db.commit()
+
+        assert [item["id"] for item in client.get("/v1/notifications", headers=member_headers).json()] == [
+            announcement_id
+        ]
+        assert client.get("/v1/notifications/count", headers=member_headers).json() == {"unread": 1}
+        assert client.post("/v1/notifications/read", headers=member_headers, json={"ids": [notice_id]}).json() == {
+            "updated": 0
+        }
+        with SessionLocal() as db:
+            assert db.get(Notification, notice_id).read_at is None, "a hidden notice must not be marked read"
+            assert db.get(Notification, announcement_id).read_at is None
+        assert client.post("/v1/notifications/read", headers=member_headers, json={}).json() == {"updated": 1}
+
+        assert [item["id"] for item in client.get("/v1/notifications", headers=owner_headers).json()] == [
+            other_notice.id
+        ]
+        assert [item["id"] for item in client.get("/v1/notifications", headers=admin_headers).json()] == [
+            admin_notice_id
+        ]
+
+        with SessionLocal() as db:
+            db.get(Project, project_id).deleted_at = now()
+            db.commit()
+
+        assert client.get("/v1/notifications", headers=owner_headers).json() == []
+        assert client.get("/v1/notifications/count", headers=owner_headers).json() == {"unread": 0}
+        assert client.get("/v1/notifications", headers=admin_headers).json() == []
+
+        assert len(client.get("/v1/notifications?limit=1", headers=member_headers).json()) == 1
 
 
 def test_global_audit_filters_and_csv() -> None:

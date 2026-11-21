@@ -9,7 +9,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import MetaData, Table, create_engine, event, inspect, select
+from sqlalchemy import MetaData, Table, create_engine, delete, event, inspect, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
@@ -20,6 +20,7 @@ from rescene_api.models import (
     Asset,
     AssetCleanup,
     AuditLog,
+    Notification,
     Project,
     ProjectInvitation,
     ProjectMember,
@@ -155,6 +156,35 @@ def test_postgres_concurrent_password_rotations_stay_monotonic(postgres_sessions
             if verify_password(password, current.password_hash)
         ]
         assert len(applied) == 1, "the losing rotation must not overwrite the applied password"
+
+
+def test_postgres_notifications_follow_committed_membership(postgres_sessions):
+    with postgres_sessions.begin() as db:
+        owner = User(email="owner@example.com", password_hash=hash_password("correct-horse"))
+        member = User(email="member@example.com", password_hash=hash_password("correct-horse"))
+        db.add_all([owner, member])
+        db.flush()
+        project = Project(name="Scope", owner_id=owner.id)
+        db.add(project)
+        db.flush()
+        db.add(ProjectMember(project_id=project.id, user_id=member.id, role="member"))
+        notice = Notification(user_id=member.id, kind="job_succeeded", title="完成", body="就绪", project_id=project.id)
+        db.add(notice)
+        db.flush()
+        member_id, project_id, notice_id = member.id, project.id, notice.id
+    headers = {"Authorization": f"Bearer {issue_token(member_id)}"}
+
+    with TestClient(main.app) as client, postgres_sessions() as removing:
+        assert [item["id"] for item in client.get("/v1/notifications", headers=headers).json()] == [notice_id]
+        removing.execute(
+            delete(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == member_id)
+        )
+        assert [item["id"] for item in client.get("/v1/notifications", headers=headers).json()] == [notice_id], (
+            "an uncommitted removal must not hide the notice"
+        )
+        removing.commit()
+        assert client.get("/v1/notifications", headers=headers).json() == []
+        assert client.get("/v1/notifications/count", headers=headers).json() == {"unread": 0}
 
 
 @pytest.mark.parametrize("operation", ["create", "retry"])
