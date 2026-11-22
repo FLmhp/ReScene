@@ -378,8 +378,8 @@ jobs:
           # "Signer #1". Match the digest line itself so either layout works.
           actual=$(printf '%s\n' "$verification" | sed -n 's/.*certificate SHA-256 digest: *//p' | head -n1 | tr -d ' \r')
           [[ -n "$actual" ]] || { echo 'Could not read the APK signer digest' >&2; exit 1; }
-          expected=$(keytool -exportcert -alias "$RESCENE_ANDROID_KEY_ALIAS" -keystore "$RESCENE_ANDROID_KEYSTORE_PATH" -storepass:env RESCENE_ANDROID_KEYSTORE_PASSWORD | openssl dgst -sha256 | tr -d ' \r')
-          expected=${expected##* }
+          # `openssl dgst` prints "SHA2-256(stdin)= <hex>"; strip at the `=`.
+          expected=$(keytool -exportcert -alias "$RESCENE_ANDROID_KEY_ALIAS" -keystore "$RESCENE_ANDROID_KEYSTORE_PATH" -storepass:env RESCENE_ANDROID_KEYSTORE_PASSWORD | openssl dgst -sha256 | sed 's/^.*=//' | tr -d ' \r')
           [[ "${actual,,}" == "${expected,,}" ]] || { echo "APK signer $actual does not match keystore $expected" >&2; exit 1; }
           aapt2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
           badging=$("$aapt2" dump badging "$apk")
