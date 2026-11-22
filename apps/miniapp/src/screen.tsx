@@ -25,16 +25,22 @@ type AppearanceState = {
 };
 const AppearanceContext = createContext<AppearanceState | null>(null);
 
+// Keep the final appearance for the rest of this JS process. Pages read this
+// snapshot on show instead of re-reading storage that may fail between pages.
+let activeTheme: ThemePreference | undefined;
+let activeDisplay: DisplayPreferences | undefined;
 // Keep unsaved changes alive across page-stack transitions when device storage fails.
 let unsavedTheme: ThemePreference | undefined;
 let unsavedDisplay: DisplayPreferences | undefined;
 function readTheme(): ThemePreference {
   if (unsavedTheme) return unsavedTheme;
-  try { return themePreference(Taro.getStorageSync(THEME_STORAGE_KEY)); } catch { return "system"; }
+  if (activeTheme) return activeTheme;
+  try { return (activeTheme = themePreference(Taro.getStorageSync(THEME_STORAGE_KEY))); } catch { return "system"; }
 }
 function readDisplay(): DisplayPreferences {
   if (unsavedDisplay) return unsavedDisplay;
-  try { return displayPreferences(Taro.getStorageSync(DISPLAY_STORAGE_KEY), Taro.getStorageSync(COLORWAY_STORAGE_KEY)); }
+  if (activeDisplay) return activeDisplay;
+  try { return (activeDisplay = displayPreferences(Taro.getStorageSync(DISPLAY_STORAGE_KEY), Taro.getStorageSync(COLORWAY_STORAGE_KEY))); }
   catch { return displayPreferences(null); }
 }
 
@@ -50,6 +56,7 @@ export function Screen({ children }: PropsWithChildren) {
   const palette = resolvePalette(display.colorway, dark, display.primary);
   const setPreference = (value: ThemePreference) => {
     current.current.preference = value;
+    activeTheme = value;
     updatePreference(value);
     try { Taro.setStorageSync(THEME_STORAGE_KEY, value); unsavedTheme = undefined; }
     catch { unsavedTheme = value; }
@@ -57,6 +64,7 @@ export function Screen({ children }: PropsWithChildren) {
   };
   const setDisplay = (value: DisplayPreferences) => {
     current.current.display = value;
+    activeDisplay = value;
     updateDisplay(value);
     try { Taro.setStorageSync(DISPLAY_STORAGE_KEY, value); unsavedDisplay = undefined; }
     catch { unsavedDisplay = value; }
@@ -74,11 +82,9 @@ export function Screen({ children }: PropsWithChildren) {
   };
   useDidShow(() => {
     visible.current = true;
-    // A read failure must not replace the live page's preferences with defaults.
-    let nextPreference = unsavedTheme ?? current.current.preference;
-    let nextDisplay = unsavedDisplay ?? current.current.display;
-    try { if (!unsavedTheme) nextPreference = themePreference(Taro.getStorageSync(THEME_STORAGE_KEY)); } catch { /* Retain current value. */ }
-    try { if (!unsavedDisplay) nextDisplay = displayPreferences(Taro.getStorageSync(DISPLAY_STORAGE_KEY), Taro.getStorageSync(COLORWAY_STORAGE_KEY)); } catch { /* Retain current value. */ }
+    // Use the process snapshot; a failing storage read must not reset the live page.
+    const nextPreference = unsavedTheme ?? activeTheme ?? current.current.preference;
+    const nextDisplay = unsavedDisplay ?? activeDisplay ?? current.current.display;
     updatePreference(nextPreference);
     updateDisplay(nextDisplay);
     setSaveError(!!unsavedTheme || !!unsavedDisplay);
