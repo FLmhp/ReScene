@@ -182,6 +182,9 @@ function AdminWorkspace() {
     if (busyUser) return;
     setBusyUser(target.id);
     setError("");
+    setDetail(null);
+    setPasswordFor(null);
+    setPassword("");
     try { setDetail(await client.getUser(target.id)); }
     catch (reason) { setError(message(reason, "加载账号详情失败。")); }
     finally { setBusyUser(null); }
@@ -267,7 +270,6 @@ function AdminWorkspace() {
 
   return (
     <Screen>
-      <Text className="title">管理控制台</Text>
       <Text className="muted">账号、公告与全站操作日志；仅管理员可见。</Text>
       <View className="segmented">
         <Button className={tab === "users" ? "button tab active" : "button tab"} aria-pressed={tab === "users"} onClick={() => switchTab("users")}>用户</Button>
@@ -298,7 +300,7 @@ function AdminWorkspace() {
               <Button className="button ghost" loading={busyUser === item.id} disabled={busyUser === item.id} onClick={() => void toggleActive(item)}>
                 {item.active ? "停用" : "启用"}
               </Button>
-              <Button className="button ghost" onClick={() => { setPasswordFor(passwordFor === item.id ? null : item.id); setPassword(""); }}>重置密码</Button>
+              <Button className="button ghost" onClick={() => { setDetail(null); setPasswordFor(passwordFor === item.id ? null : item.id); setPassword(""); }}>重置密码</Button>
               {passwordFor === item.id ? (
                 <View>
                   <Input className="input" password placeholder="新的初始密码（至少 12 位）" value={password} onInput={(event) => setPassword(event.detail.value)} />

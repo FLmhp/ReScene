@@ -35,7 +35,6 @@ export default function ViewerPage() {
 
   return (
     <Screen>
-      <Text className="title">三维场景</Text>
       {!validRoute ? (
         <Text className="error">场景链接无效。请从项目重新打开，或使用有效的分享链接。</Text>
       ) : reconstruction && !hasToken() ? (
@@ -55,7 +54,7 @@ export default function ViewerPage() {
           </Button>
         </View>
       )}
-      <Button className="button ghost" onClick={() => void openHome().catch(() => undefined)}>返回首页</Button>
+      {Taro.getCurrentPages().length <= 1 ? <Button className="button ghost" onClick={() => void openHome().catch(() => undefined)}>返回首页</Button> : null}
     </Screen>
   );
 }

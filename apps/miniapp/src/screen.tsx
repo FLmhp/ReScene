@@ -1,8 +1,7 @@
-import { COLORWAY_OPTIONS, COLORWAY_STORAGE_KEY, colorwayPreference, resolvePalette, THEME_OPTIONS, THEME_STORAGE_KEY, themePreference, type Palette } from "@rescene/design-tokens";
-import { Button, Image, Picker, Text, View } from "@tarojs/components";
-import Taro, { useDidShow } from "@tarojs/taro";
-import { createContext, useContext, useEffect, useState, type PropsWithChildren } from "react";
-import brandIcon from "./assets/brand-icon.png";
+import { COLORWAY_OPTIONS, COLORWAY_STORAGE_KEY, DISPLAY_STORAGE_KEY, FONT_SIZE_SCALES, displayPreferences, normalizePrimary, paletteCssVariables, resolvePalette, THEME_OPTIONS, THEME_STORAGE_KEY, themePreference, type DisplayPreferences, type Palette, type ThemePreference } from "@rescene/design-tokens";
+import { Button, Input, Picker, Text, View } from "@tarojs/components";
+import Taro, { useDidHide, useDidShow } from "@tarojs/taro";
+import { createContext, useContext, useEffect, useRef, useState, type PropsWithChildren } from "react";
 import { hasToken } from "./api";
 import { openHome } from "./navigation";
 
@@ -17,19 +16,54 @@ function systemTheme(): "light" | "dark" | undefined {
   catch { return undefined; }
 }
 
+type AppearanceState = {
+  preference: ThemePreference;
+  display: DisplayPreferences;
+  setPreference: (value: ThemePreference) => void;
+  setDisplay: (value: DisplayPreferences) => void;
+  saveError: boolean;
+};
+const AppearanceContext = createContext<AppearanceState | null>(null);
+
+// Keep unsaved changes alive across page-stack transitions when device storage fails.
+let unsavedTheme: ThemePreference | undefined;
+let unsavedDisplay: DisplayPreferences | undefined;
+function readTheme(): ThemePreference {
+  if (unsavedTheme) return unsavedTheme;
+  try { return themePreference(Taro.getStorageSync(THEME_STORAGE_KEY)); } catch { return "system"; }
+}
+function readDisplay(): DisplayPreferences {
+  if (unsavedDisplay) return unsavedDisplay;
+  try { return displayPreferences(Taro.getStorageSync(DISPLAY_STORAGE_KEY), Taro.getStorageSync(COLORWAY_STORAGE_KEY)); }
+  catch { return displayPreferences(null); }
+}
+
 export function Screen({ children }: PropsWithChildren) {
-  const [preference, setPreference] = useState(() => {
-    try { return themePreference(Taro.getStorageSync(THEME_STORAGE_KEY)); } catch { return "system"; }
-  });
-  const [colorway, setColorway] = useState(() => {
-    try { return colorwayPreference(Taro.getStorageSync(COLORWAY_STORAGE_KEY)); } catch { return "jade"; }
-  });
+  const [preference, updatePreference] = useState(readTheme);
+  const [display, updateDisplay] = useState(readDisplay);
+  const [saveError, setSaveError] = useState(!!unsavedTheme || !!unsavedDisplay);
   const [system, setSystem] = useState(systemTheme);
-  const themeIndex = THEME_OPTIONS.findIndex((item) => item.value === preference);
-  const colorwayIndex = COLORWAY_OPTIONS.findIndex((item) => item.value === colorway);
+  const current = useRef({ preference, display });
+  current.current = { preference, display };
+  const visible = useRef(false);
   const dark = preference === "dark" || (preference === "system" && system === "dark");
-  const palette = resolvePalette(colorway, dark);
+  const palette = resolvePalette(display.colorway, dark, display.primary);
+  const setPreference = (value: ThemePreference) => {
+    current.current.preference = value;
+    updatePreference(value);
+    try { Taro.setStorageSync(THEME_STORAGE_KEY, value); unsavedTheme = undefined; }
+    catch { unsavedTheme = value; }
+    setSaveError(!!unsavedTheme || !!unsavedDisplay);
+  };
+  const setDisplay = (value: DisplayPreferences) => {
+    current.current.display = value;
+    updateDisplay(value);
+    try { Taro.setStorageSync(DISPLAY_STORAGE_KEY, value); unsavedDisplay = undefined; }
+    catch { unsavedDisplay = value; }
+    setSaveError(!!unsavedTheme || !!unsavedDisplay);
+  };
   const apply = (isDark: boolean, background: string) => {
+    if (!visible.current) return;
     void Promise.resolve().then(() => Taro.setNavigationBarColor({
       frontColor: isDark ? "#ffffff" : "#000000", backgroundColor: background,
     })).catch(() => undefined);
@@ -39,51 +73,99 @@ export function Screen({ children }: PropsWithChildren) {
     void Promise.resolve().then(() => Taro.setBackgroundTextStyle({ textStyle: isDark ? "light" : "dark" })).catch(() => undefined);
   };
   useDidShow(() => {
-    let nextPreference = preference;
-    let nextColorway = colorway;
-    try { nextPreference = themePreference(Taro.getStorageSync(THEME_STORAGE_KEY)); setPreference(nextPreference); } catch { /* Use current preference. */ }
-    try { nextColorway = colorwayPreference(Taro.getStorageSync(COLORWAY_STORAGE_KEY)); setColorway(nextColorway); } catch { /* Use current colorway. */ }
+    visible.current = true;
+    // A read failure must not replace the live page's preferences with defaults.
+    let nextPreference = unsavedTheme ?? current.current.preference;
+    let nextDisplay = unsavedDisplay ?? current.current.display;
+    try { if (!unsavedTheme) nextPreference = themePreference(Taro.getStorageSync(THEME_STORAGE_KEY)); } catch { /* Retain current value. */ }
+    try { if (!unsavedDisplay) nextDisplay = displayPreferences(Taro.getStorageSync(DISPLAY_STORAGE_KEY), Taro.getStorageSync(COLORWAY_STORAGE_KEY)); } catch { /* Retain current value. */ }
+    updatePreference(nextPreference);
+    updateDisplay(nextDisplay);
+    setSaveError(!!unsavedTheme || !!unsavedDisplay);
     const nextSystem = systemTheme();
     setSystem(nextSystem);
     const nextDark = nextPreference === "dark" || (nextPreference === "system" && nextSystem === "dark");
-    apply(nextDark, resolvePalette(nextColorway, nextDark).bg);
+    apply(nextDark, resolvePalette(nextDisplay.colorway, nextDark, nextDisplay.primary).bg);
   });
   useEffect(() => { apply(dark, palette.bg); }, [dark, palette.bg]);
+  useDidHide(() => { visible.current = false; });
   useEffect(() => {
     const change = (event: { theme: "light" | "dark" }) => setSystem(event.theme);
     Taro.onThemeChange?.(change);
     return () => Taro.offThemeChange?.(change);
   }, []);
-  return <View className={`screen theme-${dark ? "dark" : "light"} palette-${colorway}`}>
-    <View className="appearance-bar">
-      <View className="brand">
-        <Image className="brand-icon" src={brandIcon} mode="aspectFit" aria-hidden="true" />
-        <Text className="brand-wordmark">ReScene</Text>
-      </View>
-      <View className="appearance-controls">
-      <Picker mode="selector" range={THEME_OPTIONS.map((item) => item.label)} value={themeIndex} onChange={(event) => {
-        const selected = THEME_OPTIONS[Number(event.detail.value)];
-        if (!selected) return;
-        setPreference(selected.value);
-        try { Taro.setStorageSync(THEME_STORAGE_KEY, selected.value); } catch { /* Apply for this session. */ }
-      }}>
-        <View className="button ghost compact theme-trigger" aria-label={`外观主题：${THEME_OPTIONS[themeIndex]?.label}`}>
-          <Text>{THEME_OPTIONS[themeIndex]?.label}</Text><Text aria-hidden="true">▾</Text>
-        </View>
-      </Picker>
-      <Picker mode="selector" range={COLORWAY_OPTIONS.map((item) => item.label)} value={colorwayIndex} onChange={(event) => {
-        const selected = COLORWAY_OPTIONS[Number(event.detail.value)];
-        if (!selected) return;
-        setColorway(selected.value);
-        try { Taro.setStorageSync(COLORWAY_STORAGE_KEY, selected.value); } catch { /* Apply for this session. */ }
-      }}>
-        <View className="button ghost compact colorway-trigger" aria-label={`配色：${COLORWAY_OPTIONS[colorwayIndex]?.label}`}>
-          <Text>{COLORWAY_OPTIONS[colorwayIndex]?.label}</Text><Text aria-hidden="true">▾</Text>
-        </View>
-      </Picker>
-      </View>
+  const scale = FONT_SIZE_SCALES[display.fontSize];
+  const variables = Object.entries(paletteCssVariables(palette)).map(([key, value]) => `${key}:${value}`);
+  for (const base of [22, 24, 26, 28, 30, 32, 34, 36, 44, 56]) variables.push(`--mini-font-${base}:${Math.round(base * scale)}rpx`);
+  const panelChannels = [1, 3, 5].map(index => parseInt(palette.panel.slice(index, index + 2), 16));
+  if (panelChannels.every(Number.isFinite)) variables.push(`--chrome-tint:rgba(${panelChannels.join(",")},${display.surface === "solid" ? 1 : 0.94})`);
+  return <View className={`screen theme-${dark ? "dark" : "light"} palette-${display.colorway} surface-${display.surface}`} style={variables.join(";")}>
+    <ScreenPaletteContext.Provider value={palette}>
+      <AppearanceContext.Provider value={{ preference, display, setPreference, setDisplay, saveError }}>{children}</AppearanceContext.Provider>
+    </ScreenPaletteContext.Provider>
+  </View>;
+}
+
+export function AppearancePage() {
+  // Standalone route usage renders its own Screen; inside a workspace it inherits the page shell.
+  return useContext(AppearanceContext) ? <AppearanceForm /> : <Screen><AppearanceForm /></Screen>;
+}
+
+function AppearanceForm() {
+  const appearance = useContext(AppearanceContext);
+  if (!appearance) throw new Error("AppearanceForm requires Screen");
+  const { preference, display, setPreference, setDisplay, saveError } = appearance;
+  const [primaryDraft, setPrimaryDraft] = useState(display.primary);
+  const [primaryError, setPrimaryError] = useState(false);
+  const themeIndex = THEME_OPTIONS.findIndex(item => item.value === preference);
+  const colorwayIndex = COLORWAY_OPTIONS.findIndex(item => item.value === display.colorway);
+  const sizes: { value: DisplayPreferences["fontSize"]; label: string }[] = [
+    { value: "standard", label: "标准 100%" }, { value: "large", label: "较大 115%" }, { value: "extra-large", label: "特大 130%" },
+  ];
+  const surfaces: { value: DisplayPreferences["surface"]; label: string }[] = [
+    { value: "auto", label: "跟随设备" }, { value: "solid", label: "实色" },
+  ];
+  const applyPrimary = () => {
+    const primary = normalizePrimary(primaryDraft);
+    if (!primary) { setPrimaryError(true); return; }
+    setPrimaryDraft(primary);
+    setPrimaryError(false);
+    setDisplay({ ...display, primary });
+  };
+  const light = resolvePalette("custom", false, display.primary);
+  const dark = resolvePalette("custom", true, display.primary);
+  const draftColor = normalizePrimary(primaryDraft) ?? display.primary;
+  return <View className="appearance-page">
+    <View className="appearance-field"><Text className="label">外观主题</Text>
+      <Picker mode="selector" range={THEME_OPTIONS.map(item => item.label)} value={themeIndex} onChange={event => {
+        const option = THEME_OPTIONS[Number(event.detail.value)]; if (option) setPreference(option.value);
+      }}><View className="appearance-picker" aria-label={`外观主题：${THEME_OPTIONS[themeIndex]?.label}`}>{THEME_OPTIONS[themeIndex]?.label} ▾</View></Picker>
     </View>
-    <ScreenPaletteContext.Provider value={palette}>{children}</ScreenPaletteContext.Provider>
+    <View className="appearance-field"><Text className="label">配色</Text>
+      <Picker mode="selector" range={COLORWAY_OPTIONS.map(item => item.label)} value={colorwayIndex} onChange={event => {
+        const option = COLORWAY_OPTIONS[Number(event.detail.value)]; if (option) setDisplay({ ...display, colorway: option.value });
+      }}><View className="appearance-picker" aria-label={`配色：${COLORWAY_OPTIONS[colorwayIndex]?.label}`}>{COLORWAY_OPTIONS[colorwayIndex]?.label} ▾</View></Picker>
+    </View>
+    {display.colorway === "custom" && <View className="appearance-field">
+      <Text className="label">主色调</Text>
+      <View className="appearance-primary"><View className="appearance-swatch" style={`background:${draftColor}`} /><Input className="input" value={primaryDraft} maxlength={7} onInput={event => { setPrimaryDraft(event.detail.value); setPrimaryError(false); }} onConfirm={applyPrimary} aria-label="主色调 HEX" /></View>
+      {primaryError && <Text className="error">请输入 6 位十六进制颜色，例如 #28536B。</Text>}
+      <Button className="button ghost" onClick={applyPrimary}>应用主色</Button>
+      <View className="appearance-preview"><Text>浅色</Text><View className="appearance-preview-swatch" style={`background:linear-gradient(155deg,${light.bgSoft},${light.bgDeep})`} /></View>
+      <View className="appearance-preview"><Text>深色</Text><View className="appearance-preview-swatch" style={`background:linear-gradient(155deg,${dark.bgSoft},${dark.bgDeep})`} /></View>
+    </View>}
+    <View className="appearance-field"><Text className="label">字体大小</Text>
+      <Picker mode="selector" range={sizes.map(item => item.label)} value={sizes.findIndex(item => item.value === display.fontSize)} onChange={event => {
+        const option = sizes[Number(event.detail.value)]; if (option) setDisplay({ ...display, fontSize: option.value });
+      }}><View className="appearance-picker" aria-label={`字体大小：${sizes.find(item => item.value === display.fontSize)?.label}`}>{sizes.find(item => item.value === display.fontSize)?.label} ▾</View></Picker>
+    </View>
+    <View className="appearance-field"><Text className="label">面板效果</Text>
+      <Picker mode="selector" range={surfaces.map(item => item.label)} value={surfaces.findIndex(item => item.value === display.surface)} onChange={event => {
+        const option = surfaces[Number(event.detail.value)]; if (option) setDisplay({ ...display, surface: option.value });
+      }}><View className="appearance-picker" aria-label={`面板效果：${surfaces.find(item => item.value === display.surface)?.label}`}>{surfaces.find(item => item.value === display.surface)?.label} ▾</View></Picker>
+    </View>
+    {saveError && <View className="error" role="status"><Text>未能保存到此设备</Text></View>}
+    <Button className="button ghost" onClick={() => { setPreference("system"); const defaults = displayPreferences(null); setDisplay(defaults); setPrimaryDraft(defaults.primary); setPrimaryError(false); }}>恢复默认外观</Button>
   </View>;
 }
 
