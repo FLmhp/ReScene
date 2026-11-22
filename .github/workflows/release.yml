@@ -497,21 +497,16 @@ jobs:
             --deploy-result "${{ needs.deploy.result }}" \
             > "$RUNNER_TEMP/release-log.json"
           cat "$RUNNER_TEMP/release-log.json"
-      # Workflow logs are public for a public repository either way; attaching
-      # them keeps the build and deploy evidence next to the assets themselves.
-      - name: Archive this run's logs
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/logs" > "$RUNNER_TEMP/workflow-logs.zip"
-          test -s "$RUNNER_TEMP/workflow-logs.zip"
-      - name: Upload the release log and run logs
+      # Workflow logs are public for a public repository, and GitHub only serves
+      # them once a run finishes, so the log points at the run instead of
+      # shipping a zip of itself: `release-log.json` carries the run URL, the
+      # artifact hashes and the deploy record.
+      - name: Upload the release log
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "$RELEASE_TAG" \
             "$RUNNER_TEMP/release-log.json" \
-            "$RUNNER_TEMP/workflow-logs.zip" \
             release-flat/release-manifest.json \
             release-flat/source-manifest.json \
             --clobber

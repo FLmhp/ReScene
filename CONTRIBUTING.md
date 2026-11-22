@@ -216,7 +216,7 @@ node scripts/bump-version.mjs <新版本号>
 
 `RELEASE_DEPLOY=true` 时，`deploy` job 在生产主机上重建并切换 `api`、`web` 镜像：先在 `/opt/rescene/infra/backups/` 留下 `pg_dump` 快照，再逐个服务等待健康，最后探测公网入口并把结果写入 `deploy-log.json`。它需要 secrets `DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS` 和 variables `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_PORT`。部署失败不自动回滚（数据库迁移不随镜像回退），`github-release` 会因此不发布；只想发安装包时把 `RELEASE_DEPLOY` 改为 `false` 重跑，`release-log.json` 会把部署记为未执行而不是成功。
 
-Release 创建时即对外发布，不再经过草稿；附加资产除安装包外还有 `source-manifest.json`、`release-manifest.json`、`release-log.json`（产物哈希、镜像摘要、迁移版本、备份路径与探针结果）和 `workflow-logs.zip`（本次运行的日志）。工作流没有生成独立的 `SHA256SUMS`，请按发布清单中的哈希核对实际下载文件。最终资产集合以成功的运行和 Release 为准，不把构建计划当成已发布证据。
+Release 创建时即对外发布，不再经过草稿；附加资产除安装包外还有 `source-manifest.json`、`release-manifest.json` 和 `release-log.json`（产物哈希、镜像摘要、迁移版本、备份路径与探针结果，以及本次运行的 URL）。GitHub 只在该次运行结束后才提供日志，所以发布时无法把自身日志打包成资产；日志通过运行 URL 查看，`deploy-log.json` 另存为本次运行的 artifacts。工作流没有生成独立的 `SHA256SUMS`，请按发布清单中的哈希核对实际下载文件。最终资产集合以成功的运行和 Release 为准，不把构建计划当成已发布证据。
 
 Windows 签名为可选：证书和密码都未配置时产物未签名，只配置一项会失败；配置两项后工作流签名并验证。macOS 工作流生成未签名 dmg；只对来源及哈希已核实的单个文件按系统提示处理，不要全局关闭安全检查。Android 发布必须配置 keystore 和密码，工作流校验签名及包信息；不要把签名材料提交到仓库。小程序构建成功不等于已通过平台审核或发布。
 
