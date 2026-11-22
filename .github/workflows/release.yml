@@ -373,10 +373,14 @@ jobs:
           test -x "$apksigner"
           verification=$("$apksigner" verify --verbose --print-certs "$apk")
           printf '%s\n' "$verification"
-          expected=$(keytool -exportcert -alias "$RESCENE_ANDROID_KEY_ALIAS" -keystore "$RESCENE_ANDROID_KEYSTORE_PATH" -storepass:env RESCENE_ANDROID_KEYSTORE_PASSWORD | openssl dgst -sha256)
-          actual=$(printf '%s\n' "$verification" | grep 'Signer #1 certificate SHA-256 digest:' | cut -d: -f2 | tr -d ' ')
+          printf '%s\n' "$verification" | grep -q '^Verifies' || { echo 'apksigner did not report a verified signature' >&2; exit 1; }
+          # build-tools 36 labels the signer "V2 Signer:"; older versions print
+          # "Signer #1". Match the digest line itself so either layout works.
+          actual=$(printf '%s\n' "$verification" | sed -n 's/.*certificate SHA-256 digest: *//p' | head -n1 | tr -d ' \r')
+          [[ -n "$actual" ]] || { echo 'Could not read the APK signer digest' >&2; exit 1; }
+          expected=$(keytool -exportcert -alias "$RESCENE_ANDROID_KEY_ALIAS" -keystore "$RESCENE_ANDROID_KEYSTORE_PATH" -storepass:env RESCENE_ANDROID_KEYSTORE_PASSWORD | openssl dgst -sha256 | tr -d ' \r')
           expected=${expected##* }
-          [[ "${actual,,}" == "${expected,,}" ]] || { echo 'Android APK signer does not match keystore' >&2; exit 1; }
+          [[ "${actual,,}" == "${expected,,}" ]] || { echo "APK signer $actual does not match keystore $expected" >&2; exit 1; }
           aapt2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
           badging=$("$aapt2" dump badging "$apk")
           package_name=$(printf '%s\n' "$badging" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
