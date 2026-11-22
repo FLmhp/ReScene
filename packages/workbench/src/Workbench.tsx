@@ -78,7 +78,7 @@ function preferredJob(live: Job | undefined, snapshot: Job | undefined): Job | u
 }
 const PROFILES: Profile[] = ["fast", "balanced", "quality"];
 type AuthMode = "login" | "code" | "reset" | "register";
-const AUTH_TITLES: Record<AuthMode, string> = { login: "登录", code: "邮箱验证码登录", reset: "重置密码", register: "注册" };
+const AUTH_TITLES: Record<AuthMode, string> = { login: "登录", code: "验证码登录", reset: "重置密码", register: "注册" };
 const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const PANES = [{ key: "materials", label: "素材" }, { key: "tasks", label: "任务" }, { key: "results", label: "结果" }] as const;
 const NOTIFY_PAGE_SIZE = 20;

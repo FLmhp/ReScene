@@ -230,7 +230,7 @@ describe("session gate", () => {
     const store = renderWorkbench();
 
     await userEvent.click(screen.getByRole("button", { name: "使用邮箱验证码登录" }));
-    expect(screen.getByRole("heading", { name: "邮箱验证码登录" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "验证码登录" })).toBeTruthy();
     await userEvent.type(screen.getByLabelText("邮箱"), "ops@example.com");
     await userEvent.click(screen.getByRole("button", { name: "发送验证码" }));
 
@@ -259,7 +259,7 @@ describe("session gate", () => {
 
     expect(await screen.findByText("验证码无效或已过期，请重新获取。")).toBeTruthy();
     expect(store.data.get("rescene-token")).toBeUndefined();
-    expect(screen.getByRole("heading", { name: "邮箱验证码登录" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "验证码登录" })).toBeTruthy();
   });
 
   it("resets the password with a code and adopts the new token", async () => {
