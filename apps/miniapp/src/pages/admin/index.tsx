@@ -332,7 +332,7 @@ function AdminWorkspace() {
             </View>
           ) : null}
 
-          <View className="card">
+          {!detail && !passwordFor ? <View className="card">
             <Text className="label">创建账号</Text>
             <Text className="label">新账号邮箱</Text>
             <Input className="input" placeholder="name@example.com" value={newEmail} onInput={(event) => setNewEmail(event.detail.value)} />
@@ -340,7 +340,7 @@ function AdminWorkspace() {
             <Input className="input" placeholder="至少 12 位" password value={newPassword} onInput={(event) => setNewPassword(event.detail.value)} />
             <View className="row"><Text>管理员</Text><Switch checked={newAdmin} onChange={(event) => setNewAdmin(event.detail.value)} /></View>
             <Button className="button" loading={creating} disabled={creating || !newEmail.trim() || !newPassword} onClick={() => void createUser()}>创建账号</Button>
-          </View>
+          </View> : null}
         </>
       ) : null}
 
