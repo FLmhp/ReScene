@@ -138,7 +138,7 @@ export default function IndexPage() {
     }
   }, [loadProjects, replay]);
 
-  const loadNotifications = useCallback(async () => {
+  const loadUnread = useCallback(async () => {
     const owner = currentQueueOwner();
     if (!owner) return;
     const scopedClient = queueClient(owner);
@@ -155,7 +155,7 @@ export default function IndexPage() {
     const logoutNotice = consumeLogoutNotice();
     if (logoutNotice) setNotice(logoutNotice);
     void (async () => {
-      if (await recover()) await loadNotifications();
+      if (await recover()) await loadUnread();
     })();
   });
 
@@ -174,7 +174,7 @@ export default function IndexPage() {
       setUser(current);
       replay(owner);
       await loadProjects(owner);
-      await loadNotifications();
+      await loadUnread();
     } catch (reason) {
       if (reason instanceof ResceneApiError && (reason.status === 401 || reason.status === 403)) {
         setError("邮箱或密码不正确。");
@@ -216,7 +216,7 @@ export default function IndexPage() {
       setUser(current);
       replay(owner);
       await loadProjects(owner);
-      await loadNotifications();
+      await loadUnread();
     } catch (reason) {
       if (reason instanceof ResceneApiError && reason.status === 409) {
         setError("该邮箱已注册，请直接登录。");
