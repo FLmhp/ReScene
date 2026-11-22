@@ -1,0 +1,77 @@
+name: ReScene images
+
+# Image builds stay on GitHub-hosted runners: the production host must not
+# expose its Docker socket to CI jobs. Every deploy builds both images anyway,
+# so this workflow is a manual guard against runtime-only dependency gaps.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: rescene
+          POSTGRES_PASSWORD: rescene_ci
+          POSTGRES_DB: rescene
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rescene -d rescene"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      # The runtime dependency tree of the images differs from a workspace
+      # install: a devDependency needed while compiling workspace sources
+      # only fails here. Keep these builds as the guard for that class of bug.
+      - name: Build API image
+        run: docker build -f infra/api/Dockerfile -t rescene-api:ci .
+      - name: Build web image
+        run: docker build -f infra/web/Dockerfile -t rescene-web:ci .
+      # The image must reach /health/ready against a real PostgreSQL before the
+      # deploy window; a bad uvicorn flag or a missing migration only shows here.
+      - name: Smoke-test API image
+        run: |
+          docker run --detach --name rescene-api-smoke --network host \
+            --env RESCENE_DATABASE_URL="postgresql+psycopg://rescene:rescene_ci@127.0.0.1:5432/rescene" \
+            --env RESCENE_JWT_SECRET="ci-only-jwt-secret-at-least-32-bytes-long" \
+            --env RESCENE_WORKER_TOKEN="ci-only-worker-token" \
+            rescene-api:ci
+          trap 'docker logs rescene-api-smoke >&2 || true; docker rm -f rescene-api-smoke || true' EXIT
+          for _ in $(seq 1 60); do
+            live=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health/live || true)
+            ready=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health/ready || true)
+            if [ "$live" = "200" ] && [ "$ready" = "200" ]; then
+              echo "API image reports live=200 ready=200."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::API image did not become live and ready"
+          exit 1
+      - name: Smoke-test web image
+        run: |
+          docker run --detach --name rescene-web-smoke --publish 3000:3000 rescene-web:ci
+          trap 'docker logs rescene-web-smoke >&2 || true; docker rm -f rescene-web-smoke || true' EXIT
+          for _ in $(seq 1 60); do
+            status=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/ || true)
+            if [ "$status" = "200" ]; then
+              echo "Web image serves its root page with 200."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Web image did not serve its root page with 200"
+          exit 1
