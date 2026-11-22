@@ -508,7 +508,7 @@ jobs:
             --release-manifest release-flat/release-manifest.json \
             --deploy-log release-flat/deploy-log.json \
             --tag "$RELEASE_TAG" \
-            --commit "$GITHUB_SHA" \
+            --commit "$(git rev-parse HEAD)" \
             --deploy-result "${{ needs.deploy.result }}" \
             > "$RUNNER_TEMP/release-log.json"
           cat "$RUNNER_TEMP/release-log.json"
