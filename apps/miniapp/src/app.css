@@ -55,12 +55,12 @@ page { font-family: -apple-system, 'PingFang SC', sans-serif; font-size: 32px; l
   min-height: 100vh;
   font-size: var(--mini-font-32);
   line-height: 1.375;
-  padding: 28px 24px;
+  padding: 32px;
   padding-bottom: calc(44px + constant(safe-area-inset-bottom));
   padding-bottom: calc(44px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 48px;
   box-sizing: border-box;
 }
 
@@ -87,10 +87,10 @@ page { font-family: -apple-system, 'PingFang SC', sans-serif; font-size: 32px; l
   background: var(--panel);
   border: 1px solid var(--border-soft);
   border-radius: 20px;
-  padding: 26px;
+  padding: 32px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 32px;
   min-width: 0;
   box-shadow: none;
 }
@@ -204,11 +204,11 @@ page { font-family: -apple-system, 'PingFang SC', sans-serif; font-size: 32px; l
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 16px;
+  gap: 24px;
   flex-wrap: wrap;
   min-height: 88px;
   margin: 0;
-  padding: 24px;
+  padding: 32px;
   box-sizing: border-box;
   background: var(--panel-alt);
   border: 1px solid var(--border-soft);
@@ -332,8 +332,8 @@ page { font-family: -apple-system, 'PingFang SC', sans-serif; font-size: 32px; l
 
 .screen { background: var(--bg); background-image: linear-gradient(155deg, var(--bg-soft), var(--bg-deep)); color: var(--fg); }
 
-.appearance-page { display: flex; flex-direction: column; gap: 24px; }
-.appearance-field { display: flex; flex-direction: column; gap: 12px; }
+.appearance-page { display: flex; flex-direction: column; gap: 48px; }
+.appearance-field { display: flex; flex-direction: column; gap: 32px; }
 .appearance-picker { display: flex; align-items: center; min-height: 88px; padding: 20px 22px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); color: var(--fg); font-size: var(--mini-font-32); }
 .appearance-primary { display: flex; align-items: center; gap: 16px; }
 .appearance-primary .input { flex: 1; min-width: 0; }
@@ -361,7 +361,7 @@ page { font-family: -apple-system, 'PingFang SC', sans-serif; font-size: 32px; l
 .log-panel { height: 400px; }
 .log-panel .log { display: block; }
 .selection-spacer { flex-shrink: 0; }
-.selection-bar { position: fixed; z-index: 20; bottom: 0; left: 0; right: 0; padding: 16px 24px calc(16px + env(safe-area-inset-bottom)); background: var(--panel); background: var(--chrome-tint); border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.selection-bar { position: fixed; z-index: 20; bottom: 0; left: 0; right: 0; padding: 24px 32px calc(24px + env(safe-area-inset-bottom)); background: var(--panel); background: var(--chrome-tint); border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .selection-bar.inline { position: static; margin-top: 24px; border: 1px solid var(--border); border-radius: 18px; }
 .selection-bar .button { margin: 0; flex-shrink: 0; }
 .selection-bar text { display: block; }
