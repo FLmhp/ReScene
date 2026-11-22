@@ -179,17 +179,17 @@ TARO_APP_API_URL=https://api.rescene.xyz TARO_APP_WEB_URL=https://app.rescene.xy
 
 PowerShell 可先分别用 `$env:TARO_APP_API_URL`、`$env:TARO_APP_WEB_URL`、`$env:TARO_APP_WECHAT_APP_ID` 设置相同值，再运行 `pnpm --filter @rescene/miniapp build:weapp`。AppID 和域名必须与微信公众平台后台一致；编译成功不代表已经通过平台审核或发布。
 
-[check.yml](.github/workflows/check.yml) 在 `pull_request` 和 push 到 `main` 时运行，跳过纯文档与 Markdown 改动，只保留最新一次运行。Python、workspace 与提交信息检查跑在 5090 的自托管 runner 上（标签 `rescene`，使用本机 `127.0.0.1:55432` 的 `rescene-ci-db` 容器，不占 GitHub 分钟）；[desktop.yml](.github/workflows/desktop.yml) 单独检查桌面壳，仅在桌面、共享包或锁文件变化时触发：
+[check.yml](.github/workflows/check.yml) 在 `pull_request` 和 push 到 `main` 时运行，跳过纯文档与 Markdown 改动，只保留最新一次运行。仓库已公开，所有检查跑在 GitHub 托管运行器上，标准运行器不计分钟；[desktop.yml](.github/workflows/desktop.yml) 单独检查桌面壳，仅在桌面、共享包或锁文件变化时触发：
 
 | 检查 | 运行位置 | 覆盖 |
 |---|---|---|
-| `python` | 自托管 | Python 检查和测试，含本机 PostgreSQL 16 |
-| `workspace` | 自托管 | 版本、类型、测试及官网、Web、桌面前端、移动端导出、小程序构建 |
-| `commit-messages` | 自托管 | PR 或 push 范围内的提交标题 |
+| `python` | GitHub Ubuntu | Python 检查和测试，含服务容器 PostgreSQL 16 |
+| `workspace` | GitHub Ubuntu | 版本、类型、测试及官网、Web、桌面前端、移动端导出、小程序构建 |
+| `commit-messages` | GitHub Ubuntu | PR 或 push 范围内的提交标题 |
 | `desktop-shell` | GitHub Windows | 桌面前端构建、Rust fmt、clippy 和测试 |
-| `images`（images.yml，手动） | GitHub Linux | API 和 Web Docker 镜像构建与冒烟 |
+| `images` | GitHub Ubuntu | API 和 Web Docker 镜像构建与冒烟 |
 
-功能分支不再直接触发检查，先推送分支并开 PR 才会运行。私有仓库的 Actions 分钟数有限，Windows 按 2 倍、macOS 按 10 倍计费；日常检查已不占额度，发行标签和 Windows/macOS 安装包仍按次计费。额度耗尽时用下方本地命令与 `pnpm quality` 自证，桌面安装包在本机构建，`images.yml` 等额度恢复后再手动运行。
+功能分支不再直接触发检查，先推送分支并开 PR 才会运行。公开仓库的标准运行器不计分钟，日常检查和发行标签都不再消耗额度；发行标签仍会构建三平台安装包，其中 macOS 运行器的耗时最长。本地命令与 `pnpm quality` 仍是提交前的快速自证手段，不能替代 CI 的 PostgreSQL 结果。
 
 例如桌面壳检查可运行：
 
@@ -212,7 +212,11 @@ node scripts/bump-version.mjs <新版本号>
 
 发布前确认源 commit、检查结果、迁移与回滚方案；tag 必须为 `v` 加 `VERSION`，并指向已审阅的发布 commit。已发布 tag 不可移动或复用；修复应提交新 commit、使用新版本和新 tag。源身份、发布产物与部署身份应分别记录：commit/tag 和 `source-manifest.json` 说明源码；`release-manifest.json` 记录源清单及各产物的大小和 SHA-256；部署记录还需记录实际镜像或安装包摘要、配置、数据库迁移状态和环境。源清单仅包含脚本白名单选中的源码树、文件类型及根文件，不包含所有仓库文件，也不是完整源码快照；其哈希不等同于线上运行状态或代码签名。
 
-[release.yml](.github/workflows/release.yml) 支持手动运行及 `v*` tag 触发；只有 tag 运行会创建 GitHub Release。发布环境需配置 HTTPS 的 `RELEASE_API_URL` 和 `RELEASE_WEB_URL`，桌面 API origin 还须符合 CSP。工作流生成 Windows x64 NSIS、Linux x64 deb/AppImage、macOS universal dmg，以及源清单和发布清单；Android APK 仅在 `RELEASE_ANDROID_SIGNING=true` 且签名材料齐全时生成。工作流没有生成独立的 `SHA256SUMS`，请按发布清单中的哈希核对实际下载文件。最终资产集合以成功的运行和 Release 为准，不把构建计划当成已发布证据。
+[release.yml](.github/workflows/release.yml) 一次运行完成构建、部署和发布：`v*` tag 触发，或在 `workflow_dispatch` 中填入 `tag` 重放已发布的 tag（`recreate=true` 时先删除同名 Release 再发布）。发布环境需配置 HTTPS 的 `RELEASE_API_URL` 和 `RELEASE_WEB_URL`，桌面 API origin 还须符合 CSP。工作流生成 Windows x64 NSIS、Linux x64 deb/AppImage、macOS universal dmg，以及源清单和发布清单；Android APK 仅在 `RELEASE_ANDROID_SIGNING=true` 且签名材料齐全时生成。
+
+`RELEASE_DEPLOY=true` 时，`deploy` job 在生产主机上重建并切换 `api`、`web` 镜像：先在 `/opt/rescene/infra/backups/` 留下 `pg_dump` 快照，再逐个服务等待健康，最后探测公网入口并把结果写入 `deploy-log.json`。它需要 secrets `DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS` 和 variables `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_PORT`。部署失败不自动回滚（数据库迁移不随镜像回退），`github-release` 会因此不发布；只想发安装包时把 `RELEASE_DEPLOY` 改为 `false` 重跑，`release-log.json` 会把部署记为未执行而不是成功。
+
+Release 创建时即对外发布，不再经过草稿；附加资产除安装包外还有 `source-manifest.json`、`release-manifest.json`、`release-log.json`（产物哈希、镜像摘要、迁移版本、备份路径与探针结果）和 `workflow-logs.zip`（本次运行的日志）。工作流没有生成独立的 `SHA256SUMS`，请按发布清单中的哈希核对实际下载文件。最终资产集合以成功的运行和 Release 为准，不把构建计划当成已发布证据。
 
 Windows 签名为可选：证书和密码都未配置时产物未签名，只配置一项会失败；配置两项后工作流签名并验证。macOS 工作流生成未签名 dmg；只对来源及哈希已核实的单个文件按系统提示处理，不要全局关闭安全检查。Android 发布必须配置 keystore 和密码，工作流校验签名及包信息；不要把签名材料提交到仓库。小程序构建成功不等于已通过平台审核或发布。
 
@@ -224,6 +228,6 @@ Windows 签名为可选：证书和密码都未配置时产物未签名，只配
 2. 检查对应发布工作流结果与实际 Release 资产，不将预期产物视为已交付。
 3. 下载产物，按发布清单核对大小和哈希；适用时验证签名并记录签名状态。
 4. 按平台记录安装、启动及必要业务流程的实机结果，注明未覆盖项。
-5. 部署单独执行并记录实际部署身份，确认数据库迁移兼容、备份及回滚方案。
+5. 部署由 `release.yml` 的 `deploy` job 执行并写入 `deploy-log.json`，按其中的镜像摘要、备份路径、迁移版本和探针结果核对；手工部署时单独记录实际部署身份，确认数据库迁移兼容、备份及回滚方案。
 
 部署前核对目标环境、备份和迁移兼容性；回滚代码或镜像不自动撤销数据库迁移。按 [部署与运维](docs/单5090系统部署与运维.md) 制定恢复步骤，记录执行人、时间、部署摘要和健康检查证据，避免影响其他服务。生产任务产物可使用 `scripts/verify_release_artifacts.py` 核验；它验证任务产物，不替代安装包签名与部署验证。

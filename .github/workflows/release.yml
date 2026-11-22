@@ -1,20 +1,43 @@
-name: Release validation
+name: Release
 
+# One run builds every installer, deploys the release to production, and only
+# then publishes the GitHub release with its evidence. `workflow_dispatch` with
+# a `tag` input replays a published tag without moving it; `recreate` replaces
+# the existing release object so a replay has somewhere to attach its assets.
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag; must be v plus VERSION"
+        required: true
+        type: string
+      recreate:
+        description: "Delete the existing GitHub release before publishing"
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*'
 
+# Two deploys must never interleave; a replay waits for the running release.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
 jobs:
   source-manifest:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -27,17 +50,69 @@ jobs:
           path: ${{ runner.temp }}/source-manifest.json
           if-no-files-found: error
 
+  deploy:
+    needs: [source-manifest]
+    if: |
+      vars.RELEASE_DEPLOY == 'true' &&
+      (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # The key only ever exists in the runner temp directory; `ssh-keygen -y`
+      # proves the secret survived the shell before the deploy depends on it.
+      - name: Install the deploy key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          install -d "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/ssh/deploy_key"
+          chmod 600 "$RUNNER_TEMP/ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
+          ssh-keygen -y -f "$RUNNER_TEMP/ssh/deploy_key" > /dev/null
+      - name: Build on the host, snapshot the database, and swap both services
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_KEY_FILE: ${{ runner.temp }}/ssh/deploy_key
+          DEPLOY_KNOWN_HOSTS_FILE: ${{ runner.temp }}/ssh/known_hosts
+        run: |
+          python scripts/deploy_release.py \
+            --tag "$RELEASE_TAG" \
+            --version "$(tr -d '\r\n' < VERSION)" \
+            --repo "$GITHUB_REPOSITORY" \
+            --log deploy-log.json
+      # A failed deploy is the run that most needs its log published.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deploy-log
+          path: deploy-log.json
+          if-no-files-found: warn
+
   windows-nsis:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     environment: release
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
       - name: Check tag against VERSION
         shell: pwsh
         run: |
-          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$((Get-Content VERSION -Raw).Trim())") {
+          if ($env:RELEASE_TAG -ne "v$((Get-Content VERSION -Raw).Trim())") {
             throw 'Release tag does not match VERSION'
           }
       - uses: pnpm/action-setup@v4
@@ -107,15 +182,17 @@ jobs:
           if-no-files-found: error
 
   linux-desktop:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
     environment: release
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
       - name: Check tag against VERSION
         run: |
-          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$(tr -d '\r\n' < VERSION)" ]]; then
+          if [[ "$RELEASE_TAG" != "v$(tr -d '\r\n' < VERSION)" ]]; then
             echo 'Release tag does not match VERSION' >&2
             exit 1
           fi
@@ -156,15 +233,17 @@ jobs:
           if-no-files-found: error
 
   macos-desktop:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
     environment: release
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
       - name: Check tag against VERSION
         run: |
-          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$(tr -d '\r\n' < VERSION)" ]]; then
+          if [[ "$RELEASE_TAG" != "v$(tr -d '\r\n' < VERSION)" ]]; then
             echo 'Release tag does not match VERSION' >&2
             exit 1
           fi
@@ -200,16 +279,19 @@ jobs:
           if-no-files-found: error
 
   android:
-    if: vars.RELEASE_ANDROID_SIGNING == 'true'
+    if: |
+      vars.RELEASE_ANDROID_SIGNING == 'true' &&
+      (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     environment: release
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
       - name: Check tag against VERSION
         run: |
-          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$(tr -d '\r\n' < VERSION)" ]]; then
+          if [[ "$RELEASE_TAG" != "v$(tr -d '\r\n' < VERSION)" ]]; then
             echo 'Release tag does not match VERSION' >&2
             exit 1
           fi
@@ -294,6 +376,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -343,14 +426,22 @@ jobs:
           if-no-files-found: error
 
   github-release:
-    needs: [release-manifest, windows-nsis, linux-desktop, macos-desktop]
-    if: always() && startsWith(github.ref, 'refs/tags/v') && needs.release-manifest.result == 'success'
+    needs: [release-manifest, deploy]
+    # A skipped `deploy` means RELEASE_DEPLOY is off: publish the artifacts and
+    # say so in the log. A failed deploy blocks the release on purpose.
+    if: |
+      always() &&
+      needs.release-manifest.result == 'success' &&
+      needs.deploy.result != 'failure' &&
+      needs.deploy.result != 'cancelled'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -367,8 +458,46 @@ jobs:
           ls -l release-flat
       - name: Compose release notes from CHANGELOG.md
         run: node scripts/release-notes.mjs > "$RUNNER_TEMP/notes.md"
-      - name: Create GitHub release
+      - name: Delete the previous release when replaying a tag
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create --draft "$GITHUB_REF_NAME" --title "ReScene $(tr -d '\r\n' < VERSION)" --notes-file "$RUNNER_TEMP/notes.md" release-flat/*
-
+        run: |
+          if [ "${{ inputs.recreate }}" = "true" ]; then
+            gh release delete "$RELEASE_TAG" --yes || true
+          fi
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --title "ReScene $(tr -d '\r\n' < VERSION)" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            release-flat/*
+      - name: Record the release log
+        run: |
+          node scripts/release-log.mjs \
+            --release-manifest release-flat/release-manifest.json \
+            --deploy-log release-flat/deploy-log.json \
+            --tag "$RELEASE_TAG" \
+            --commit "$GITHUB_SHA" \
+            --deploy-result "${{ needs.deploy.result }}" \
+            > "$RUNNER_TEMP/release-log.json"
+          cat "$RUNNER_TEMP/release-log.json"
+      # Workflow logs are public for a public repository either way; attaching
+      # them keeps the build and deploy evidence next to the assets themselves.
+      - name: Archive this run's logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/logs" > "$RUNNER_TEMP/workflow-logs.zip"
+          test -s "$RUNNER_TEMP/workflow-logs.zip"
+      - name: Upload the release log and run logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            "$RUNNER_TEMP/release-log.json" \
+            "$RUNNER_TEMP/workflow-logs.zip" \
+            release-flat/release-manifest.json \
+            release-flat/source-manifest.json \
+            --clobber
