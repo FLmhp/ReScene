@@ -210,7 +210,7 @@ describe("session gate", () => {
 
     const store = renderWorkbench();
 
-    await userEvent.click(screen.getByRole("button", { name: "注册" }));
+    await userEvent.click(screen.getByRole("button", { name: "注册账号" }));
     await userEvent.type(screen.getByLabelText("邮箱"), "new@example.com");
     await userEvent.type(screen.getByLabelText("密码"), "correct-horse-1");
     await userEvent.type(screen.getByLabelText("确认密码"), "correct-horse-1");
@@ -218,6 +218,69 @@ describe("session gate", () => {
 
     await waitFor(() => expect(store.data.get("rescene-token")).toBe("token-2"));
     await waitFor(() => expect(screen.getByRole("button", { name: "项目列表" })).toBeTruthy());
+  });
+
+  it("signs in with a mailed code and starts the resend cooldown", async () => {
+    stubFetch(
+      routeTable({
+        "POST /v1/auth/email-code": { status: "accepted" },
+        "POST /v1/auth/email-code/login": { access_token: "token-code", token_type: "bearer" },
+      }),
+    );
+    const store = renderWorkbench();
+
+    await userEvent.click(screen.getByRole("button", { name: "使用邮箱验证码登录" }));
+    expect(screen.getByRole("heading", { name: "邮箱验证码登录" })).toBeTruthy();
+    await userEvent.type(screen.getByLabelText("邮箱"), "ops@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "发送验证码" }));
+
+    expect(await screen.findByText("验证码已发送，请检查邮箱")).toBeTruthy();
+    const resend = screen.getByRole("button", { name: /秒后重发$/ }) as HTMLButtonElement;
+    expect(resend.disabled).toBe(true);
+    await userEvent.type(screen.getByLabelText("验证码"), "123456");
+    await userEvent.click(screen.getByRole("button", { name: "登录" }));
+
+    await waitFor(() => expect(store.data.get("rescene-token")).toBe("token-code"));
+  });
+
+  it("reports an expired code without leaving the code form", async () => {
+    stubFetch(
+      routeTable({
+        "POST /v1/auth/email-code": { status: "accepted" },
+        "POST /v1/auth/email-code/login": { status: 401, body: { detail: "Verification code is invalid or expired" } },
+      }),
+    );
+    const store = renderWorkbench();
+
+    await userEvent.click(screen.getByRole("button", { name: "使用邮箱验证码登录" }));
+    await userEvent.type(screen.getByLabelText("邮箱"), "ops@example.com");
+    await userEvent.type(screen.getByLabelText("验证码"), "000000");
+    await userEvent.click(screen.getByRole("button", { name: "登录" }));
+
+    expect(await screen.findByText("验证码无效或已过期，请重新获取。")).toBeTruthy();
+    expect(store.data.get("rescene-token")).toBeUndefined();
+    expect(screen.getByRole("heading", { name: "邮箱验证码登录" })).toBeTruthy();
+  });
+
+  it("resets the password with a code and adopts the new token", async () => {
+    stubFetch(
+      routeTable({
+        "POST /v1/auth/email-code": { status: "accepted" },
+        "POST /v1/auth/password-reset": { access_token: "token-reset", token_type: "bearer" },
+      }),
+    );
+    const store = renderWorkbench();
+
+    await userEvent.click(screen.getByRole("button", { name: "忘记密码" }));
+    expect(screen.getByRole("heading", { name: "重置密码" })).toBeTruthy();
+    await userEvent.type(screen.getByLabelText("邮箱"), "ops@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "发送验证码" }));
+    await userEvent.type(screen.getByLabelText("验证码"), "654321");
+    await userEvent.type(screen.getByLabelText("新密码"), "correct-horse-2");
+    await userEvent.type(screen.getByLabelText("确认新密码"), "correct-horse-2");
+    await userEvent.click(screen.getByRole("button", { name: "重置并登录" }));
+
+    await waitFor(() => expect(store.data.get("rescene-token")).toBe("token-reset"));
   });
 
   it("stores the access token and shows the signed-in account", async () => {

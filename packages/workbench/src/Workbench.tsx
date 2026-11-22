@@ -77,6 +77,9 @@ function preferredJob(live: Job | undefined, snapshot: Job | undefined): Job | u
   return Date.parse(snapshot.updated_at) > Date.parse(live.updated_at) ? snapshot : live;
 }
 const PROFILES: Profile[] = ["fast", "balanced", "quality"];
+type AuthMode = "login" | "code" | "reset" | "register";
+const AUTH_TITLES: Record<AuthMode, string> = { login: "登录", code: "邮箱验证码登录", reset: "重置密码", register: "注册" };
+const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const PANES = [{ key: "materials", label: "素材" }, { key: "tasks", label: "任务" }, { key: "results", label: "结果" }] as const;
 const NOTIFY_PAGE_SIZE = 20;
 type UploadItem = { name: string; progress: number; status: string; file?: File; projectId?: string; retryable?: boolean };
@@ -138,10 +141,14 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [sharePreset, setSharePreset] = useState<SharePreset>("7d");
   const [message, setMessage] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authConfirm, setAuthConfirm] = useState("");
+  const [authCode, setAuthCode] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
+  const [codePending, setCodePending] = useState(false);
+  const [codeCooldown, setCodeCooldown] = useState(0);
   const [libraryPage, setLibraryPage] = useState(0);
   const library = projectLibraryPage(projects, search, libraryPage);
   const [page, setPage] = useState<"" | "appearance" | "new-project" | "claim-invite" | "configure" | "job" | "job-logs" | "result" | "downloads" | "shares" | "project-management" | "account" | "password">("");
@@ -770,6 +777,80 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       else setMessage(error instanceof Error ? error.message : "注册失败");
     } finally { setAuthPending(false); }
   }
+  useEffect(() => {
+    if (codeCooldown <= 0) return;
+    const timer = window.setTimeout(() => setCodeCooldown((value) => Math.max(0, value - 1)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [codeCooldown]);
+  function switchAuthMode(next: AuthMode) {
+    setAuthMode(next);
+    setAuthPassword("");
+    setAuthConfirm("");
+    setAuthCode("");
+    setShowPassword(false);
+    setMessage("");
+  }
+  async function sendAuthCode() {
+    if (codePending || codeCooldown > 0) return;
+    const email = authEmail.trim();
+    if (!EMAIL_PATTERN.test(email)) { setMessage("请输入有效的邮箱地址。"); return; }
+    setCodePending(true);
+    setMessage("");
+    try {
+      await client.requestEmailCode(email, authMode === "reset" ? "reset" : "login");
+      setCodeSent(true);
+      setCodeCooldown(60);
+    } catch (error) {
+      setMessage(explainError(error, "验证码发送失败，请稍后重试。"));
+    } finally { setCodePending(false); }
+  }
+  async function loginWithCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (authPending) return;
+    const email = authEmail.trim();
+    const code = authCode.trim();
+    if (!EMAIL_PATTERN.test(email)) { setMessage("请输入有效的邮箱地址。"); return; }
+    if (!/^\d{6}$/.test(code)) { setMessage("请输入 6 位验证码。"); return; }
+    setAuthPending(true);
+    setMessage("");
+    try {
+      const result = await client.loginWithEmailCode(email, code);
+      tokenStore.set(TOKEN_KEY, result.access_token);
+      setToken(result.access_token);
+      setPage("");
+      setAuthCode("");
+    } catch (error) {
+      if (error instanceof ResceneApiError && error.status === 401) setMessage("验证码无效或已过期，请重新获取。");
+      else if (error instanceof ResceneApiError && error.status === 429) setMessage("操作过于频繁，请稍后再试。");
+      else setMessage(explainError(error, "登录失败"));
+    } finally { setAuthPending(false); }
+  }
+  async function resetPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (authPending) return;
+    const email = authEmail.trim();
+    const code = authCode.trim();
+    if (!EMAIL_PATTERN.test(email)) { setMessage("请输入有效的邮箱地址。"); return; }
+    if (!/^\d{6}$/.test(code)) { setMessage("请输入 6 位验证码。"); return; }
+    if (authPassword.length < 12) { setMessage("密码至少 12 位。"); return; }
+    if (authPassword !== authConfirm) { setMessage("两次输入的密码不一致。"); return; }
+    setAuthPending(true);
+    setMessage("");
+    try {
+      const result = await client.resetPasswordWithEmailCode(email, code, authPassword);
+      tokenStore.set(TOKEN_KEY, result.access_token);
+      setToken(result.access_token);
+      setPage("");
+      setAuthCode("");
+      setAuthPassword("");
+      setAuthConfirm("");
+      setAuthMode("login");
+    } catch (error) {
+      if (error instanceof ResceneApiError && error.status === 401) setMessage("验证码无效或已过期，请重新获取。");
+      else if (error instanceof ResceneApiError && error.status === 429) setMessage("操作过于频繁，请稍后再试。");
+      else setMessage(explainError(error, "重置密码失败"));
+    } finally { setAuthPending(false); }
+  }
   async function signOut() { let failed = false; try { await client.logout(); } catch { failed = true; } finally { clearStoredSelections(); client.setToken(null); tokenStore.remove(TOKEN_KEY); tokenStore.remove(PROJECT_KEY); tokenStore.remove(JOB_KEY); setToken(""); setMe(null); setSelected(""); setPage(""); setRootPage("projects"); setAuthEmail(""); setAuthPassword(""); setAuthConfirm(""); setMessage(failed ? "已在本设备退出，但无法确认其他设备的会话已撤销；请重新登录后重试。" : ""); } }
   function changePassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -921,28 +1002,81 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
 
   if (!sessionReady) return <main className="login-shell solo"><section className="login-card"><div className="mark"><BrandMark size={30} /></div><p className="eyebrow">RESCENE</p><h1>正在恢复会话…</h1></section></main>;
 
-  if (!token) return (
-    <main className="login-shell solo">
-      <section className="login-card">
-        <div className="login-head">
-          <div className="brand"><BrandMark size={30} /><strong>ReScene</strong></div>
-          <button type="button" className="text-action" onClick={() => setPage(page === "appearance" ? "" : "appearance")}>{page === "appearance" ? `返回${authMode === "login" ? "登录" : "注册"}` : "外观"}</button>
+  if (!token) {
+    const feedback = message ? <p className="error" role="alert">{message}</p> : null;
+    const codeHint = codeSent ? <p className="auth-hint" role="status">验证码已发送，请检查邮箱</p> : null;
+    const sendLabel = codePending ? "发送中…" : codeCooldown > 0 ? `${codeCooldown} 秒后重发` : "发送验证码";
+    // The send button stays outside the label so the input's accessible name is just 验证码.
+    const codeField = (
+      <div className="code-field">
+        <label htmlFor="auth-code">验证码</label>
+        <div className="code-row">
+          <input id="auth-code" name="code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" maxLength={6} required placeholder="6 位数字" value={authCode} onChange={(event) => setAuthCode(event.target.value.replace(/\D/g, "").slice(0, 6))} />
+          <button type="button" className="code-send" disabled={codePending || codeCooldown > 0 || authPending} onClick={() => { void sendAuthCode(); }}>{sendLabel}</button>
         </div>
-        {page === "appearance" ? <><h1>外观</h1><ThemeControl /></> : <>
-          <h1>{authMode === "login" ? "登录" : "注册"}</h1>
-          <form onSubmit={authMode === "login" ? login : register}>
-            <label>邮箱<input name="email" type="email" required autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} /></label>
-            <label>密码<input name="password" type={showPassword ? "text" : "password"} required minLength={authMode === "register" ? 12 : undefined} autoComplete={authMode === "login" ? "current-password" : "new-password"} value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
-            {authMode === "register" && <label>确认密码<input name="confirm" type="password" required minLength={12} autoComplete="new-password" value={authConfirm} onChange={(event) => setAuthConfirm(event.target.value)} /></label>}
-            <label className="password-toggle"><input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />显示密码</label>
-            <button type="submit" disabled={authPending}>{authPending ? "请稍候…" : authMode === "login" ? "登录" : "注册"}</button>
-          </form>
-          {message && <p className="error" role="alert">{message}</p>}
-          <button type="button" className="text-action" disabled={authPending} onClick={() => { setAuthMode(authMode === "login" ? "register" : "login"); setAuthPassword(""); setAuthConfirm(""); setShowPassword(false); setMessage(""); }}>{authMode === "login" ? "注册" : "返回登录"}</button>
-        </>}
-      </section>
-    </main>
-  );
+      </div>
+    );
+    const emailField = <label>邮箱<input name="email" type="email" required autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} /></label>;
+    const passwordToggle = <label className="password-toggle"><input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />显示密码</label>;
+    return (
+      <main className="login-shell solo">
+        <section className="login-card">
+          <div className="login-head">
+            <div className="brand login-brand"><span className="mark"><BrandMark size={28} /></span><strong>ReScene</strong></div>
+            <button type="button" className="text-action" onClick={() => setPage(page === "appearance" ? "" : "appearance")}>{page === "appearance" ? `返回${AUTH_TITLES[authMode]}` : "外观"}</button>
+          </div>
+          {page === "appearance" ? <><h1>外观</h1><ThemeControl /></> : <>
+            <h1>{AUTH_TITLES[authMode]}</h1>
+            {authMode === "login" ? <>
+              <form onSubmit={login}>
+                {emailField}
+                <label>密码<input name="password" type={showPassword ? "text" : "password"} required autoComplete="current-password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
+                {passwordToggle}
+                <button type="submit" disabled={authPending}>{authPending ? "请稍候…" : "登录"}</button>
+              </form>
+              {feedback}
+              <div className="auth-links">
+                <button type="button" className="text-action" onClick={() => switchAuthMode("code")}>使用邮箱验证码登录</button>
+                <button type="button" className="text-action" onClick={() => switchAuthMode("reset")}>忘记密码</button>
+              </div>
+              <button type="button" className="text-action auth-switch" onClick={() => switchAuthMode("register")}>注册账号</button>
+            </> : authMode === "code" ? <>
+              <form onSubmit={loginWithCode}>
+                {emailField}
+                {codeField}
+                <button type="submit" disabled={authPending || codePending}>{authPending ? "请稍候…" : "登录"}</button>
+              </form>
+              {codeHint}
+              {feedback}
+              <button type="button" className="text-action auth-switch" onClick={() => switchAuthMode("login")}>使用密码登录</button>
+            </> : authMode === "reset" ? <>
+              <form onSubmit={resetPassword}>
+                {emailField}
+                {codeField}
+                <label>新密码<input name="password" type={showPassword ? "text" : "password"} required minLength={12} autoComplete="new-password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
+                <label>确认新密码<input name="confirm" type="password" required minLength={12} autoComplete="new-password" value={authConfirm} onChange={(event) => setAuthConfirm(event.target.value)} /></label>
+                {passwordToggle}
+                <button type="submit" disabled={authPending}>{authPending ? "请稍候…" : "重置并登录"}</button>
+              </form>
+              {codeHint}
+              {feedback}
+              <button type="button" className="text-action auth-switch" onClick={() => switchAuthMode("login")}>返回登录</button>
+            </> : <>
+              <form onSubmit={register}>
+                {emailField}
+                <label>密码<input name="password" type={showPassword ? "text" : "password"} required minLength={12} autoComplete="new-password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
+                <label>确认密码<input name="confirm" type="password" required minLength={12} autoComplete="new-password" value={authConfirm} onChange={(event) => setAuthConfirm(event.target.value)} /></label>
+                {passwordToggle}
+                <button type="submit" disabled={authPending}>{authPending ? "请稍候…" : "注册"}</button>
+              </form>
+              {feedback}
+              <button type="button" className="text-action auth-switch" onClick={() => switchAuthMode("login")}>返回登录</button>
+            </>}
+          </>}
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main ref={shellRef} className={`shell${navOpen ? " nav-open" : ""}`} data-keyboard={keyboardOpen ? "open" : "closed"}>

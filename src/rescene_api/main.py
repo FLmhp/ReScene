@@ -22,7 +22,7 @@ import oss2
 import segno
 import uvicorn
 from aliyunsdkcore.acs_exception.exceptions import ClientException, ServerException
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -33,16 +33,25 @@ from sqlalchemy.orm import Session, aliased
 
 from rescene.preprocess import IMAGE_SUFFIXES, VIDEO_SUFFIXES
 from rescene_api.access_logging import LOGGING_CONFIG
-from rescene_api.auth import decode_token, hash_password, issue_token, verify_password
+from rescene_api.auth import (
+    decode_token,
+    generate_email_code,
+    hash_email_code,
+    hash_password,
+    issue_token,
+    verify_password,
+)
 from rescene_api.bodylimit import RequestBodyLimitMiddleware
 from rescene_api.config import settings
 from rescene_api.db import SessionLocal, init_db
+from rescene_api.email import deliver_email_code
 from rescene_api.models import (
     Announcement,
     Artifact,
     Asset,
     AssetCleanup,
     AuditLog,
+    EmailAuthCode,
     IdempotencyRecord,
     JobLog,
     JobStage,
@@ -69,6 +78,9 @@ from rescene_api.schemas import (
     CreateProjectRequest,
     CreateShareRequest,
     CreateUserRequest,
+    EmailCodeLoginRequest,
+    EmailCodeRequest,
+    EmailPasswordResetRequest,
     FailJobRequest,
     HeartbeatRequest,
     LoginRequest,
@@ -367,6 +379,145 @@ def login(payload: LoginRequest, db: Db, _: Annotated[None, Depends(rate_limit)]
     user = db.scalar(select(User).where(User.email == payload.email))
     if not user or not verify_password(payload.password, user.password_hash) or not user.active:
         fail(status.HTTP_401_UNAUTHORIZED, "Invalid credentials", "auth.invalid_credentials")
+    return {"access_token": issue_token(user.id, user.token_version), "token_type": "bearer"}
+
+
+def utc(value: datetime) -> datetime:
+    """SQLite returns naive timestamps; every stored value is UTC."""
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def email_code_user(db: Session, email: str) -> User | None:
+    """Resolve the account a code may belong to; inactive accounts look absent."""
+    user = db.scalar(select(User).where(User.email == email))
+    return user if user is not None and user.active else None
+
+
+def consume_email_code(db: Session, user: User, purpose: str, code: str) -> None:
+    """Spend one live code and count the attempt; the caller commits the result."""
+    config = settings()
+    record = db.scalar(
+        select(EmailAuthCode)
+        .where(
+            EmailAuthCode.user_id == user.id,
+            EmailAuthCode.purpose == purpose,
+            EmailAuthCode.consumed_at.is_(None),
+        )
+        .order_by(EmailAuthCode.created_at.desc(), EmailAuthCode.id.desc())
+        .limit(1)
+    )
+    if record is None or utc(record.expires_at) <= now():
+        fail(status.HTTP_401_UNAUTHORIZED, "Verification code is invalid or expired", "auth.invalid_code")
+    if record.attempts >= config.email_code_max_attempts:
+        fail(status.HTTP_429_TOO_MANY_REQUESTS, "Too many code attempts", "auth.rate_limited")
+    matched = hmac.compare_digest(record.code_hash, hash_email_code(user.id, purpose, code))
+    record.attempts += 1
+    if not matched:
+        db.commit()
+        fail(status.HTTP_401_UNAUTHORIZED, "Verification code is invalid or expired", "auth.invalid_code")
+    record.consumed_at = now()
+    db.flush()
+
+
+@app.post("/v1/auth/email-code", status_code=status.HTTP_202_ACCEPTED)
+def request_email_code(
+    payload: EmailCodeRequest,
+    db: Db,
+    background: BackgroundTasks,
+    _: Annotated[None, Depends(rate_limit)] = None,
+) -> dict[str, str]:
+    """Mail a login or reset code, answering identically for every address."""
+    user = email_code_user(db, payload.email)
+    if user is None:
+        return {"status": "accepted"}
+    config = settings()
+    issued = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailAuthCode)
+            .where(
+                EmailAuthCode.user_id == user.id,
+                EmailAuthCode.purpose == payload.purpose,
+                EmailAuthCode.created_at >= now() - timedelta(hours=1),
+            )
+        )
+        or 0
+    )
+    latest = db.scalar(
+        select(EmailAuthCode.created_at)
+        .where(EmailAuthCode.user_id == user.id, EmailAuthCode.purpose == payload.purpose)
+        .order_by(EmailAuthCode.created_at.desc())
+        .limit(1)
+    )
+    cooling = latest is not None and utc(latest) > now() - timedelta(seconds=config.email_code_cooldown_seconds)
+    if issued >= config.email_code_hourly_limit or cooling:
+        return {"status": "accepted"}
+    code = generate_email_code()
+    db.execute(
+        update(EmailAuthCode)
+        .where(
+            EmailAuthCode.user_id == user.id,
+            EmailAuthCode.purpose == payload.purpose,
+            EmailAuthCode.consumed_at.is_(None),
+        )
+        .values(consumed_at=now())
+        .execution_options(synchronize_session=False)
+    )
+    db.add(
+        EmailAuthCode(
+            user_id=user.id,
+            purpose=payload.purpose,
+            code_hash=hash_email_code(user.id, payload.purpose, code),
+            expires_at=now() + timedelta(minutes=config.email_code_ttl_minutes),
+        )
+    )
+    db.commit()
+    background.add_task(deliver_email_code, user.email, code, payload.purpose)
+    return {"status": "accepted"}
+
+
+@app.post("/v1/auth/email-code/login")
+def login_with_email_code(
+    payload: EmailCodeLoginRequest, db: Db, _: Annotated[None, Depends(rate_limit)] = None
+) -> dict[str, str]:
+    """Exchange a live login code for a session; other sessions stay valid."""
+    user = email_code_user(db, payload.email)
+    if user is None:
+        fail(status.HTTP_401_UNAUTHORIZED, "Verification code is invalid or expired", "auth.invalid_code")
+    consume_email_code(db, user, "login", payload.code)
+    audit(db, user.id, "auth.email_code_login", "user", user.id)
+    db.commit()
+    return {"access_token": issue_token(user.id, user.token_version), "token_type": "bearer"}
+
+
+@app.post("/v1/auth/password-reset")
+def reset_password_with_email_code(
+    payload: EmailPasswordResetRequest, db: Db, _: Annotated[None, Depends(rate_limit)] = None
+) -> dict[str, str]:
+    """Set a new password once a reset code checks out, retiring every old session."""
+    user = email_code_user(db, payload.email)
+    if user is None:
+        fail(status.HTTP_401_UNAUTHORIZED, "Verification code is invalid or expired", "auth.invalid_code")
+    consume_email_code(db, user, "reset", payload.code)
+    # Every outstanding code dies with the old password, so a leaked login code
+    # cannot re-enter an account whose password was just reset.
+    db.execute(
+        update(EmailAuthCode)
+        .where(EmailAuthCode.user_id == user.id, EmailAuthCode.consumed_at.is_(None))
+        .values(consumed_at=now())
+        .execution_options(synchronize_session=False)
+    )
+    rotated = db.execute(
+        update(User)
+        .where(User.id == user.id, User.active.is_(True), User.password_hash == user.password_hash)
+        .values(password_hash=hash_password(payload.new_password), token_version=User.token_version + 1)
+    )
+    if rotated.rowcount != 1:
+        db.rollback()
+        fail(status.HTTP_409_CONFLICT, "Account changed while the code was verified", "auth.session_stale")
+    audit(db, user.id, "auth.password_reset", "user", user.id)
+    db.commit()
+    db.refresh(user)
     return {"access_token": issue_token(user.id, user.token_version), "token_type": "bearer"}
 
 

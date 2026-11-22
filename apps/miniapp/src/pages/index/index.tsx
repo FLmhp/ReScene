@@ -1,14 +1,16 @@
+import icon from "../../assets/icon.png";
 import { AssetThumbnail } from "../../asset-thumbnail";
 import { Screen } from "../../screen";
 import { explainError, ResceneApiError } from "@rescene/api-client";
 import { JOB_STATUS_LABELS, projectLibraryPage, type Project, type ProjectSummary, type User } from "@rescene/schemas";
-import { Button, Input, Text, View } from "@tarojs/components";
+import { Button, Image, Input, Text, View } from "@tarojs/components";
 import Taro, { useDidShow } from "@tarojs/taro";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  apiBaseUrl, authenticate, client, currentQueueOwner, hasToken, isQueueOwnerCurrent,
-  onSessionExpired, queueClient, renewSession, verifySession,
+  apiBaseUrl, authenticate, authenticateWithCode, client, currentQueueOwner, hasToken,
+  isQueueOwnerCurrent, onSessionExpired, queueClient, renewSession, resetPasswordWithCode,
+  sendEmailCode, verifySession,
 } from "../../api";
 import { LEGACY_QUEUE_NOTICE, QUEUE_PAUSED, type QueueOwner } from "@rescene/uploader";
 import { hasLegacyQueue, replayQueued } from "../../queue";
@@ -18,6 +20,15 @@ import { consumeLogoutNotice } from "../../navigation";
 // survive that remount to stay actionable.
 const EXPIRY_NOTICE_KEY = "rescene-session-expired";
 const EXPIRED_NOTICE = "登录已过期，请重新登录。";
+const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const CODE_PATTERN = /^\d{6}$/;
+type AuthMode = "login" | "code" | "reset" | "register";
+const AUTH_TITLES: Record<AuthMode, string> = {
+  login: "登录",
+  code: "验证码登录",
+  reset: "重置密码",
+  register: "注册",
+};
 const ROLE_LABEL: Record<Project["effective_role"], string> = {
   owner: "所有者",
   admin: "管理员",
@@ -41,6 +52,14 @@ function message(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback;
 }
 
+function codeError(reason: unknown, fallback: string): string {
+  if (reason instanceof ResceneApiError) {
+    if (reason.status === 401) return "验证码无效或已过期，请重新获取。";
+    if (reason.status === 429) return "操作过于频繁，请稍后再试。";
+  }
+  return message(reason, fallback);
+}
+
 function ProjectTile({ project, onError }: { project: ProjectSummary; onError: () => void }) {
   return <View className="project-tile" role="button" onClick={() => void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(project.id)}&name=${encodeURIComponent(project.name)}`, fail: onError })}>
     {project.cover ? <View className="project-cover"><AssetThumbnail asset={project.cover} /></View> : null}
@@ -62,7 +81,10 @@ export default function IndexPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const [code, setCode] = useState("");
+  const [mode, setMode] = useState<AuthMode>("login");
+  const [codeCooldown, setCodeCooldown] = useState(0);
+  const [codePending, setCodePending] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [legacyQueue] = useState(hasLegacyQueue);
@@ -71,6 +93,13 @@ export default function IndexPage() {
   const authLock = useRef(false);
   const recoveryLock = useRef(false);
   const booted = useRef(false);
+  const codeRequest = useRef(0);
+
+  useEffect(() => {
+    if (codeCooldown <= 0) return;
+    const timer = setTimeout(() => setCodeCooldown((seconds) => Math.max(0, seconds - 1)), 1000);
+    return () => clearTimeout(timer);
+  }, [codeCooldown]);
 
   useEffect(() => {
     try {
@@ -152,6 +181,16 @@ export default function IndexPage() {
     })();
   });
 
+  async function completeSignIn(current: User | null) {
+    const owner = currentQueueOwner();
+    if (!current || !owner || current.id !== owner.id) return;
+    Taro.removeStorageSync(EXPIRY_NOTICE_KEY);
+    setUser(current);
+    replay(owner);
+    await loadProjects(owner);
+    await loadUnread();
+  }
+
   async function login() {
     if (authLock.current) return;
     authLock.current = true;
@@ -160,14 +199,9 @@ export default function IndexPage() {
     setNotice("");
     try {
       const current = await authenticate("login", email.trim(), password);
-      const owner = currentQueueOwner();
-      if (!current || !owner || current.id !== owner.id) return;
-      Taro.removeStorageSync(EXPIRY_NOTICE_KEY);
+      if (!current) return;
       setPassword("");
-      setUser(current);
-      replay(owner);
-      await loadProjects(owner);
-      await loadUnread();
+      await completeSignIn(current);
     } catch (reason) {
       if (reason instanceof ResceneApiError && (reason.status === 401 || reason.status === 403)) {
         setError("邮箱或密码不正确。");
@@ -183,7 +217,7 @@ export default function IndexPage() {
   async function register() {
     if (authLock.current) return;
     const address = email.trim();
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) {
+    if (!EMAIL_PATTERN.test(address)) {
       setError("请输入有效的邮箱地址。");
       return;
     }
@@ -201,21 +235,107 @@ export default function IndexPage() {
     setNotice("");
     try {
       const current = await authenticate("register", address, password);
-      const owner = currentQueueOwner();
-      if (!current || !owner || current.id !== owner.id) return;
-      Taro.removeStorageSync(EXPIRY_NOTICE_KEY);
+      if (!current) return;
       setPassword("");
       setConfirm("");
-      setUser(current);
-      replay(owner);
-      await loadProjects(owner);
-      await loadUnread();
+      await completeSignIn(current);
     } catch (reason) {
       if (reason instanceof ResceneApiError && reason.status === 409) {
         setError("该邮箱已注册，请直接登录。");
       } else {
         setError(message(reason, "注册失败，请重试。"));
       }
+    } finally {
+      authLock.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function sendCode() {
+    if (codeCooldown > 0 || codePending) return;
+    const address = email.trim();
+    if (!EMAIL_PATTERN.test(address)) {
+      setError("请输入有效的邮箱地址。");
+      return;
+    }
+    const request = ++codeRequest.current;
+    setCodePending(true);
+    setError("");
+    setNotice("");
+    try {
+      await sendEmailCode(address, mode === "reset" ? "reset" : "login");
+      if (codeRequest.current !== request) return;
+      setCodeCooldown(60);
+      setNotice("验证码已发送，请检查邮箱");
+    } catch (reason) {
+      if (codeRequest.current === request) setError(codeError(reason, "验证码发送失败，请重试。"));
+    } finally {
+      if (codeRequest.current === request) setCodePending(false);
+    }
+  }
+
+  async function loginWithCode() {
+    if (authLock.current) return;
+    const address = email.trim();
+    const value = code.trim();
+    if (!EMAIL_PATTERN.test(address)) {
+      setError("请输入有效的邮箱地址。");
+      return;
+    }
+    if (!CODE_PATTERN.test(value)) {
+      setError("请输入 6 位验证码。");
+      return;
+    }
+    authLock.current = true;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const current = await authenticateWithCode(address, value);
+      if (!current) return;
+      setCode("");
+      await completeSignIn(current);
+    } catch (reason) {
+      setError(codeError(reason, "登录失败，请重试。"));
+    } finally {
+      authLock.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function resetPassword() {
+    if (authLock.current) return;
+    const address = email.trim();
+    const value = code.trim();
+    if (!EMAIL_PATTERN.test(address)) {
+      setError("请输入有效的邮箱地址。");
+      return;
+    }
+    if (!CODE_PATTERN.test(value)) {
+      setError("请输入 6 位验证码。");
+      return;
+    }
+    if (password.length < 12) {
+      setError("密码至少 12 位。");
+      return;
+    }
+    if (confirm !== password) {
+      setError("两次输入的密码不一致。");
+      return;
+    }
+    authLock.current = true;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const current = await resetPasswordWithCode(address, value, password);
+      if (!current) return;
+      setCode("");
+      setPassword("");
+      setConfirm("");
+      await completeSignIn(current);
+    } catch (reason) {
+      setError(codeError(reason, "密码重置失败，请重试。"));
     } finally {
       authLock.current = false;
       setBusy(false);
@@ -238,12 +358,17 @@ export default function IndexPage() {
     });
   }
 
-  function switchMode(next: "login" | "register") {
+  function switchMode(next: AuthMode) {
     setMode(next);
+    setCode("");
     setPassword("");
     setConfirm("");
     setShowPassword(false);
+    setCodeCooldown(0);
+    setCodePending(false);
+    codeRequest.current += 1;
     setError("");
+    setNotice("");
   }
 
   if (recovering) {
@@ -253,31 +378,83 @@ export default function IndexPage() {
   if (!user && !currentQueueOwner()) {
     return (
       <Screen>
-        <View className="row"><Text className="label">ReScene</Text><Button className="button ghost compact" onClick={() => openFocus("appearance")}>外观</Button></View>
-        <Text className="title">{mode === "login" ? "登录" : "注册"}</Text>
-        <View className="card">
+        <View className="auth-top">
+          <Button className="button ghost compact" onClick={() => openFocus("appearance")}>外观</Button>
+        </View>
+        <View className="card auth-card">
+          <View className="brand-lockup">
+            <Image className="brand-icon" src={icon} mode="aspectFit" />
+            <Text className="brand-name">ReScene</Text>
+          </View>
+          <Text className="auth-title">{AUTH_TITLES[mode]}</Text>
           <Text className="label">邮箱</Text>
           <Input className="input" placeholder="name@example.com" value={email} onInput={(event) => setEmail(event.detail.value)} />
-          <Text className="label">{mode === "login" ? "密码" : "密码（至少 12 位）"}</Text>
-          <Input className="input" password={!showPassword} value={password} onInput={(event) => setPassword(event.detail.value)} />
-          <Button className="button ghost compact" onClick={() => setShowPassword(!showPassword)}>{showPassword ? "隐藏密码" : "显示密码"}</Button>
-          {mode === "register" ? (
+          {mode === "login" || mode === "register" ? (
             <>
-              <Text className="label">确认密码</Text>
-              <Input className="input" password value={confirm} onInput={(event) => setConfirm(event.detail.value)} />
+              <Text className="label">{mode === "login" ? "密码" : "密码（至少 12 位）"}</Text>
+              <Input className="input" password={!showPassword} value={password} onInput={(event) => setPassword(event.detail.value)} />
+              <Button className="button ghost compact" onClick={() => setShowPassword(!showPassword)}>{showPassword ? "隐藏密码" : "显示密码"}</Button>
+              {mode === "register" ? (
+                <>
+                  <Text className="label">确认密码</Text>
+                  <Input className="input" password value={confirm} onInput={(event) => setConfirm(event.detail.value)} />
+                </>
+              ) : null}
+            </>
+          ) : null}
+          {mode === "code" || mode === "reset" ? (
+            <>
+              <Text className="label">验证码</Text>
+              <View className="code-row">
+                <Input className="input" type="number" maxlength={6} placeholder="6 位验证码" value={code} onInput={(event) => setCode(event.detail.value)} />
+                <Button className="button ghost compact" loading={codePending} disabled={codePending || codeCooldown > 0} onClick={() => void sendCode()}>
+                  {codeCooldown > 0 ? `${codeCooldown} 秒后重发` : codePending ? "发送中…" : "发送验证码"}
+                </Button>
+              </View>
+            </>
+          ) : null}
+          {mode === "reset" ? (
+            <>
+              <Text className="label">新密码（至少 12 位）</Text>
+              <Input className="input" password={!showPassword} value={password} onInput={(event) => setPassword(event.detail.value)} />
+              <Text className="label">确认新密码</Text>
+              <Input className="input" password={!showPassword} value={confirm} onInput={(event) => setConfirm(event.detail.value)} />
+              <Button className="button ghost compact" onClick={() => setShowPassword(!showPassword)}>{showPassword ? "隐藏密码" : "显示密码"}</Button>
             </>
           ) : null}
           {mode === "login" ? (
-            <Button className="button" loading={busy} disabled={busy} onClick={() => void login()}>{busy ? "正在登录…" : "登录"}</Button>
-          ) : (
-            <Button className="button" loading={busy} disabled={busy} onClick={() => void register()}>{busy ? "正在注册…" : "注册"}</Button>
-          )}
-          <Button className="button ghost" onClick={() => switchMode(mode === "login" ? "register" : "login")}>{mode === "login" ? "注册账号" : "已有账号，登录"}</Button>
+            <>
+              <Button className="button" loading={busy} disabled={busy} onClick={() => void login()}>{busy ? "正在登录…" : "登录"}</Button>
+              <View className="auth-actions">
+                <Button className="button ghost compact" onClick={() => switchMode("code")}>使用邮箱验证码登录</Button>
+                <Button className="button ghost compact" onClick={() => switchMode("reset")}>忘记密码</Button>
+              </View>
+              <Button className="button ghost" onClick={() => switchMode("register")}>注册账号</Button>
+            </>
+          ) : null}
+          {mode === "code" ? (
+            <>
+              <Button className="button" loading={busy} disabled={busy} onClick={() => void loginWithCode()}>{busy ? "正在登录…" : "登录"}</Button>
+              <Button className="button ghost" onClick={() => switchMode("login")}>使用密码登录</Button>
+            </>
+          ) : null}
+          {mode === "reset" ? (
+            <>
+              <Button className="button" loading={busy} disabled={busy} onClick={() => void resetPassword()}>{busy ? "正在重置…" : "重置并登录"}</Button>
+              <Button className="button ghost" onClick={() => switchMode("login")}>返回登录</Button>
+            </>
+          ) : null}
+          {mode === "register" ? (
+            <>
+              <Button className="button" loading={busy} disabled={busy} onClick={() => void register()}>{busy ? "正在注册…" : "注册"}</Button>
+              <Button className="button ghost" onClick={() => switchMode("login")}>已有账号，登录</Button>
+            </>
+          ) : null}
           {hasToken() ? <Button className="button ghost" onClick={() => void recover()}>重试恢复登录</Button> : null}
           {error ? <Text className="error">{error} · {serverLabel()}</Text> : null}
+          {notice ? <Text className="success-state">{notice}</Text> : null}
         </View>
         {hasToken() ? <Text className="muted">{QUEUE_PAUSED}</Text> : null}
-        {notice ? <Text>{notice}</Text> : null}
       </Screen>
     );
   }

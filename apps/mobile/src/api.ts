@@ -103,6 +103,34 @@ export async function authenticate(mode: "login" | "register", email: string, pa
   return persistCredential(expected, { token, owner: user.id });
 }
 
+export async function authenticateWithCode(email: string, code: string): Promise<boolean> {
+  const clearing = discardSession();
+  const expected = session.snapshot();
+  await clearing;
+  if (!session.matches(expected)) return false;
+  const auth = new ResceneClient(apiBaseUrl);
+  const { access_token: token } = await auth.loginWithEmailCode(email, code);
+  if (!session.matches(expected)) return false;
+  const user = await auth.getMe();
+  return persistCredential(expected, { token, owner: user.id });
+}
+
+export async function resetPasswordWithCode(email: string, code: string, newPassword: string): Promise<boolean> {
+  const clearing = discardSession();
+  const expected = session.snapshot();
+  await clearing;
+  if (!session.matches(expected)) return false;
+  const auth = new ResceneClient(apiBaseUrl);
+  const { access_token: token } = await auth.resetPasswordWithEmailCode(email, code, newPassword);
+  if (!session.matches(expected)) return false;
+  const user = await auth.getMe();
+  return persistCredential(expected, { token, owner: user.id });
+}
+
+export async function sendEmailCode(email: string, purpose: "login" | "reset"): Promise<void> {
+  await client.requestEmailCode(email, purpose);
+}
+
 export async function changeSessionPassword(currentPassword: string, newPassword: string): Promise<boolean> {
   const expected = session.snapshot();
   const owner = session.owner();

@@ -24,6 +24,11 @@ export const AuthTokenSchema = z.object({
   token_type: z.string(),
 });
 
+export const EmailCodePurposeSchema = z.enum(["login", "reset"]);
+
+/** The request-code route answers 202 for every address, registered or not. */
+export const EmailCodeAcceptedSchema = z.object({ status: z.literal("accepted") });
+
 export const UserSchema = z.object({
   id: z.string(),
   email: z.string(),
@@ -306,6 +311,7 @@ export const NotificationCountSchema = z.object({
 export type Profile = z.infer<typeof ProfileSchema>;
 export type JobStatus = z.infer<typeof JobStatusSchema>;
 export type AuthToken = z.infer<typeof AuthTokenSchema>;
+export type EmailCodePurpose = z.infer<typeof EmailCodePurposeSchema>;
 export type User = z.infer<typeof UserSchema>;
 export type Project = z.infer<typeof ProjectSchema>;
 export type Asset = z.infer<typeof AssetSchema>;

@@ -87,10 +87,71 @@ summary {
   background: var(--panel);
 }
 .login-head {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  justify-content: center;
+  min-height: 52px;
+}
+.login-brand {
+  gap: 12px;
+}
+.login-brand .mark {
+  width: 52px;
+  height: 52px;
+  border-radius: var(--radius-md);
+}
+.login-brand strong {
+  font-size: 1.5rem;
+  letter-spacing: 0.01em;
+}
+.login-head > .text-action {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.auth-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 20px;
+}
+.auth-switch {
+  display: block;
+  margin-top: 2px;
+}
+.auth-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+.code-field {
+  display: grid;
+  gap: var(--space-sm);
+}
+.code-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+.login-card .code-send {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-alt);
+  color: var(--fg);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.login-card .code-send:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+.login-card .code-send:disabled {
+  background: var(--panel-alt);
+  color: var(--muted);
 }
 .login-card h1 {
   margin: 20px 0 24px;

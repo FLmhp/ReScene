@@ -23,7 +23,7 @@ import {
 } from "./api";
 import { AdminScreen } from "./screens/Admin";
 import { JobScreen } from "./screens/Job";
-import { LoginScreen } from "./screens/Login";
+import { LoginScreen, type AuthMode } from "./screens/Login";
 import { ProjectScreen, type ProjectDraft } from "./screens/Project";
 import { ProjectsScreen } from "./screens/Projects";
 import { ViewerScreen } from "./screens/ViewerScreen";
@@ -73,7 +73,7 @@ export function AppRoot() {
   const { theme, dark } = useAppearance();
   const [session, setSession] = useState<Session>("loading");
   const [routes, setRoutes] = useState<Route[]>([{ name: "projects" }]);
-  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [notice, setNotice] = useState("");
   const [revision, setRevision] = useState(0);
   const [materialsRequest, setMaterialsRequest] = useState(0);
@@ -210,7 +210,7 @@ export function AppRoot() {
         }
         return true;
       }
-      if (session === "signed-out" && authMode === "register") {
+      if (session === "signed-out" && authMode !== "login") {
         setAuthMode("login");
         return true;
       }

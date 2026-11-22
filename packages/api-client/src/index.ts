@@ -20,6 +20,7 @@ import {
   AuditPageSchema,
   AuthTokenSchema,
   CompleteAssetSchema,
+  EmailCodeAcceptedSchema,
   InvitationSchema,
   JobLogPageSchema,
   JobPageSchema,
@@ -50,6 +51,7 @@ import {
   type Artifact,
   type AuditPage,
   type AuthToken,
+  type EmailCodePurpose,
   type Job,
   type JobLog,
   type JobStage,
@@ -128,6 +130,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   "auth.email_taken": "该邮箱已注册，请直接登录。",
   "auth.rate_limited": "尝试过于频繁，请稍后再试。",
   "auth.password_mismatch": "当前密码不正确。",
+  "auth.invalid_code": "验证码无效或已过期，请重新获取。",
   "asset.in_use": "该素材已被任务使用，无法删除。",
   "asset.not_found": "素材不存在，可能已被删除。",
   "job.invalid_inputs": "素材不满足重建要求，请检查后重试。",
@@ -266,6 +269,33 @@ export class ResceneClient {
     const result = await this.send("/v1/auth/register", AuthTokenSchema, {
       method: "POST",
       body: JSON.stringify({ email, password }),
+    });
+    this.token = result.access_token;
+    return result;
+  }
+
+  /** Mail a 6-digit code; the server answers the same whether or not the address is registered. */
+  async requestEmailCode(email: string, purpose: EmailCodePurpose): Promise<void> {
+    await this.send("/v1/auth/email-code", EmailCodeAcceptedSchema, {
+      method: "POST",
+      body: JSON.stringify({ email, purpose }),
+    });
+  }
+
+  async loginWithEmailCode(email: string, code: string): Promise<AuthToken> {
+    const result = await this.send("/v1/auth/email-code/login", AuthTokenSchema, {
+      method: "POST",
+      body: JSON.stringify({ email, code }),
+    });
+    this.token = result.access_token;
+    return result;
+  }
+
+  /** Set a new password with a mailed code; the returned token replaces every old session. */
+  async resetPasswordWithEmailCode(email: string, code: string, newPassword: string): Promise<AuthToken> {
+    const result = await this.send("/v1/auth/password-reset", AuthTokenSchema, {
+      method: "POST",
+      body: JSON.stringify({ email, code, new_password: newPassword }),
     });
     this.token = result.access_token;
     return result;

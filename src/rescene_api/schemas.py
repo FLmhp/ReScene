@@ -34,6 +34,24 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(min_length=12, max_length=128)
 
 
+class EmailCodeRequest(BaseModel):
+    """Ask for a login or reset code; the response never reveals account existence."""
+
+    email: LoginEmail
+    purpose: Literal["login", "reset"]
+
+
+class EmailCodeLoginRequest(BaseModel):
+    email: LoginEmail
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class EmailPasswordResetRequest(BaseModel):
+    email: LoginEmail
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    new_password: str = Field(min_length=12, max_length=128)
+
+
 class UpdateUserRequest(BaseModel):
     active: bool | None = None
     is_admin: bool | None = None
