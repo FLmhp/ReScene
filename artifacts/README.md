@@ -1,6 +1,6 @@
 # 验收与发布证据
 
-历史截图、黄金样例与验收记录的归档根为 `D:\ReScene-Archive\historical`。逐文件大小、SHA-256 与来源写入 `D:\ReScene-Archive\archive-manifest.json`；各来源的删除、保留和错误项写入 `historical/<来源>/archive-report.md`。清单与报告在归档完成时生成，尚未生成前以归档脚本输出为准。以下历史链接固定到归档前提交，需要 GitHub 仓库权限。未提交的本地证据不在 Git 历史中。当前仓库保留 `release/<版本>/` 中的既有发布清单；0.5.0 清单须在正式发布及核验后补录。
+历史截图、黄金样例与验收记录的归档根为 `D:\ReScene-Archive\historical`。逐文件大小、SHA-256 与来源写入 `D:\ReScene-Archive\archive-manifest.json`；各来源的删除、保留和错误项写入 `historical/<来源>/archive-report.md`。以下历史链接固定到归档前提交，需要 GitHub 仓库权限。未提交的本地证据不在 Git 历史中。Git 仓库中的发布清单位于 `release/<版本>/`。
 
 | 子目录 | 内容 | 说明 |
 |---|---|---|
@@ -38,12 +38,12 @@
 
 ## 发布清单
 
-下载资产后逐项比较文件名、大小和 SHA-256 与对应 `release-manifest.json`，再核对 `source-manifest.json` 的大小和 SHA-256。历史版本的验证结果不能替代 0.5.0 资产核验；当前状态见 [0.5.0 发布说明](../docs/0.5.0发布说明.md)。
+下载资产后逐项比较文件名、大小和 SHA-256 与对应 `release-manifest.json`，再核对 `source-manifest.json` 的大小和 SHA-256。0.5.0 的[发布清单](release/0.5.0/release-manifest.json)和[源码清单](release/0.5.0/source-manifest.json)与 GitHub Release 下载项一致；安装门禁见 [0.5.0 发布说明](../docs/0.5.0发布说明.md)。
 
 `release/0.3.0/` 记录 0.3.0 的四个桌面安装包（Windows NSIS、Linux deb/AppImage、macOS universal dmg）的大小与 SHA-256。校验方式：从 Release 下载同名文件后计算 SHA-256，与 `release-manifest.json` 对照；`source-manifest.json` 列出打包时每个源文件的大小与哈希。
 
 0.4.0 双主题的宽窄屏与原生客户端截图见 [历史截图目录](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-18-ui-v040/screenshots)，数据来源与平台状态以当时的报告为准。
 
-0.4.1 候选的 [安装包 SHA-256](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-release-041/installers.sha256)、[六条 GPU 任务](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-release-041/gpu-matrix.json) 和 [重载记录](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-release-041/gpu-reload.json) 随验收报告归档。正式包仍见 [0.4.0 Release](https://github.com/FLmhp/ReScene/releases/tag/v0.4.0)。
+0.4.1 候选的 [安装包 SHA-256](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-release-041/installers.sha256)、[六条 GPU 任务](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-release-041/gpu-matrix.json) 和 [重载记录](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-release-041/gpu-reload.json) 随验收报告归档。当时的正式包见 [0.4.0 Release](https://github.com/FLmhp/ReScene/releases/tag/v0.4.0)。
 
 RS 字标、官网上线、客户端新标构建与微信启动修复见 [品牌更新记录](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-brand-refresh/report.md)。

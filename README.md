@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://rescene.xyz/">项目主页</a> ·
   <a href="https://app.rescene.xyz">在线工作台</a> ·
-  <a href="https://github.com/FLmhp/ReScene/releases/tag/v0.4.0">下载 0.4.0</a> ·
+  <a href="https://github.com/FLmhp/ReScene/releases/tag/v0.5.0">下载 0.5.0</a> ·
   <a href="docs/用户手册.md">用户手册</a> ·
   <a href="CONTRIBUTING.md">开发指南</a>
 </p>
@@ -40,21 +40,21 @@ ReScene 把团队工作台、GPU 重建引擎和 SPZ 查看器放在同一个仓
 
 直接使用 [在线工作台](https://app.rescene.xyz)，通过邮箱注册或登录，创建项目、上传素材，再选择路线开始重建。具体操作见 [用户手册](docs/用户手册.md)。Worker 离线时任务会排队，网页可用不等于 GPU 可执行任务。
 
-0.5.0 正在准备，发布资产及生产切换尚待核验；最新已核实线上工作台与 API 为 **0.4.1**，数据库为 `0010`。最新已发布安装包为 **0.4.0**。历史证据链接需要仓库权限。 [0.5.0 发布说明](docs/0.5.0发布说明.md) · [0.4.0 Release](https://github.com/FLmhp/ReScene/releases/tag/v0.4.0) · [上线记录](plans/README.md#041-审计集成补验)
+[0.5.0 安装包](https://github.com/FLmhp/ReScene/releases/tag/v0.5.0)已通过下载校验和 Windows、Android 覆盖安装验证。官网、生产工作台及 API 均已升级到 **0.5.0**，数据库保持 `0010`。公网工作台已实测登录和历史场景浏览；GPU Worker 离线，未做训练回归。微信只上传了开发版。 [0.5.0 发布说明](docs/0.5.0发布说明.md) · [0.4.1 上线记录](plans/README.md#041-审计集成补验)
 
-| 入口 | 0.4.1 线上与验收 |
+| 入口 | 0.4.1 历史验收 |
 |---|---|
 | Web / API | 2026-11-21 停写迁移后上线，API `0.4.1`；数据库 `0010`（上线时为 `0009`，后续审计部署升级），公网入口与管理员读取验证通过 |
 | Windows | 候选已实测从 0.4.0 覆盖安装、结果页布局、SPZ 渲染、五种产物下载和分享撤销；正式包仍为 0.4.0 |
 | Android | 0.4.1 真机 HUAWEI BKY-W10 / Android 12 验证登录、冷启动会话、真实 OSS 上传、生产重建、日志轮询和 Viewer 首载渲染；Android 35 模拟器另覆盖 403 续签、503 重试、离线重放与换号隔离。正式签名包仍为 0.4.0。 [真机报告](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-21-android-device/report.md) |
 | 微信小程序 | 开发者工具验证登录页渲染和编译构建；真机日志追踪与分享切换待验收，正式版以平台审核为准 |
 
-生产 API 与 Web 已运行 0.4.1；生产 GPU Worker 已切换到 0.4.1 并恢复领取队列（PID 22691，drain=no）。首个生产任务 `f8201574-991a-4f88-bc8a-9b1c86f370d8` 已成功交付重建 `3814d608-dc1d-4c81-9604-6300d50d652c`（质量 16.34，manifest、metrics、report、19.7 MB SPZ 与 185 MB PLY）。仍使用 0.4.0 的 Android/微信安装包新增成员时不会显示一次性领取码，应先在 Web 工作台签发，待原生正式包验收后再更新。此前候选的六条 GPU 路线、checkpoint 恢复、取消与上传边界已在隔离候选栈复验。 [0.4.1 品牌与真机验收](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-brand-refresh/report.md)
+0.4.1 上线时，生产 Worker 完成真实重建并交付了 SPZ、PLY、指标和报告。此前候选的六条 GPU 路线、checkpoint 恢复、取消与上传边界在隔离环境中复验；这些记录不是 0.5.0 的训练结果。 [0.4.1 品牌与真机验收](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-brand-refresh/report.md)
 
 0.4.1 候选采用青色 R 与蓝紫色 S 组成的新标志。技术设计和中期报告的现状附录见 [Word 文档索引](docs/reference/README.md)。 [项目官网](https://rescene.xyz/)
 
 > [!IMPORTANT]
-> 仓库和 GitHub Release 为私有，仅授权协作者可访问。桌面安装包未签名，macOS 未公证；构建成功不等于各平台安装验收完成。已发布文件以 [0.4.0 发布说明](docs/0.4.0发布说明.md) 为准；0.5.0 准备状态见 [0.5.0 发布说明](docs/0.5.0发布说明.md)。
+> 仓库和 GitHub Release 为私有，仅授权协作者可访问。桌面安装包未签名，macOS 未公证；构建成功不等于各平台安装验收完成。安装包、校验值与验收设备见 [0.5.0 发布说明](docs/0.5.0发布说明.md)。
 
 界面提供跟随系统、浅色和深色设置，另有青瓷、群青、墨染三套配色，两项偏好分别保存在当前设备。Web/桌面在外观菜单中切换，Android/小程序在页面右上角切换。半透明面板只在平台支持时启用，其余环境使用实色。开发者入口见 [AGENTS.md](AGENTS.md)。
 
@@ -197,8 +197,8 @@ python -m rescene report --run-id my-scene
 | 使用工作台、查看场景或管理账号 | [用户手册](docs/用户手册.md) |
 | 理解 API、数据模型和各端实现 | [项目说明](docs/项目说明.md) |
 | 修改代码、提交 PR、验证或发布 | [开发与发布指南](CONTRIBUTING.md) |
-| 查看 0.5.0 准备状态与下载占位 | [0.5.0 发布说明](docs/0.5.0发布说明.md) |
-| 下载并核对当前安装包 | [0.4.0 发布说明](docs/0.4.0发布说明.md) |
+| 下载并核对当前安装包 | [0.5.0 发布说明](docs/0.5.0发布说明.md) |
+| 查看历史安装包 | [0.4.0 发布说明](docs/0.4.0发布说明.md) |
 | 了解候选版与上线门槛 | [0.4.1 验收报告](https://github.com/FLmhp/ReScene/blob/f999157c9ff04df1f33e820f7bd6742444ae6e92/artifacts/test-runs/2026-11-20-release-041/report.md) |
 | 部署、升级、备份或回滚 | [单 5090 系统部署与运维](docs/单5090系统部署与运维.md) |
 | 查看截图、样例指标和发布哈希 | [验收与发布证据](artifacts/README.md) |
