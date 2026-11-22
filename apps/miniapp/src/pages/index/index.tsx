@@ -262,7 +262,7 @@ export default function IndexPage() {
       <Screen>
         <View className="row"><Text className="label">ReScene</Text><Button className="button ghost compact" onClick={() => openFocus("appearance")}>外观</Button></View>
         <Text className="title">{mode === "login" ? "登录" : "注册"}</Text>
-        <View className="field">
+        <View className="card">
           <Text className="label">邮箱</Text>
           <Input className="input" placeholder="name@example.com" value={email} onInput={(event) => setEmail(event.detail.value)} />
           <Text className="label">{mode === "login" ? "密码" : "密码（至少 12 位）"}</Text>
@@ -275,7 +275,7 @@ export default function IndexPage() {
             </>
           ) : null}
           {mode === "login" ? (
-            <Button className="button" loading={busy} disabled={busy} onClick={() => void login()}>{busy ? "正在登录…" : "邮箱登录"}</Button>
+            <Button className="button" loading={busy} disabled={busy} onClick={() => void login()}>{busy ? "正在登录…" : "登录"}</Button>
           ) : (
             <Button className="button" loading={busy} disabled={busy} onClick={() => void register()}>{busy ? "正在注册…" : "注册"}</Button>
           )}
