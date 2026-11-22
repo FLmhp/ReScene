@@ -362,6 +362,11 @@ def main() -> int:
     parser.add_argument("--tag", required=True, help="release tag, for example v0.5.1")
     parser.add_argument("--version", required=True, help="VERSION value the tag must match")
     parser.add_argument("--repo", required=True, help="owner/name used to fetch the release source")
+    parser.add_argument(
+        "--root",
+        default="",
+        help="checkout that supplies VERSION and the migrations of the deployed tag",
+    )
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA", ""))
     parser.add_argument("--run-url", default="")
     parser.add_argument("--log", default="deploy-log.json")
@@ -371,7 +376,7 @@ def main() -> int:
         f"{args.repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
     )
 
-    root = Path(__file__).resolve().parent.parent
+    root = Path(args.root).resolve() if args.root else Path(__file__).resolve().parent.parent
     if (root / "VERSION").read_text(encoding="utf-8").strip() != args.version:
         print(f"VERSION is not {args.version}", file=sys.stderr)
         return 2

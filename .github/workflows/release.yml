@@ -63,6 +63,14 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
+      # The tag supplies the source, VERSION and migrations being deployed; the
+      # tooling comes from the commit that defines this workflow, so replaying a
+      # tag created before the automation still runs the reviewed scripts.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: tooling
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -87,7 +95,8 @@ jobs:
           DEPLOY_KEY_FILE: ${{ runner.temp }}/ssh/deploy_key
           DEPLOY_KNOWN_HOSTS_FILE: ${{ runner.temp }}/ssh/known_hosts
         run: |
-          python scripts/deploy_release.py \
+          python tooling/scripts/deploy_release.py \
+            --root . \
             --tag "$RELEASE_TAG" \
             --version "$(tr -d '\r\n' < VERSION)" \
             --repo "$GITHUB_REPOSITORY" \
@@ -443,6 +452,11 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: tooling
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -475,7 +489,7 @@ jobs:
             release-flat/*
       - name: Record the release log
         run: |
-          node scripts/release-log.mjs \
+          node tooling/scripts/release-log.mjs \
             --release-manifest release-flat/release-manifest.json \
             --deploy-log release-flat/deploy-log.json \
             --tag "$RELEASE_TAG" \
