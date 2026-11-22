@@ -2,8 +2,8 @@
 
 import {
   COLORWAY_OPTIONS, DISPLAY_STORAGE_KEY, THEME_OPTIONS, THEME_STORAGE_KEY,
-  applyDisplayToRoot, colorwayPreference, displayPreferences, normalizePrimary, resolvePalette, themePreference,
-  type DisplayPreferences, type ThemePreference,
+  applyDisplayToRoot, colorwayPreference, colorwayPrimary, displayPreferences, normalizePrimary, resolvePalette,
+  themePreference, type DisplayPreferences, type ThemePreference,
 } from "@rescene/design-tokens";
 import { useEffect, useState } from "react";
 
@@ -50,11 +50,25 @@ export function ThemeControl() {
         {THEME_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
     </label>
-    <label className="theme-control">配色
-      <select aria-label="配色" value={display.colorway} onChange={(event) => apply(preference, { ...display, colorway: colorwayPreference(event.target.value) })}>
-        {COLORWAY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-      </select>
-    </label>
+    <fieldset className="colorway-field">
+      <legend>配色</legend>
+      <div className="colorway-options">
+        {COLORWAY_OPTIONS.map((option) => (
+          <label key={option.value} className="colorway-option">
+            <input
+              type="radio"
+              name="colorway"
+              value={option.value}
+              aria-label={option.label}
+              checked={display.colorway === option.value}
+              onChange={() => apply(preference, { ...display, colorway: colorwayPreference(option.value) })}
+            />
+            <span className="colorway-chip" aria-hidden="true" style={{ background: colorwayPrimary(option.value, display.primary) }} />
+            <span>{option.label}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
     {display.colorway === "custom" && <div style={{ display: "grid", gap: 8 }}>
       <label>自定义主色
         <input aria-label="自定义主色" aria-invalid={invalidPrimary} aria-describedby={invalidPrimary ? "appearance-primary-error" : undefined}

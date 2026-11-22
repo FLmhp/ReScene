@@ -7,7 +7,8 @@
  * Keep these literals in sync with web.css and apps/miniapp/src/app.css.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.fontSize = exports.radius = exports.spacing = exports.THEME_OPTIONS = exports.THEME_STORAGE_KEY = exports.colors = exports.FONT_SIZE_SCALES = exports.DISPLAY_STORAGE_KEY = exports.DEFAULT_PRIMARY = exports.COLORWAY_STORAGE_KEY = exports.COLORWAY_OPTIONS = exports.lightColors = exports.darkColors = void 0;
+exports.fontSize = exports.radius = exports.spacing = exports.THEME_OPTIONS = exports.THEME_STORAGE_KEY = exports.colors = exports.FONT_SIZE_SCALES = exports.DISPLAY_STORAGE_KEY = exports.DEFAULT_PRIMARY = exports.COLORWAY_STORAGE_KEY = exports.DEFAULT_COLORWAY = exports.COLORWAY_OPTIONS = exports.lightColors = exports.darkColors = void 0;
+exports.colorwayPrimary = colorwayPrimary;
 exports.normalizePrimary = normalizePrimary;
 exports.colorwayPreference = colorwayPreference;
 exports.displayPreferences = displayPreferences;
@@ -80,19 +81,32 @@ const ink = {
         onAccent: "#202631", overlay: "rgba(6,8,12,0.79)",
     },
 };
+/** Classical colourways are named with four-character phrases, colour word first. */
 exports.COLORWAY_OPTIONS = [
-    { value: "jade", label: "青瓷" },
-    { value: "ultramarine", label: "群青" },
-    { value: "ink", label: "墨染" },
-    { value: "rouge", label: "胭脂" },
-    { value: "cinnabar", label: "朱砂" },
-    { value: "ochre", label: "赭石" },
-    { value: "indigo", label: "靛青" },
-    { value: "custom", label: "自定义" },
+    { value: "jade", label: "青瓷素影" },
+    { value: "ultramarine", label: "群青远山" },
+    { value: "ink", label: "墨染松烟" },
+    { value: "rouge", label: "胭脂海棠" },
+    { value: "cinnabar", label: "朱砂落印" },
+    { value: "ochre", label: "赭石秋峦" },
+    { value: "indigo", label: "靛青夜泊" },
+    { value: "custom", label: "自定主色" },
 ];
+/** A device with no stored preference starts on the system theme and 群青远山. */
+exports.DEFAULT_COLORWAY = "ultramarine";
 exports.COLORWAY_STORAGE_KEY = "rescene-colorway";
 const palettes = { jade: { light: exports.lightColors, dark: exports.darkColors }, ultramarine, ink };
 const primaryColors = { rouge: "#9E3150", cinnabar: "#B3483D", ochre: "#915A35", indigo: "#28536B" };
+/** Hue samples shown by the rounded preview squares; independent of the active theme. */
+const PALETTE_PRIMARIES = {
+    jade: exports.lightColors.accent,
+    ultramarine: ultramarine.light.accent,
+    ink: ink.light.accent,
+    ...primaryColors,
+};
+function colorwayPrimary(colorway, customPrimary) {
+    return colorway === "custom" ? normalizePrimary(customPrimary) ?? exports.DEFAULT_PRIMARY : PALETTE_PRIMARIES[colorway];
+}
 exports.DEFAULT_PRIMARY = "#28536B";
 exports.DISPLAY_STORAGE_KEY = "rescene-display";
 exports.FONT_SIZE_SCALES = { standard: 1, large: 1.15, "extra-large": 1.3 };
@@ -103,7 +117,7 @@ function normalizePrimary(value) {
     return match ? `#${match[1].toUpperCase()}` : null;
 }
 function colorwayPreference(value) {
-    return exports.COLORWAY_OPTIONS.some(option => option.value === value) ? value : "jade";
+    return exports.COLORWAY_OPTIONS.some(option => option.value === value) ? value : exports.DEFAULT_COLORWAY;
 }
 function displayPreferences(value, legacyColorway) {
     if (typeof value === "string") {

@@ -1,4 +1,4 @@
-import { COLORWAY_OPTIONS, DEFAULT_PRIMARY, THEME_OPTIONS, normalizePrimary, resolvePalette, type DisplayPreferences, type Palette } from "@rescene/design-tokens";
+import { COLORWAY_OPTIONS, DEFAULT_PRIMARY, THEME_OPTIONS, colorwayPrimary, normalizePrimary, resolvePalette, type DisplayPreferences, type Palette } from "@rescene/design-tokens";
 import { BlurTargetView as ExpoBlurTargetView, BlurView as ExpoBlurView, type BlurTargetViewProps, type BlurViewProps } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import { useEffect, useRef, useState, type ComponentRef, type ComponentType, type ReactNode, type RefAttributes, type RefObject } from "react";
@@ -266,7 +266,6 @@ export function AppearanceScreen({ onBack }: { onBack: () => void }) {
   const { theme, dark, preference, display, saveError, setPreference, setDisplay, resetAppearance } = useAppearance();
   const [draft, setDraft] = useState(display.primary);
   const [invalid, setInvalid] = useState(false);
-  const [colorwayOpen, setColorwayOpen] = useState(false);
   useEffect(() => setDraft(display.primary), [display.primary]);
   const applyPrimary = () => {
     const primary = normalizePrimary(draft);
@@ -287,18 +286,22 @@ export function AppearanceScreen({ onBack }: { onBack: () => void }) {
       </View>
       <View style={{ gap: spacing.sm }}>
         <Text accessibilityRole="header" style={{ color: theme.fg, fontSize: 18, fontWeight: "600" }}>配色</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="配色" accessibilityState={{ expanded: colorwayOpen }} onPress={() => setColorwayOpen(!colorwayOpen)} style={{ minHeight: 48, padding: 12, borderWidth: 1, borderColor: theme.border, borderRadius: radii.sm, backgroundColor: theme.panel }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}><View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: theme.accent }} /><Text style={{ color: theme.fg, fontSize: 16 }}>{COLORWAY_OPTIONS.find((option) => option.value === display.colorway)?.label} ▾</Text></View>
-        </Pressable>
-        {colorwayOpen ? <View style={{ borderWidth: 1, borderColor: theme.border, backgroundColor: theme.panel }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>
           {COLORWAY_OPTIONS.map((option) => {
             const selected = option.value === display.colorway;
-            return <Pressable key={option.value} accessibilityRole="button" accessibilityState={{ selected }} onPress={() => { setDisplay({ colorway: option.value }); setColorwayOpen(false); }} style={{ minHeight: 44, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, backgroundColor: selected ? theme.surfaceStrong : undefined }}>
-              <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: resolvePalette(option.value, dark, display.primary).accent }} />
-              <Text style={{ color: theme.fg, fontSize: 16 }}>{option.label}{selected ? " ✓" : ""}</Text>
+            return <Pressable
+              key={option.value}
+              accessibilityRole="radio"
+              accessibilityLabel={`配色：${option.label}`}
+              accessibilityState={{ checked: selected }}
+              onPress={() => setDisplay({ colorway: option.value })}
+              style={{ minHeight: 48, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, borderWidth: 1, borderRadius: radii.sm, borderColor: selected ? theme.accent : theme.borderSoft, backgroundColor: selected ? theme.surfaceStrong : theme.panel }}
+            >
+              <View style={{ width: 20, height: 20, borderRadius: 6, borderWidth: 1, borderColor: theme.borderSoft, backgroundColor: colorwayPrimary(option.value, display.primary) }} />
+              <Text style={{ color: theme.fg, fontSize: 16, fontWeight: selected ? "600" : "400" }}>{option.label}</Text>
             </Pressable>;
           })}
-        </View> : null}
+        </View>
       </View>
       {display.colorway === "custom" ? <View style={{ gap: spacing.sm }}>
         <Text accessibilityRole="header" style={{ color: theme.fg, fontSize: 18, fontWeight: "600" }}>主色调</Text>
@@ -316,7 +319,7 @@ export function AppearanceScreen({ onBack }: { onBack: () => void }) {
         <Text accessibilityRole="header" style={{ color: theme.fg, fontSize: 18, fontWeight: "600" }}>面板效果</Text>
         <Segmented value={display.surface} options={SURFACE_OPTIONS} onChange={(surface) => setDisplay({ surface })} />
       </View>
-      <Button label="恢复默认外观" tone="ghost" onPress={() => { resetAppearance(); setDraft(DEFAULT_PRIMARY); setInvalid(false); setColorwayOpen(false); }} />
+      <Button label="恢复默认外观" tone="ghost" onPress={() => { resetAppearance(); setDraft(DEFAULT_PRIMARY); setInvalid(false); }} />
     </View>
   </Screen>;
 }

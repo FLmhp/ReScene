@@ -1,11 +1,11 @@
-import { COLORWAY_OPTIONS, COLORWAY_STORAGE_KEY, DISPLAY_STORAGE_KEY, FONT_SIZE_SCALES, displayPreferences, normalizePrimary, paletteCssVariables, resolvePalette, THEME_OPTIONS, THEME_STORAGE_KEY, themePreference, type DisplayPreferences, type Palette, type ThemePreference } from "@rescene/design-tokens";
+import { COLORWAY_OPTIONS, COLORWAY_STORAGE_KEY, DEFAULT_COLORWAY, DISPLAY_STORAGE_KEY, FONT_SIZE_SCALES, colorwayPrimary, displayPreferences, normalizePrimary, paletteCssVariables, resolvePalette, THEME_OPTIONS, THEME_STORAGE_KEY, themePreference, type DisplayPreferences, type Palette, type ThemePreference } from "@rescene/design-tokens";
 import { Button, Input, Picker, Text, View } from "@tarojs/components";
 import Taro, { useDidHide, useDidShow } from "@tarojs/taro";
 import { createContext, useContext, useEffect, useRef, useState, type PropsWithChildren } from "react";
 import { hasToken } from "./api";
 import { openHome } from "./navigation";
 
-const ScreenPaletteContext = createContext<Palette>(resolvePalette("jade", false));
+const ScreenPaletteContext = createContext<Palette>(resolvePalette(DEFAULT_COLORWAY, false));
 
 export function useScreenPalette(): Palette {
   return useContext(ScreenPaletteContext);
@@ -124,7 +124,6 @@ function AppearanceForm() {
   const [primaryDraft, setPrimaryDraft] = useState(display.primary);
   const [primaryError, setPrimaryError] = useState(false);
   const themeIndex = THEME_OPTIONS.findIndex(item => item.value === preference);
-  const colorwayIndex = COLORWAY_OPTIONS.findIndex(item => item.value === display.colorway);
   const sizes: { value: DisplayPreferences["fontSize"]; label: string }[] = [
     { value: "standard", label: "标准 100%" }, { value: "large", label: "较大 115%" }, { value: "extra-large", label: "特大 130%" },
   ];
@@ -138,8 +137,8 @@ function AppearanceForm() {
     setPrimaryError(false);
     setDisplay({ ...display, primary });
   };
-  const light = resolvePalette("custom", false, display.primary);
-  const dark = resolvePalette("custom", true, display.primary);
+  const lightPreview = resolvePalette("custom", false, display.primary);
+  const darkPreview = resolvePalette("custom", true, display.primary);
   const draftColor = normalizePrimary(primaryDraft) ?? display.primary;
   return <View className="appearance-page">
     <View className="appearance-field"><Text className="label">外观主题</Text>
@@ -148,17 +147,24 @@ function AppearanceForm() {
       }}><View className="appearance-picker" aria-label={`外观主题：${THEME_OPTIONS[themeIndex]?.label}`}>{THEME_OPTIONS[themeIndex]?.label} ▾</View></Picker>
     </View>
     <View className="appearance-field"><Text className="label">配色</Text>
-      <Picker mode="selector" range={COLORWAY_OPTIONS.map(item => item.label)} value={colorwayIndex} onChange={event => {
-        const option = COLORWAY_OPTIONS[Number(event.detail.value)]; if (option) setDisplay({ ...display, colorway: option.value });
-      }}><View className="appearance-picker" aria-label={`配色：${COLORWAY_OPTIONS[colorwayIndex]?.label}`}>{COLORWAY_OPTIONS[colorwayIndex]?.label} ▾</View></Picker>
+      <View className="colorway-grid" role="radiogroup" aria-label="配色">
+        {COLORWAY_OPTIONS.map(option => {
+          const selected = option.value === display.colorway;
+          return <View key={option.value} className={`colorway-option${selected ? " active" : ""}`} role="radio" aria-checked={selected}
+            aria-label={`配色：${option.label}`} onClick={() => setDisplay({ ...display, colorway: option.value })}>
+            <View className="colorway-chip" style={`background:${colorwayPrimary(option.value, display.primary)}`} />
+            <Text>{option.label}</Text>
+          </View>;
+        })}
+      </View>
     </View>
     {display.colorway === "custom" && <View className="appearance-field">
       <Text className="label">主色调</Text>
       <View className="appearance-primary"><View className="appearance-swatch" style={`background:${draftColor}`} /><Input className="input" value={primaryDraft} maxlength={7} onInput={event => { setPrimaryDraft(event.detail.value); setPrimaryError(false); }} onConfirm={applyPrimary} aria-label="主色调 HEX" /></View>
       {primaryError && <Text className="error">请输入 6 位十六进制颜色，例如 #28536B。</Text>}
       <Button className="button ghost" onClick={applyPrimary}>应用主色</Button>
-      <View className="appearance-preview"><Text>浅色</Text><View className="appearance-preview-swatch" style={`background:linear-gradient(155deg,${light.bgSoft},${light.bgDeep})`} /></View>
-      <View className="appearance-preview"><Text>深色</Text><View className="appearance-preview-swatch" style={`background:linear-gradient(155deg,${dark.bgSoft},${dark.bgDeep})`} /></View>
+      <View className="appearance-preview"><Text>浅色</Text><View className="appearance-preview-swatch" style={`background:linear-gradient(155deg,${lightPreview.bgSoft},${lightPreview.bgDeep})`} /></View>
+      <View className="appearance-preview"><Text>深色</Text><View className="appearance-preview-swatch" style={`background:linear-gradient(155deg,${darkPreview.bgSoft},${darkPreview.bgDeep})`} /></View>
     </View>}
     <View className="appearance-field"><Text className="label">字体大小</Text>
       <Picker mode="selector" range={sizes.map(item => item.label)} value={sizes.findIndex(item => item.value === display.fontSize)} onChange={event => {

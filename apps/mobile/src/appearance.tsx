@@ -1,5 +1,5 @@
 import {
-  COLORWAY_STORAGE_KEY, DISPLAY_STORAGE_KEY, FONT_SIZE_SCALES, THEME_STORAGE_KEY,
+  COLORWAY_STORAGE_KEY, DEFAULT_COLORWAY, DISPLAY_STORAGE_KEY, FONT_SIZE_SCALES, THEME_STORAGE_KEY,
   displayPreferences, lightColors, resolvePalette, themePreference,
   type Colorway, type DisplayPreferences, type Palette, type ThemePreference,
 } from "@rescene/design-tokens";
@@ -20,7 +20,7 @@ type Appearance = {
   resetAppearance: () => void;
 };
 const AppearanceContext = createContext<Appearance>({
-  theme: lightColors, dark: false, preference: "system", colorway: "jade", display: defaults, scale: 1, saveError: "",
+  theme: lightColors, dark: false, preference: "system", colorway: DEFAULT_COLORWAY, display: defaults, scale: 1, saveError: "",
   setPreference: () => undefined, setColorway: () => undefined, setDisplay: () => undefined, resetAppearance: () => undefined,
 });
 

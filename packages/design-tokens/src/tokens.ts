@@ -74,21 +74,36 @@ const ink = {
   },
 } satisfies Record<"light" | "dark", Palette>;
 
+/** Classical colourways are named with four-character phrases, colour word first. */
 export const COLORWAY_OPTIONS = [
-  { value: "jade", label: "青瓷" },
-  { value: "ultramarine", label: "群青" },
-  { value: "ink", label: "墨染" },
-  { value: "rouge", label: "胭脂" },
-  { value: "cinnabar", label: "朱砂" },
-  { value: "ochre", label: "赭石" },
-  { value: "indigo", label: "靛青" },
-  { value: "custom", label: "自定义" },
+  { value: "jade", label: "青瓷素影" },
+  { value: "ultramarine", label: "群青远山" },
+  { value: "ink", label: "墨染松烟" },
+  { value: "rouge", label: "胭脂海棠" },
+  { value: "cinnabar", label: "朱砂落印" },
+  { value: "ochre", label: "赭石秋峦" },
+  { value: "indigo", label: "靛青夜泊" },
+  { value: "custom", label: "自定主色" },
 ] as const;
 export type Colorway = (typeof COLORWAY_OPTIONS)[number]["value"];
+/** A device with no stored preference starts on the system theme and 群青远山. */
+export const DEFAULT_COLORWAY: Colorway = "ultramarine";
 export const COLORWAY_STORAGE_KEY = "rescene-colorway";
 
 const palettes = { jade: { light: lightColors, dark: darkColors }, ultramarine, ink };
 const primaryColors = { rouge: "#9E3150", cinnabar: "#B3483D", ochre: "#915A35", indigo: "#28536B" } as const;
+
+/** Hue samples shown by the rounded preview squares; independent of the active theme. */
+const PALETTE_PRIMARIES: Record<Exclude<Colorway, "custom">, string> = {
+  jade: lightColors.accent,
+  ultramarine: ultramarine.light.accent,
+  ink: ink.light.accent,
+  ...primaryColors,
+};
+
+export function colorwayPrimary(colorway: Colorway, customPrimary?: string): string {
+  return colorway === "custom" ? normalizePrimary(customPrimary) ?? DEFAULT_PRIMARY : PALETTE_PRIMARIES[colorway];
+}
 export const DEFAULT_PRIMARY = "#28536B";
 export const DISPLAY_STORAGE_KEY = "rescene-display";
 export const FONT_SIZE_SCALES = { standard: 1, large: 1.15, "extra-large": 1.3 } as const;
@@ -106,7 +121,7 @@ export function normalizePrimary(value: unknown): string | null {
 }
 
 export function colorwayPreference(value: unknown): Colorway {
-  return COLORWAY_OPTIONS.some(option => option.value === value) ? value as Colorway : "jade";
+  return COLORWAY_OPTIONS.some(option => option.value === value) ? value as Colorway : DEFAULT_COLORWAY;
 }
 
 export function displayPreferences(value: unknown, legacyColorway?: unknown): DisplayPreferences {

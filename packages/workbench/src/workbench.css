@@ -1389,6 +1389,27 @@ input[type="checkbox"] { accent-color: var(--accent); }
 /* Project library and media workspace */
 .theme-control { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 0.875rem; }
 .theme-control select { width: auto; max-width: 100%; min-height: 44px; padding: 6px 10px; }
+.colorway-field { display: grid; gap: 10px; min-width: 0; margin: 0; padding: 0; border: 0; color: var(--muted); font-size: 0.875rem; }
+.colorway-field legend { padding: 0; }
+.colorway-options { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; }
+.colorway-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--panel-alt);
+  color: var(--muted);
+  cursor: pointer;
+}
+.colorway-option:hover { border-color: var(--accent); }
+.colorway-option:has(input:checked) { border-color: var(--accent); background: var(--surface-strong); color: var(--fg); }
+.colorway-option:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.colorway-option input { position: absolute; width: 1px; height: 1px; min-height: 0; opacity: 0; }
+.colorway-chip { width: 20px; height: 20px; flex: none; border: 1px solid var(--border-soft); border-radius: 6px; }
 @media (max-width: 420px) {
   .theme-control { flex-wrap: wrap; justify-content: flex-start; }
   .theme-control select { width: 100%; }

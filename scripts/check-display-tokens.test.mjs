@@ -36,6 +36,23 @@ test("generated palettes preserve contrast and endpoints", () => {
   assert.equal(tokens.resolvePalette("ink", false).fg, "#22262D");
 });
 
+test("defaults are system plus ultramarine and every colourway name is four characters", () => {
+  assert.equal(tokens.themePreference(null), "system");
+  assert.equal(tokens.themePreference("sepia"), "system");
+  assert.equal(tokens.displayPreferences(null).colorway, "ultramarine");
+  assert.equal(tokens.displayPreferences({ colorway: "unknown" }).colorway, "ultramarine");
+  assert.equal(tokens.displayPreferences({}, "legacy").colorway, "ultramarine");
+  assert.equal(tokens.colorwayPreference("ink"), "ink");
+  for (const option of tokens.COLORWAY_OPTIONS) {
+    assert.equal([...option.label].length, 4, `${option.value} label must be four characters`);
+  }
+  const samples = tokens.COLORWAY_OPTIONS.filter(option => option.value !== "custom").map(option => tokens.colorwayPrimary(option.value));
+  assert.equal(new Set(samples).size, samples.length, "each colourway previews a distinct primary");
+  assert.equal(tokens.colorwayPrimary("custom", "#aa405c"), "#AA405C");
+  assert.equal(tokens.colorwayPrimary("custom", "bad"), tokens.DEFAULT_PRIMARY);
+  assert.equal(tokens.colorwayPrimary("jade"), "#00665D");
+});
+
 test("display storage values are independently normalized", () => {
   for (const input of ["##112233", "red", "#abcd", "#112233url()", null]) assert.equal(tokens.normalizePrimary(input), null);
   assert.equal(tokens.normalizePrimary(" aa405c "), "#AA405C");
