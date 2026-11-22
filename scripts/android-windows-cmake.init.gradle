@@ -1,9 +1,20 @@
 // AGP configures CMake before Ninja; avoid Expo's Windows regeneration loop.
+// Deep pnpm source paths push generated object paths past the Windows 260-character
+// limit, so every native module stages its CMake tree under a short root and hashes
+// object paths above 220 characters.
+def shortStaging = new File("C:/rsbuild")
+shortStaging.mkdirs()
+
 gradle.beforeProject { project ->
-    project.plugins.withId("com.android.application") {
-        project.extensions.getByName("androidComponents").finalizeDsl { android ->
-            // Hash deep pnpm source paths before the SDK's Windows Ninja hits MAX_PATH.
-            android.defaultConfig.externalNativeBuild.cmake.arguments.add("-DCMAKE_OBJECT_PATH_MAX=220")
+    ["com.android.application", "com.android.library"].each { id ->
+        project.plugins.withId(id) {
+            project.extensions.getByName("androidComponents").finalizeDsl { android ->
+                def nativeBuild = android.externalNativeBuild
+                if (nativeBuild?.cmake != null) {
+                    nativeBuild.cmake.buildStagingDirectory = new File(shortStaging, project.name)
+                }
+                android.defaultConfig.externalNativeBuild.cmake.arguments.add("-DCMAKE_OBJECT_PATH_MAX=220")
+            }
         }
     }
     if (project.name == "expo-modules-core") {
