@@ -315,7 +315,20 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - uses: android-actions/setup-android@v3
+      # android-actions/setup-android@v3 installs the retired `tools` package and
+      # now fails with "Failed to find package 'tools'". The runner image already
+      # ships the SDK and command-line tools, so use them and fail loudly if the
+      # layout ever changes.
+      - name: Set up the preinstalled Android SDK
+        run: |
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          test -d "$sdk_root" || { echo "No Android SDK at $sdk_root" >&2; exit 1; }
+          echo "ANDROID_HOME=$sdk_root" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+          tools=$(ls -d "$sdk_root"/cmdline-tools/*/bin | sort -V | tail -1)
+          test -x "$tools/sdkmanager" || { echo "No sdkmanager under $sdk_root/cmdline-tools" >&2; exit 1; }
+          echo "$tools" >> "$GITHUB_PATH"
+          echo "$sdk_root/platform-tools" >> "$GITHUB_PATH"
       - run: pnpm install --frozen-lockfile
       - run: node scripts/check-versions.mjs
       - name: Validate release URLs
@@ -335,7 +348,9 @@ jobs:
             if [[ -z "${!name}" ]]; then echo "$name is required" >&2; exit 1; fi
           done
       - name: Install Android build tools
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
       - name: Build and verify signed Android APK
         working-directory: apps/mobile
         env:
