@@ -237,6 +237,7 @@ export default function IndexPage() {
       events: {
         "library-change": (change: { notice: string; clearSearch: boolean }) => {
           if (change.clearSearch) { setSearch(""); setProjectPage(0); }
+          setError("");
           setNotice(change.notice);
         },
       },
