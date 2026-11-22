@@ -9,8 +9,10 @@ import { z } from "zod";
 
 export {
   ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, jobErrorHint,
-  canRetryJob, queuedJobHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel,
+  PROJECT_SECTIONS, canRetryJob, projectLibraryPage, queuedJobHint, reconcileWorkspaceSelection,
+  selectWorkspaceAssets, selectionBytes, stageLabel,
 } from "./reconstruction-labels";
+export type { ProjectSection } from "./reconstruction-labels";
 
 export const ProfileSchema = z.enum(["fast", "balanced", "quality"]);
 export const JobStatusSchema = z.enum(["QUEUED", "LEASED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -21,6 +23,11 @@ export const AuthTokenSchema = z.object({
   access_token: z.string(),
   token_type: z.string(),
 });
+
+export const EmailCodePurposeSchema = z.enum(["login", "reset"]);
+
+/** The request-code route answers 202 for every address, registered or not. */
+export const EmailCodeAcceptedSchema = z.object({ status: z.literal("accepted") });
 
 export const UserSchema = z.object({
   id: z.string(),
@@ -304,6 +311,7 @@ export const NotificationCountSchema = z.object({
 export type Profile = z.infer<typeof ProfileSchema>;
 export type JobStatus = z.infer<typeof JobStatusSchema>;
 export type AuthToken = z.infer<typeof AuthTokenSchema>;
+export type EmailCodePurpose = z.infer<typeof EmailCodePurposeSchema>;
 export type User = z.infer<typeof UserSchema>;
 export type Project = z.infer<typeof ProjectSchema>;
 export type Asset = z.infer<typeof AssetSchema>;

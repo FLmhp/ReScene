@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, event, func, select, update
 
 from rescene_api import main
-from rescene_api.auth import hash_password, issue_token, verify_password
+from rescene_api.auth import hash_email_code, hash_password, issue_token, verify_password
 from rescene_api.config import Settings
 from rescene_api.db import SessionLocal, engine
 from rescene_api.main import app
@@ -21,6 +21,7 @@ from rescene_api.models import (
     Asset,
     AssetCleanup,
     AuditLog,
+    EmailAuthCode,
     JobStage,
     Notification,
     Project,
@@ -1741,3 +1742,158 @@ def test_job_logs_append_read_and_retention(monkeypatch) -> None:
             assert [item["message"] for item in trimmed] == ["tail one", "tail two"]
     finally:
         main.settings.cache_clear()
+
+
+def captured_codes(monkeypatch) -> list[tuple[str, str, str]]:
+    """Stand in for SMTP and record the plaintext the mail would have carried."""
+    sent: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        main, "deliver_email_code", lambda recipient, code, purpose: sent.append((recipient, code, purpose))
+    )
+    return sent
+
+
+def test_email_code_login_spends_the_mailed_code_once(monkeypatch) -> None:
+    sent = captured_codes(monkeypatch)
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            db.add(User(email="code@example.com", password_hash=hash_password("correct-horse")))
+            db.commit()
+
+        asked = client.post("/v1/auth/email-code", json={"email": "code@example.com", "purpose": "login"})
+        assert asked.status_code == 202
+        assert asked.json() == {"status": "accepted"}
+        assert len(sent) == 1
+        recipient, code, purpose = sent[0]
+        assert (recipient, purpose, len(code)) == ("code@example.com", "login", 6)
+
+        wrong = "000000" if code != "000000" else "111111"
+        denied = client.post("/v1/auth/email-code/login", json={"email": recipient, "code": wrong})
+        assert denied.status_code == 401
+        assert denied.headers["x-error-code"] == "auth.invalid_code"
+
+        signed_in = client.post("/v1/auth/email-code/login", json={"email": recipient, "code": code})
+        assert signed_in.status_code == 200
+        headers = {"Authorization": f"Bearer {signed_in.json()['access_token']}"}
+        assert client.get("/v1/auth/me", headers=headers).status_code == 200
+
+        replayed = client.post("/v1/auth/email-code/login", json={"email": recipient, "code": code})
+        assert replayed.status_code == 401
+        with SessionLocal() as db:
+            assert db.scalar(select(AuditLog.action).where(AuditLog.action == "auth.email_code_login"))
+
+
+def test_password_reset_code_replaces_the_password_and_retires_sessions(monkeypatch) -> None:
+    sent = captured_codes(monkeypatch)
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            db.add(User(email="reset@example.com", password_hash=hash_password("correct-horse")))
+            db.commit()
+        old_login = client.post("/v1/auth/login", json={"email": "reset@example.com", "password": "correct-horse"})
+        old_headers = {"Authorization": f"Bearer {old_login.json()['access_token']}"}
+
+        assert (
+            client.post("/v1/auth/email-code", json={"email": "reset@example.com", "purpose": "reset"}).status_code
+            == 202
+        )
+        assert len(sent) == 1
+        _, code, purpose = sent[0]
+        assert purpose == "reset"
+
+        reset = client.post(
+            "/v1/auth/password-reset",
+            json={"email": "reset@example.com", "code": code, "new_password": "correct-horse-battery"},
+        )
+        assert reset.status_code == 200
+        new_headers = {"Authorization": f"Bearer {reset.json()['access_token']}"}
+        assert client.get("/v1/auth/me", headers=new_headers).status_code == 200
+        assert client.get("/v1/auth/me", headers=old_headers).status_code == 401
+        assert (
+            client.post("/v1/auth/login", json={"email": "reset@example.com", "password": "correct-horse"}).status_code
+            == 401
+        )
+        assert (
+            client.post(
+                "/v1/auth/login", json={"email": "reset@example.com", "password": "correct-horse-battery"}
+            ).status_code
+            == 200
+        )
+        with SessionLocal() as db:
+            assert db.scalar(select(AuditLog.action).where(AuditLog.action == "auth.password_reset"))
+
+
+def test_unknown_address_gets_the_same_answer_without_mail(monkeypatch) -> None:
+    sent = captured_codes(monkeypatch)
+    with TestClient(app) as client:
+        asked = client.post("/v1/auth/email-code", json={"email": "nobody@example.com", "purpose": "login"})
+        assert asked.status_code == 202
+        assert asked.json() == {"status": "accepted"}
+        assert sent == []
+        denied = client.post("/v1/auth/email-code/login", json={"email": "nobody@example.com", "code": "123456"})
+        assert denied.status_code == 401
+        assert denied.headers["x-error-code"] == "auth.invalid_code"
+
+
+def test_resend_cooldown_and_hourly_cap_keep_one_mail(monkeypatch) -> None:
+    sent = captured_codes(monkeypatch)
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            db.add(User(email="throttle@example.com", password_hash=hash_password("correct-horse")))
+            db.commit()
+
+        for _ in range(2):
+            response = client.post("/v1/auth/email-code", json={"email": "throttle@example.com", "purpose": "login"})
+            assert response.status_code == 202
+        assert len(sent) == 1
+
+        monkeypatch.setenv("RESCENE_EMAIL_CODE_COOLDOWN_SECONDS", "0")
+        main.settings.cache_clear()
+        try:
+            for _ in range(6):
+                response = client.post(
+                    "/v1/auth/email-code", json={"email": "throttle@example.com", "purpose": "login"}
+                )
+                assert response.status_code == 202
+            assert len(sent) == 1 + 4
+        finally:
+            main.settings.cache_clear()
+
+
+def test_expired_and_exhausted_codes_are_refused(monkeypatch) -> None:
+    sent = captured_codes(monkeypatch)
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            user = User(email="expire@example.com", password_hash=hash_password("correct-horse"))
+            db.add(user)
+            db.flush()
+            db.add(
+                EmailAuthCode(
+                    user_id=user.id,
+                    purpose="login",
+                    code_hash=hash_email_code(user.id, "login", "135790"),
+                    expires_at=now() - timedelta(minutes=1),
+                )
+            )
+            db.commit()
+
+        expired = client.post("/v1/auth/email-code/login", json={"email": "expire@example.com", "code": "135790"})
+        assert expired.status_code == 401
+        assert expired.headers["x-error-code"] == "auth.invalid_code"
+
+        monkeypatch.setenv("RESCENE_EMAIL_CODE_COOLDOWN_SECONDS", "0")
+        main.settings.cache_clear()
+        try:
+            assert (
+                client.post("/v1/auth/email-code", json={"email": "expire@example.com", "purpose": "login"}).status_code
+                == 202
+            )
+        finally:
+            main.settings.cache_clear()
+        _, code, _ = sent[-1]
+        wrong = "000000" if code != "000000" else "111111"
+        for _ in range(5):
+            denied = client.post("/v1/auth/email-code/login", json={"email": "expire@example.com", "code": wrong})
+            assert denied.status_code == 401
+        exhausted = client.post("/v1/auth/email-code/login", json={"email": "expire@example.com", "code": code})
+        assert exhausted.status_code == 429
+        assert exhausted.headers["x-error-code"] == "auth.rate_limited"

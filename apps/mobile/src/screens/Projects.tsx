@@ -1,16 +1,25 @@
 import { explainError, isOfflineError } from "@rescene/api-client";
 import { LEGACY_QUEUE_NOTICE, QUEUE_PAUSED, newIdempotencyKey } from "@rescene/uploader";
-import { JOB_STATUS_LABELS } from "@rescene/schemas";
+import { JOB_STATUS_LABELS, projectLibraryPage } from "@rescene/schemas";
 import type { AppNotification, ProjectSummary, User } from "@rescene/schemas";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, Pressable, Text, View } from "react-native";
+import { AppState, Pressable, View } from "react-native";
 
 import { changeSessionPassword, client, currentQueueOwner, isQueueOwnerCurrent, queueClient } from "../api";
+import { AssetThumbnail } from "../AssetThumbnail";
 import { enqueue, hasLegacyQueue, replayQueued } from "../queue";
 import { useAppearance } from "../appearance";
-import { Button, Card, ErrorText, Field, Screen, useTextStyles } from "../ui";
+import { Button, Card, ErrorText, Field, ScaledText as Text, Screen, useTextStyles } from "../ui";
 
-export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
+type ProjectsPage = "projects" | "new-project" | "claim-invite" | "notifications" | "settings" | "account" | "password";
+const FORM_WIDTH = { maxWidth: 560, width: "100%" as const, alignSelf: "center" as const };
+
+export function ProjectsScreen({ page, onNavigate, onBack, onReturnToProject, onOpen, onSignOut, onAdmin, onJob, returnToProject }: {
+  page: ProjectsPage | null;
+  onNavigate: (page: ProjectsPage | "appearance") => void;
+  onBack: () => void;
+  onReturnToProject?: () => void;
+  returnToProject?: boolean;
   onOpen: (project: { id: string; name: string }) => void;
   onSignOut: () => void;
   onAdmin: () => void;
@@ -18,13 +27,15 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
 }) {
   const { theme } = useAppearance();
   const textStyles = useTextStyles();
-  const [panel, setPanel] = useState<"notifications" | "account" | null>(null);
+  const [projectPage, setProjectPage] = useState(0);
+  const [notificationLoading, setNotificationLoading] = useState(false);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState("");
   const [me, setMe] = useState<User | null>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [unread, setUnread] = useState(0);
+  const [notificationError, setNotificationError] = useState("");
   const [name, setName] = useState("");
   const [search, setSearch] = useState("");
   const [inviteCode, setInviteCode] = useState("");
@@ -39,13 +50,25 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
   const [notice, setNotice] = useState("");
   const [legacyQueue, setLegacyQueue] = useState(false);
 
-  const loadNotifications = useCallback(async () => {
+  const loadUnread = useCallback(async () => {
     try {
-      const [items, count] = await Promise.all([client.listNotifications(true, 5), client.notificationCount()]);
-      setNotifications(items);
-      setUnread(count);
+      setUnread(await client.notificationCount());
     } catch {
       // Notifications are advisory; a failure must not hide the project list.
+    }
+  }, []);
+
+  const loadNotifications = useCallback(async () => {
+    setNotificationLoading(true);
+    try {
+      const [items, count] = await Promise.all([client.listNotifications(false), client.notificationCount()]);
+      setNotifications(items);
+      setUnread(count);
+      setNotificationError("");
+    } catch (reason) {
+      setNotificationError(explainError(reason, "加载通知失败"));
+    } finally {
+      setNotificationLoading(false);
     }
   }, []);
 
@@ -63,7 +86,28 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
     }
   }, []);
 
-  useEffect(() => { void load(); void loadNotifications(); }, [load, loadNotifications]);
+  useEffect(() => { void load(); void loadUnread(); }, [load, loadUnread]);
+
+  const previousPage = useRef(page);
+  useEffect(() => {
+    const returning = previousPage.current !== page && page !== null;
+    previousPage.current = page;
+    if (!returning || page !== "projects") return;
+    void load();
+    void loadUnread();
+  }, [load, loadUnread, page]);
+
+  useEffect(() => {
+    setError("");
+    if (page === "notifications") void loadNotifications();
+  }, [page, loadNotifications]);
+
+  useEffect(() => {
+    if (page === "password") return;
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+  }, [page]);
 
   const replay = useCallback(() => {
     const owner = currentQueueOwner();
@@ -84,10 +128,11 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
     const subscription = AppState.addEventListener("change", (state) => {
       if (state !== "active") return;
       replay();
-      void loadNotifications();
+      void loadUnread();
+      if (page === "notifications") void loadNotifications();
     });
     return () => subscription.remove();
-  }, [loadNotifications, replay]);
+  }, [loadNotifications, loadUnread, page, replay]);
 
   async function create() {
     const trimmed = name.trim();
@@ -107,6 +152,8 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
       if (!isQueueOwnerCurrent(owner)) return;
       setName("");
       onOpen(project);
+      void load();
+      void loadUnread();
     } catch (reason) {
       if (!isQueueOwnerCurrent(owner)) return;
       if (isOfflineError(reason)) {
@@ -122,6 +169,7 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
           if (!isQueueOwnerCurrent(owner)) return;
           setName("");
           setNotice("已离线保存，联网后自动创建。");
+          onNavigate("projects");
         } catch {
           if (isQueueOwnerCurrent(owner)) setError("保存到本地队列失败。");
         }
@@ -142,7 +190,10 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
     setError("");
     setNotice("");
     try {
-      if (!await changeSessionPassword(currentPassword, newPassword)) return;
+      if (!await changeSessionPassword(currentPassword, newPassword)) {
+        setError("密码已更新，但无法保存设备登录信息。请检查系统安全存储后重新登录。");
+        return;
+      }
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
@@ -164,16 +215,20 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
     setNotice("");
     try {
       await client.acceptInvitation(code);
-      setInviteCode("");
-      setSearch("");
-      setNotice("已领取邀请。");
-      await load();
     } catch (reason) {
       setError(explainError(reason, "领取邀请失败"));
+      return;
     } finally {
       flight.current = false;
       setBusy(false);
     }
+    setInviteCode("");
+    setSearch("");
+    setProjectPage(0);
+    setNotice("已领取邀请。");
+    onNavigate("projects");
+    void load();
+    void loadUnread();
   }
 
   async function markAllRead() {
@@ -188,85 +243,119 @@ export function ProjectsScreen({ onOpen, onSignOut, onAdmin, onJob }: {
   async function openNotification(item: AppNotification) {
     try {
       await client.markNotificationsRead([item.id]);
-      await loadNotifications();
-      if (item.job_id && onJob) {
-        onJob(item.job_id);
-        return;
-      }
-      if (item.project_id) onOpen({ id: item.project_id, name: "" });
     } catch (reason) {
       setError(explainError(reason, "操作失败"));
+      return;
+    }
+    void loadNotifications();
+    if (item.job_id && onJob) {
+      onJob(item.job_id);
+      return;
+    }
+    if (item.project_id) {
+      const known = projects.find((project) => project.id === item.project_id);
+      onOpen({ id: item.project_id, name: known?.name ?? "" });
     }
   }
 
-  const visible = projects.filter((project) => project.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
+  if (page === null) return null;
+  const library = projectLibraryPage(projects, search, projectPage);
+  const titles: Record<ProjectsPage, string> = {
+    projects: "项目列表", "new-project": "新建项目", "claim-invite": "领取邀请",
+    notifications: "通知", settings: "设置", account: "账户", password: "修改密码",
+  };
+  const rootPage = page === "projects" || page === "notifications" || page === "settings";
   return (
-    <Screen scroll title="我的项目">
-      <Field label="搜索项目" value={search} onChangeText={setSearch} placeholder="按名称筛选" />
-      {loading ? <Text accessibilityLiveRegion="polite" style={textStyles.muted}>正在加载项目…</Text> : null}
-      {listError ? <Card>
-        <ErrorText>{listError}</ErrorText>
-        <Button label="重新加载" onPress={() => void load()} tone="ghost" />
-      </Card> : null}
-      {!loading && !listError && visible.length === 0 ? <Text style={textStyles.muted}>{search.trim() ? "没有匹配的项目。" : "还没有项目。创建第一个项目开始上传素材。"}</Text> : null}
-      {visible.map((item) => (
-        <Pressable
-          accessibilityHint="打开项目"
-          accessibilityRole="button"
-          key={item.id}
-          onPress={() => onOpen(item)}
-          style={{ padding: 18, gap: 8, borderRadius: 12, backgroundColor: theme.panel, borderWidth: 1, borderColor: theme.borderSoft, minHeight: 112 }}
-        >
-          <Text style={textStyles.heading}>{item.name}</Text>
-          <Text style={textStyles.muted}>{{ owner: "所有者", admin: "管理员", member: "成员", viewer: "只读" }[item.effective_role]} · {item.asset_count} 个素材 · {item.job_count} 个任务</Text>
-          <Text style={textStyles.muted}>{item.latest_job ? `最近任务：${JOB_STATUS_LABELS[item.latest_job.status]}` : "暂无任务"}</Text>
-          <Text style={{ color: theme.accent, fontWeight: "600" }}>打开项目</Text>
-        </Pressable>
-      ))}
-      <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-        <Button tone="ghost" label={`通知（${unread}）`} onPress={() => setPanel(panel === "notifications" ? null : "notifications")} />
-        <Button tone="ghost" label="账户设置" onPress={() => setPanel(panel === "account" ? null : "account")} />
-      </View>
-      {panel === "notifications" ? <Card>
-        <Text style={textStyles.body}>通知（{unread}）</Text>
-        <Button disabled={busy || (notifications.length === 0 && unread === 0)} label="全部已读" tone="ghost" onPress={() => void markAllRead()} />
-        {notifications.length === 0 ? <Text style={textStyles.muted}>暂无未读通知。</Text> : notifications.map((item) => (
-          <Pressable
-            accessibilityRole="button"
-            key={item.id}
-            onPress={() => void openNotification(item)}
-            style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: theme.border }}
-          >
-            <Text style={textStyles.body}>{item.kind === "announcement" ? "公告 · " : ""}{item.title}</Text>
-            {item.body ? <Text numberOfLines={2} style={textStyles.muted}>{item.body}</Text> : null}
-            <Text style={textStyles.muted}>{new Date(item.created_at).toLocaleString()}</Text>
+    <Screen
+      scroll
+      title={titles[page]}
+      onBack={rootPage ? (returnToProject ? onReturnToProject ?? onBack : undefined) : onBack}
+      backLabel={returnToProject && rootPage ? "返回项目" : "返回"}
+      navigation={rootPage ? <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap", paddingHorizontal: 16, paddingBottom: 12 }}>
+        {page !== "projects" ? <Button label="项目列表" tone="ghost" onPress={() => onNavigate("projects")} /> : null}
+        {page !== "notifications" ? <Button accessibilityLabel="通知" label={unread ? `通知（${unread}）` : "通知"} tone="ghost" onPress={() => onNavigate("notifications")} /> : null}
+        {page !== "settings" ? <Button label="设置" tone="ghost" onPress={() => onNavigate("settings")} /> : null}
+      </View> : undefined}
+    >
+      {error ? <ErrorText>{error}</ErrorText> : null}
+      {notice ? <Text accessibilityLiveRegion="polite" style={textStyles.muted}>{notice}</Text> : null}
+      {page === "projects" ? <>
+        <Field label="搜索项目" value={search} onChangeText={(value) => { setSearch(value); setProjectPage(0); }} placeholder="按名称筛选" />
+        <View style={{ flexDirection: "row", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+          <Button label="新建项目" onPress={() => onNavigate("new-project")} />
+          <Pressable accessibilityRole="button" onPress={() => onNavigate("claim-invite")}
+            style={{ justifyContent: "center", minHeight: 44, paddingHorizontal: 4 }}>
+            <Text style={{ color: theme.accent, fontSize: 16, lineHeight: 22, fontWeight: "600" }}>领取邀请</Text>
           </Pressable>
-        ))}
+        </View>
+        {loading ? <Text accessibilityLiveRegion="polite" style={textStyles.muted}>正在加载项目…</Text> : null}
+        {listError ? <Card><ErrorText>{listError}</ErrorText><Button label="重新加载" onPress={() => void load()} tone="ghost" /></Card> : null}
+        {!loading && !listError && library.count === 0 ? <Text style={textStyles.muted}>{search.trim() ? "没有匹配的项目。" : "还没有项目。创建第一个项目开始上传素材。"}</Text> : null}
+        {!listError ? library.items.map((item) => (
+          <Pressable accessibilityHint="打开项目" accessibilityLabel={item.name} accessibilityRole="button" key={item.id} onPress={() => onOpen(item)}
+            style={{ flexDirection: "row", gap: 12, padding: 18, borderRadius: 12, backgroundColor: theme.panel, borderWidth: 1, borderColor: theme.borderSoft, minHeight: 112 }}>
+            {item.cover ? <View style={{ width: 88, flexShrink: 0, alignSelf: "center", borderRadius: 8, overflow: "hidden" }}>
+              <AssetThumbnail asset={item.cover} />
+            </View> : null}
+            <View style={{ flex: 1, gap: 8, justifyContent: "center" }}>
+              <Text style={textStyles.heading}>{item.name}</Text>
+              <Text style={textStyles.muted}>{{ owner: "所有者", admin: "管理员", member: "成员", viewer: "只读" }[item.effective_role]} · {item.asset_count} 个素材 · {item.job_count} 个任务</Text>
+              <Text style={textStyles.muted}>{item.latest_job ? `最近任务：${JOB_STATUS_LABELS[item.latest_job.status]}` : "暂无任务"}</Text>
+            </View>
+          </Pressable>
+        )) : null}
+        {!listError && library.pages > 1 ? <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
+          <Button label="上一页" tone="ghost" disabled={library.index === 0} onPress={() => setProjectPage(library.index - 1)} />
+          <Text style={[textStyles.muted, textStyles.numeric]}>第 {library.index + 1} / {library.pages} 页</Text>
+          <Button label="下一页" tone="ghost" disabled={library.index + 1 >= library.pages} onPress={() => setProjectPage(library.index + 1)} />
+        </View> : null}
+        {legacyQueue ? <Text style={textStyles.muted}>{LEGACY_QUEUE_NOTICE}</Text> : null}
+      </> : null}
+      {page === "new-project" ? <Card style={FORM_WIDTH}>
+        <Field label="项目名称" value={name} onChangeText={setName} placeholder="例如：街角重建" />
+        <Button accessibilityLabel="创建项目" disabled={busy || !name.trim()} label="创建项目" onPress={create} />
       </Card> : null}
-      <Card>
-        <Text style={textStyles.body}>{me ? `${me.email} · ${me.is_admin ? "管理员" : "成员"}` : "正在加载账户…"}</Text>
-        <Field label="新项目" value={name} onChangeText={setName} placeholder="项目名称" />
-        <Button disabled={busy || !name.trim()} label="创建项目" onPress={create} />
-      </Card>
-      <Card>
+      {page === "claim-invite" ? <Card style={FORM_WIDTH}>
         <Field label="领取码" value={inviteCode} onChangeText={setInviteCode} autoComplete="off" />
         <Button disabled={busy || !inviteCode.trim()} label="领取邀请" onPress={acceptInvitation} />
-      </Card>
-      {error ? <Card>
-        <ErrorText>{error}</ErrorText>
-        <Button label="重新加载" onPress={() => void load()} tone="ghost" />
       </Card> : null}
-      {legacyQueue ? <Text style={textStyles.muted}>{LEGACY_QUEUE_NOTICE}</Text> : null}
-      {notice ? <Text accessibilityLiveRegion="polite" style={textStyles.muted}>{notice}</Text> : null}
-      {me?.is_admin ? <View><Button label="管理控制台" onPress={onAdmin} /></View> : null}
-      {panel === "account" ? <Card>
-        <Text style={textStyles.heading}>账户安全</Text>
+      {page === "notifications" ? <>
+        <Text style={textStyles.body}>{unread ? `${unread} 条未读` : "暂无未读通知"}</Text>
+        <Button disabled={busy || notificationLoading || unread === 0} label="全部已读" tone="ghost" onPress={() => void markAllRead()} />
+        {notificationError ? <>
+          <ErrorText>{notificationError}</ErrorText>
+          <Button label="重新加载" tone="ghost" onPress={() => void loadNotifications()} />
+        </> : null}
+        {!notificationError && !notificationLoading && notifications.length === 0 ? <Text style={textStyles.muted}>暂无通知。</Text> : null}
+        {!notificationError ? notifications.map((item) => (
+          <Pressable accessibilityRole="button" key={item.id} onPress={() => void openNotification(item)}
+            style={{ paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: theme.border, minHeight: 44 }}>
+            <Text style={textStyles.body}>{item.read_at ? "" : "未读 · "}{item.kind === "announcement" ? "公告 · " : ""}{item.title}</Text>
+            {item.body ? <Text numberOfLines={2} style={textStyles.muted}>{item.body}</Text> : null}
+            <Text style={[textStyles.muted, textStyles.numeric]}>{new Date(item.created_at).toLocaleString()}</Text>
+          </Pressable>
+        )) : null}
+        {notificationLoading ? <Text accessibilityLiveRegion="polite" style={textStyles.muted}>正在加载通知…</Text> : null}
+      </> : null}
+      {page === "settings" ? <Card style={FORM_WIDTH}>
+        <Button label="外观" tone="ghost" onPress={() => onNavigate("appearance")} />
+        <Button label="账户" tone="ghost" onPress={() => onNavigate("account")} />
+        {!listError && me?.is_admin ? <Button label="管理控制台" onPress={onAdmin} /> : null}
+      </Card> : null}
+      {page === "account" ? <Card style={FORM_WIDTH}>
+        {listError ? <>
+          <ErrorText>{listError}</ErrorText>
+          <Button label="重新加载" tone="ghost" onPress={() => void load()} />
+        </> : <Text style={textStyles.body}>{me ? `${me.email} · ${me.is_admin ? "管理员" : "成员"}` : "正在加载账户…"}</Text>}
+        <Button label="修改密码" onPress={() => onNavigate("password")} />
+        <Button label="退出登录" onPress={onSignOut} tone="ghost" />
+      </Card> : null}
+      {page === "password" ? <Card style={FORM_WIDTH}>
         <Field label="当前密码" value={currentPassword} onChangeText={setCurrentPassword} secureTextEntry autoComplete="current-password" />
         <Field label="新密码（至少 12 位）" value={newPassword} onChangeText={setNewPassword} secureTextEntry autoComplete="new-password" />
         <Field label="确认新密码" value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry autoComplete="new-password" />
         <Button disabled={busy || !currentPassword || newPassword.length < 12 || !confirmPassword} label="更新密码" onPress={() => void changePassword()} />
       </Card> : null}
-      <View><Button label="退出登录" onPress={onSignOut} tone="ghost" /></View>
     </Screen>
   );
 }

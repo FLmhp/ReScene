@@ -19,24 +19,30 @@
   right: 1rem;
   margin: 0;
   padding: 0.6rem 0.8rem;
-  color: var(--fg, #f2f4f8);
-  background: var(--overlay, rgba(7, 8, 12, 0.78));
+  color: #f2f4f8;
+  background: rgba(7, 8, 12, 0.9);
   backdrop-filter: blur(18px);
-  border: 1px solid var(--border-soft, rgba(255, 255, 255, 0.14));
+  border: 1px solid #8291a4;
   border-radius: var(--radius-md, 14px);
 }
-.viewer-controls { position: absolute; bottom: 1rem; right: 1rem; display: flex; gap: var(--space-sm, 7px); }
+.viewer-controls { position: absolute; bottom: 16px; right: 16px; left: 16px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-sm, 7px); pointer-events: none; }
 .viewer-controls button {
   min-height: 44px;
   min-width: 44px;
   padding: 0.5rem 0.75rem;
-  color: var(--fg, #f2f4f8);
-  background: var(--overlay, rgba(7, 8, 12, 0.78));
+  color: #f2f4f8;
+  background: rgba(7, 8, 12, 0.9);
   backdrop-filter: blur(18px);
-  border: 1px solid var(--border-soft, rgba(255, 255, 255, 0.14));
+  border: 1px solid #8291a4;
   border-radius: var(--radius-md, 14px);
   cursor: pointer;
-  transition: border-color 160ms ease, background-color 160ms ease;
+  pointer-events: auto;
+  font: inherit;
+  transition: border-color 120ms ease;
 }
-.viewer-controls button:hover { border-color: var(--accent, currentColor); }
-.viewer-controls button:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 2px; }
+.viewer-controls button:hover { border-color: #eaf5f1; }
+.viewer-controls button:focus-visible, .viewer-message button:focus-visible { outline: 2px solid #eaf5f1; outline-offset: 2px; }
+:root[data-surface="solid"] :is(.viewer-message, .viewer-controls button) { background: #121821; backdrop-filter: none; }
+@media (prefers-reduced-transparency: reduce) {
+  .viewer-message, .viewer-controls button { background: #121821; backdrop-filter: none; }
+}

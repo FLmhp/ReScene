@@ -74,22 +74,154 @@ const ink = {
   },
 } satisfies Record<"light" | "dark", Palette>;
 
+/** Classical colourways are named with four-character phrases, colour word first. */
 export const COLORWAY_OPTIONS = [
-  { value: "jade", label: "青瓷" },
-  { value: "ultramarine", label: "群青" },
-  { value: "ink", label: "墨染" },
+  { value: "jade", label: "青瓷素影" },
+  { value: "ultramarine", label: "群青远山" },
+  { value: "ink", label: "墨染松烟" },
+  { value: "rouge", label: "胭脂海棠" },
+  { value: "cinnabar", label: "朱砂落印" },
+  { value: "ochre", label: "赭石秋峦" },
+  { value: "indigo", label: "靛青夜泊" },
+  { value: "custom", label: "自定主色" },
 ] as const;
 export type Colorway = (typeof COLORWAY_OPTIONS)[number]["value"];
+/** A device with no stored preference starts on the system theme and 群青远山. */
+export const DEFAULT_COLORWAY: Colorway = "ultramarine";
 export const COLORWAY_STORAGE_KEY = "rescene-colorway";
 
 const palettes = { jade: { light: lightColors, dark: darkColors }, ultramarine, ink };
+const primaryColors = { rouge: "#9E3150", cinnabar: "#B3483D", ochre: "#915A35", indigo: "#28536B" } as const;
 
-export function colorwayPreference(value: unknown): Colorway {
-  return value === "ultramarine" || value === "ink" ? value : "jade";
+/** Hue samples shown by the rounded preview squares; independent of the active theme. */
+const PALETTE_PRIMARIES: Record<Exclude<Colorway, "custom">, string> = {
+  jade: lightColors.accent,
+  ultramarine: ultramarine.light.accent,
+  ink: ink.light.accent,
+  ...primaryColors,
+};
+
+export function colorwayPrimary(colorway: Colorway, customPrimary?: string): string {
+  return colorway === "custom" ? normalizePrimary(customPrimary) ?? DEFAULT_PRIMARY : PALETTE_PRIMARIES[colorway];
+}
+export const DEFAULT_PRIMARY = "#28536B";
+export const DISPLAY_STORAGE_KEY = "rescene-display";
+export const FONT_SIZE_SCALES = { standard: 1, large: 1.15, "extra-large": 1.3 } as const;
+export type DisplayPreferences = {
+  colorway: Colorway;
+  primary: string;
+  fontSize: "standard" | "large" | "extra-large";
+  surface: "auto" | "solid";
+};
+
+export function normalizePrimary(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = /^#?([0-9a-fA-F]{6})$/.exec(value.trim());
+  return match ? `#${match[1].toUpperCase()}` : null;
 }
 
-export function resolvePalette(colorway: Colorway, dark: boolean): Palette {
-  return palettes[colorway][dark ? "dark" : "light"];
+export function colorwayPreference(value: unknown): Colorway {
+  return COLORWAY_OPTIONS.some(option => option.value === value) ? value as Colorway : DEFAULT_COLORWAY;
+}
+
+export function displayPreferences(value: unknown, legacyColorway?: unknown): DisplayPreferences {
+  if (typeof value === "string") {
+    try { value = JSON.parse(value); } catch { value = null; }
+  }
+  const data = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+  return {
+    colorway: COLORWAY_OPTIONS.some(option => option.value === data.colorway)
+      ? data.colorway as Colorway : colorwayPreference(legacyColorway),
+    primary: normalizePrimary(data.primary) ?? DEFAULT_PRIMARY,
+    fontSize: data.fontSize === "large" || data.fontSize === "extra-large" ? data.fontSize : "standard",
+    surface: data.surface === "solid" ? "solid" : "auto",
+  };
+}
+
+type RGB = [number, number, number];
+const rgb = (hex: string): RGB => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)) as RGB;
+const hex = (channels: RGB): string => `#${channels.map(c => c.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+const mix = (from: RGB, to: RGB, amount: number): RGB => from.map((c, i) => Math.round(c * (1 - amount) + to[i] * amount)) as RGB;
+const WHITE: RGB = [255, 255, 255];
+const BLACK: RGB = [0, 0, 0];
+function luminance(color: RGB): number {
+  const linear = color.map(channel => {
+    const value = channel / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+}
+function contrast(a: RGB, b: RGB): number {
+  const x = luminance(a), y = luminance(b);
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+}
+function legible(base: RGB, direction: RGB, backgrounds: RGB[]): RGB {
+  for (let step = 0; step <= 100; step++) {
+    const candidate = mix(base, direction, step / 100);
+    if (backgrounds.every(background => contrast(candidate, background) >= 4.5)) return candidate;
+  }
+  return direction;
+}
+
+export function deriveMonochromePalette(primary: string, dark: boolean): Palette {
+  const source = rgb(normalizePrimary(primary) ?? DEFAULT_PRIMARY);
+  const w = (p: number) => mix(WHITE, source, p / 100);
+  const b = (p: number) => mix(BLACK, source, p / 100);
+  const bg = dark ? b(13) : w(4);
+  let bgDeep = dark ? b(7) : w(15);
+  let bgSoft = dark ? b(28) : w(2);
+  if (Math.max(...bgSoft.map((channel, i) => Math.abs(channel - bgDeep[i]))) < 8) {
+    if (dark) bgSoft = mix(bgSoft, WHITE, 0.08);
+    else bgDeep = mix(bgDeep, BLACK, 0.08);
+  }
+  const panel = dark ? b(18) : w(1);
+  const panelAlt = dark ? b(13) : w(5);
+  const surface = dark ? b(17) : w(3);
+  const surfaceStrong = dark ? b(25) : w(14);
+  const backgrounds = [bg, bgDeep, bgSoft, panel, panelAlt, surface, surfaceStrong];
+  const direction = dark ? WHITE : BLACK;
+  const text = (base: RGB) => hex(legible(base, direction, backgrounds));
+  const onAccent = dark ? BLACK : WHITE;
+  const accent = (base: RGB) => hex(legible(base, direction, [...backgrounds, onAccent]));
+  return {
+    ...(dark ? darkColors : lightColors),
+    bg: hex(bg), bgDeep: hex(bgDeep), bgSoft: hex(bgSoft), panel: hex(panel),
+    panelAlt: hex(panelAlt), surface: hex(surface), surfaceStrong: hex(surfaceStrong),
+    border: hex(dark ? b(62) : b(45)), borderSoft: hex(dark ? b(38) : w(23)),
+    divider: hex(dark ? b(25) : w(11)), fg: text(dark ? w(8) : b(20)),
+    muted: text(dark ? w(26) : b(34)), accent: accent(dark ? w(28) : b(52)),
+    accentStrong: accent(dark ? w(20) : b(42)), accentAlt: accent(dark ? w(24) : b(46)),
+    onAccent: hex(onAccent),
+  };
+}
+
+export function resolvePalette(colorway: Colorway, dark: boolean, customPrimary?: string): Palette {
+  if (colorway === "jade" || colorway === "ultramarine" || colorway === "ink") {
+    return palettes[colorway][dark ? "dark" : "light"];
+  }
+  return deriveMonochromePalette(colorway === "custom" ? customPrimary ?? DEFAULT_PRIMARY : primaryColors[colorway], dark);
+}
+
+export function paletteCssVariables(palette: Palette): Record<`--${string}`, string> {
+  const result: Record<`--${string}`, string> = {};
+  for (const key of Object.keys(darkColors) as (keyof Palette)[]) {
+    const name = key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
+    result[`--${name}`] = palette[key];
+  }
+  return result;
+}
+
+export function applyDisplayToRoot(root: HTMLElement, dark: boolean, display: DisplayPreferences): void {
+  const normalized = displayPreferences(display);
+  root.dataset.theme = dark ? "dark" : "light";
+  root.dataset.colorway = normalized.colorway;
+  root.dataset.primary = normalized.primary;
+  root.dataset.fontSize = normalized.fontSize;
+  root.dataset.surface = normalized.surface;
+  for (const [name, value] of Object.entries(paletteCssVariables(resolvePalette(normalized.colorway, dark, normalized.primary)))) {
+    root.style.setProperty(name, value);
+  }
 }
 
 export const colors = darkColors;

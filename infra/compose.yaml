@@ -50,6 +50,13 @@ services:
       RESCENE_OSS_BUCKET: ${RESCENE_OSS_BUCKET}
       RESCENE_OSS_ACCESS_KEY_ID: ${RESCENE_OSS_ACCESS_KEY_ID}
       RESCENE_OSS_ROLE_ARN: ${RESCENE_OSS_ROLE_ARN}
+      RESCENE_ENV: ${RESCENE_ENV:-production}
+      RESCENE_SMTP_HOST: ${RESCENE_SMTP_HOST:-}
+      RESCENE_SMTP_PORT: ${RESCENE_SMTP_PORT:-465}
+      RESCENE_SMTP_SECURITY: ${RESCENE_SMTP_SECURITY:-ssl}
+      RESCENE_SMTP_USERNAME: ${RESCENE_SMTP_USERNAME:-}
+      RESCENE_SMTP_FROM: ${RESCENE_SMTP_FROM:-}
+      RESCENE_SMTP_PASSWORD: ${RESCENE_SMTP_PASSWORD:-}
     secrets: [db_password, jwt_secret, worker_token, admin_password, oss_access_key_secret]
     depends_on:
       db: { condition: service_healthy }

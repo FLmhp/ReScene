@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Image, Pressable, Text } from "react-native";
+import { Image, Pressable } from "react-native";
+import { ScaledText as Text } from "./ui";
 import type { Asset } from "@rescene/schemas";
 import { client } from "./api";
 import { useAppearance } from "./appearance";
@@ -19,6 +20,6 @@ export function AssetThumbnail({ asset }: { asset: Asset }) {
   }, [asset.id, eligible, attempt]);
   return <Pressable disabled={!failed} accessibilityRole={failed ? "button" : undefined} accessibilityLabel={failed ? `重试预览 ${asset.filename}` : undefined} onPress={() => { setUrl(""); setAttempt((value) => value + 1); }} style={{ width: "100%", aspectRatio: 4 / 3, overflow: "hidden", backgroundColor: theme.bgDeep, alignItems: "center", justifyContent: "center" }}>
     {url && !failed ? <Image accessibilityLabel={asset.filename} source={{ uri: url }} resizeMode="cover" style={{ width: "100%", height: "100%" }} onError={() => setFailed(true)} /> :
-      <Text style={{ color: theme.muted, fontSize: 13 }}>{failed ? "重试预览" : eligible ? "图片" : "文件"}</Text>}
+      <Text style={{ color: theme.muted, fontSize: 14, lineHeight: 20 }}>{failed ? "重试预览" : eligible ? "图片" : "文件"}</Text>}
   </Pressable>;
 }

@@ -23,7 +23,7 @@ export function AdminConsole({ client, onMessage }: AdminConsoleProps) {
 
   return (
     <div className="admin-console">
-      <h2>管理控制台</h2>
+      <h1 tabIndex={-1}>管理控制台</h1>
       <div className="admin-tabs" role="tablist">
         {TABS.map((item) => (
           <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} onClick={() => setTab(item.id)}>
@@ -48,9 +48,13 @@ function UsersTab({ client, onMessage }: AdminConsoleProps) {
   const [directory, setDirectory] = useState<AdminUserPage | null>(null);
   const [busy, setBusy] = useState(false);
   const request = useRef(0);
-  const [detailId, setDetailId] = useState("");
-  const [detail, setDetail] = useState<AdminUserDetail | null>(null);
-  const [passwordFor, setPasswordFor] = useState("");
+  const [openBlock, setOpenBlock] = useState<
+    | { kind: "detail"; userId: string; detail: AdminUserDetail | null }
+    | { kind: "password"; userId: string }
+    | { kind: "create" }
+    | null
+  >(null);
+  const detailRequest = useRef(0);
   const [password, setPassword] = useState("");
   const [createEmail, setCreateEmail] = useState("");
   const [createPassword, setCreatePassword] = useState("");
@@ -91,6 +95,26 @@ function UsersTab({ client, onMessage }: AdminConsoleProps) {
     void action().catch((error: unknown) => onMessage(explainError(error, "操作失败")));
   }
 
+  useEffect(() => () => { detailRequest.current += 1; }, []);
+
+  function showDetail(userId: string) {
+    const id = ++detailRequest.current;
+    setPassword("");
+    if (openBlock?.kind === "detail" && openBlock.userId === userId) {
+      setOpenBlock(null);
+      return;
+    }
+    setOpenBlock({ kind: "detail", userId, detail: null });
+    void client.getUser(userId).then((detail) => {
+      if (id === detailRequest.current) setOpenBlock({ kind: "detail", userId, detail });
+    }).catch((error: unknown) => {
+      if (id === detailRequest.current) {
+        setOpenBlock(null);
+        onMessage(explainError(error, "操作失败"));
+      }
+    });
+  }
+
   function submitCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     run(async () => {
@@ -125,10 +149,10 @@ function UsersTab({ client, onMessage }: AdminConsoleProps) {
           <div className="user-row" key={user.id}>
             <div>
               <span>{user.email} · {user.is_admin ? "管理员" : "成员"} · {user.active ? "启用" : "已停用"}</span>
-              {detailId === user.id && detail ? (
-                detail.memberships.length === 0 ? <small className="muted">未加入任何项目</small> : (
+              {openBlock?.kind === "detail" && openBlock.userId === user.id && openBlock.detail ? (
+                openBlock.detail.memberships.length === 0 ? <small className="muted">未加入任何项目</small> : (
                   <ul className="memberships">
-                    {detail.memberships.map((membership) => (
+                    {openBlock.detail.memberships.map((membership) => (
                       <li key={membership.project_id}><small>{membership.name} · {membership.role}</small></li>
                     ))}
                   </ul>
@@ -137,14 +161,14 @@ function UsersTab({ client, onMessage }: AdminConsoleProps) {
             </div>
             <div className="user-actions">
               <button type="button" disabled={stale} onClick={() => run(async () => { await client.updateUser(user.id, { active: !user.active }); await load(); })}>{user.active ? "停用" : "启用"}</button>
-              <button type="button" disabled={stale} onClick={() => { setPasswordFor(passwordFor === user.id ? "" : user.id); setPassword(""); }}>重置密码</button>
-              <button type="button" disabled={stale} onClick={() => run(async () => { if (detailId === user.id) { setDetailId(""); setDetail(null); return; } setDetail(await client.getUser(user.id)); setDetailId(user.id); })}>{detailId === user.id ? "收起详情" : "详情"}</button>
+              <button type="button" disabled={stale} onClick={() => { detailRequest.current += 1; setOpenBlock(openBlock?.kind === "password" && openBlock.userId === user.id ? null : { kind: "password", userId: user.id }); setPassword(""); }}>重置密码</button>
+              <button type="button" disabled={stale} onClick={() => showDetail(user.id)}>{openBlock?.kind === "detail" && openBlock.userId === user.id ? "收起详情" : "详情"}</button>
             </div>
-            {passwordFor === user.id ? (
+            {openBlock?.kind === "password" && openBlock.userId === user.id ? (
               <div className="admin-inline">
                 <input aria-label={`${user.email} 的新密码`} type="password" minLength={12} placeholder="新密码（至少 12 位）" value={password} onChange={(event) => setPassword(event.target.value)} />
-                <button type="button" disabled={stale || password.length < 12} onClick={() => run(async () => { await client.resetUserPassword(user.id, password); setPassword(""); setPasswordFor(""); onMessage("密码已重置"); })}>确认重置</button>
-                <button type="button" onClick={() => { setPasswordFor(""); setPassword(""); }}>取消</button>
+                <button type="button" disabled={stale || password.length < 12} onClick={() => { const id = detailRequest.current; run(async () => { await client.resetUserPassword(user.id, password); if (id === detailRequest.current) { setOpenBlock(null); setPassword(""); } onMessage("密码已重置"); }); }}>确认重置</button>
+                <button type="button" onClick={() => { detailRequest.current += 1; setOpenBlock(null); setPassword(""); }}>取消</button>
               </div>
             ) : null}
           </div>
@@ -156,14 +180,16 @@ function UsersTab({ client, onMessage }: AdminConsoleProps) {
         <span className="quota">第 {page + 1} / {pageCount} 页 · 共 {directory?.total ?? 0} 个账号</span>
         <button type="button" disabled={stale || !directory || (page + 1) * PAGE_SIZE >= directory.total} onClick={() => setPage((current) => current + 1)}>下一页</button>
       </div>
-      <details>
-        <summary>创建账号</summary>
-        <form onSubmit={submitCreate}>
-          <label>邮箱<input type="email" required value={createEmail} onChange={(event) => setCreateEmail(event.target.value)} /></label>
-          <label>初始密码（至少 12 位）<input type="password" required minLength={12} value={createPassword} onChange={(event) => setCreatePassword(event.target.value)} /></label>
-          <label><input type="checkbox" checked={createAdmin} onChange={(event) => setCreateAdmin(event.target.checked)} />管理员</label>
-          <button type="submit">创建账号</button>
-        </form>
+      <details open={openBlock?.kind === "create"}>
+        <summary onClick={(event) => { event.preventDefault(); detailRequest.current += 1; setPassword(""); setOpenBlock(openBlock?.kind === "create" ? null : { kind: "create" }); }}>创建账号</summary>
+        {openBlock?.kind === "create" ? (
+          <form onSubmit={submitCreate}>
+            <label>邮箱<input type="email" required value={createEmail} onChange={(event) => setCreateEmail(event.target.value)} /></label>
+            <label>初始密码（至少 12 位）<input type="password" required minLength={12} value={createPassword} onChange={(event) => setCreatePassword(event.target.value)} /></label>
+            <label><input type="checkbox" checked={createAdmin} onChange={(event) => setCreateAdmin(event.target.checked)} />管理员</label>
+            <button type="submit">创建账号</button>
+          </form>
+        ) : null}
       </details>
     </section>
   );

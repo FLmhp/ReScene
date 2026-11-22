@@ -96,12 +96,12 @@ export function queueClient(owner: QueueOwner): ResceneClient {
   return new ResceneClient(apiBaseUrl, expected.token, sessionFetch(expected, owner));
 }
 
-export async function authenticate(mode: "login" | "register", email: string, password: string) {
+async function establishSession(action: (auth: ResceneClient) => Promise<{ access_token: string }>) {
   clearToken();
   const expected = session.snapshot();
   const auth = new ResceneClient(apiBaseUrl, null, miniappFetch);
   try {
-    const { access_token: token } = await auth[mode](email, password);
+    const { access_token: token } = await action(auth);
     if (!session.matches(expected)) return null;
     const user = await auth.getMe();
     return persistCredential(expected, { token, owner: user.id }) ? user : null;
@@ -109,6 +109,23 @@ export async function authenticate(mode: "login" | "register", email: string, pa
     if (session.matches(expected)) throw reason;
     return null;
   }
+}
+
+export function authenticate(mode: "login" | "register", email: string, password: string) {
+  return establishSession((auth) => auth[mode](email, password));
+}
+
+export async function sendEmailCode(email: string, purpose: "login" | "reset"): Promise<void> {
+  const auth = new ResceneClient(apiBaseUrl, null, miniappFetch);
+  await auth.requestEmailCode(email, purpose);
+}
+
+export function authenticateWithCode(email: string, code: string) {
+  return establishSession((auth) => auth.loginWithEmailCode(email, code));
+}
+
+export function resetPasswordWithCode(email: string, code: string, newPassword: string) {
+  return establishSession((auth) => auth.resetPasswordWithEmailCode(email, code, newPassword));
 }
 
 export async function verifySession() {

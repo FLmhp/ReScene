@@ -223,6 +223,25 @@ class JobLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
 
 
+class EmailAuthCode(Base):
+    """One short-lived, single-use code per account, purpose and issue.
+
+    Only the HMAC digest is stored; `attempts` bounds online guessing and the
+    row count in the last hour bounds how often one account can be mailed.
+    """
+
+    __tablename__ = "email_auth_codes"
+    __table_args__ = (Index("ix_email_auth_codes_user_id_purpose_created_at", "user_id", "purpose", "created_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    purpose: Mapped[str] = mapped_column(String(20))
+    code_hash: Mapped[str] = mapped_column(String(64))
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ProjectInvitation(Base):
     __tablename__ = "project_invitations"
     __table_args__ = (UniqueConstraint("project_id", "email", name="uq_project_invitations_project_email"),)

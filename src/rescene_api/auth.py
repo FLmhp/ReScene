@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import os
+import secrets
 from datetime import UTC, datetime, timedelta
 
 import jwt
@@ -30,6 +31,17 @@ def verify_password(password: str, encoded: str) -> bool:
         return hmac.compare_digest(actual, expected)
     except (ValueError, TypeError):
         return False
+
+
+def generate_email_code() -> str:
+    """Six decimal digits; 900k values keep the online guess rate low enough for 5 attempts."""
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def hash_email_code(user_id: str, purpose: str, code: str) -> str:
+    """Digest a code with the server secret so the database never holds a usable code."""
+    message = f"{user_id}:{purpose}:{code}".encode()
+    return hmac.new(settings().jwt_secret.encode(), message, hashlib.sha256).hexdigest()
 
 
 def issue_token(user_id: str, version: int = 0) -> str:

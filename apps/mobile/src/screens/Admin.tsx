@@ -8,12 +8,12 @@ import type {
   AuditPage,
 } from "@rescene/schemas";
 import { useEffect, useState } from "react";
-import { Alert, Pressable, Text, View } from "react-native";
+import { Alert, Pressable, View } from "react-native";
 
 import { client } from "../api";
 import { spacing } from "../theme";
 import { useAppearance } from "../appearance";
-import { Button, Card, ErrorText, Field, Screen, Segmented, useTextStyles } from "../ui";
+import { Button, Card, ErrorText, Field, ScaledText as Text, Screen, Segmented, useTextStyles } from "../ui";
 
 type AdminTab = "users" | "announcements" | "logs";
 type StatusFilter = "all" | "active" | "inactive";
@@ -192,6 +192,9 @@ export function AdminScreen({ onBack }: { onBack: () => void }) {
   }
 
   async function openDetail(userId: string) {
+    if (busy) return;
+    setPasswordFor(null);
+    setPassword("");
     if (detailFor === userId) {
       setDetailFor(null);
       setDetail(null);
@@ -215,7 +218,7 @@ export function AdminScreen({ onBack }: { onBack: () => void }) {
   const auditRows: AuditEntry[] = audit?.items ?? [];
 
   return (
-    <Screen scroll title="管理">
+    <Screen scroll title="管理控制台" onBack={onBack}>
       <Segmented value={tab} onChange={setTab} options={TABS} />
       {error ? (
         <Card>
@@ -267,7 +270,10 @@ export function AdminScreen({ onBack }: { onBack: () => void }) {
                     <Button
                       label={passwordFor === user.id ? "取消" : "重置密码"}
                       tone="ghost"
+                      disabled={busy}
                       onPress={() => {
+                        setDetailFor(null);
+                        setDetail(null);
                         setPasswordFor(passwordFor === user.id ? null : user.id);
                         setPassword("");
                       }}
@@ -277,6 +283,7 @@ export function AdminScreen({ onBack }: { onBack: () => void }) {
                     <Button
                       label={detailFor === user.id ? "收起" : "详情"}
                       tone="ghost"
+                      disabled={busy}
                       onPress={() => void openDetail(user.id)}
                     />
                   </View>
@@ -447,7 +454,6 @@ export function AdminScreen({ onBack }: { onBack: () => void }) {
         </>
       ) : null}
 
-      <Button label="返回" tone="ghost" onPress={onBack} />
     </Screen>
   );
 }

@@ -2,7 +2,7 @@
 
 import { ResceneClient } from "@rescene/api-client";
 import { Viewer } from "@rescene/viewer";
-import { BrandMark } from "@rescene/workbench";
+import Link from "next/link";
 import { use, useCallback, useEffect, useState } from "react";
 import { API_BASE as API } from "../../env";
 import { messageOf, pickScene } from "../../scene";
@@ -38,8 +38,8 @@ export default function SharedScene({ params }: { params: Promise<{ token: strin
   return (
     <main className="shared-scene">
       <header className="shared-brand">
-        <span className="mark"><BrandMark size={20} /></span>
-        <strong>ReScene</strong>
+        <Link href="/" prefetch={false}>返回工作台</Link>
+        <h1>共享场景</h1>
       </header>
       {url ? (
         <Viewer

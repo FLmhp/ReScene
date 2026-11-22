@@ -6,7 +6,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   StatusBar,
-  Text,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -24,17 +23,19 @@ import {
 } from "./api";
 import { AdminScreen } from "./screens/Admin";
 import { JobScreen } from "./screens/Job";
-import { LoginScreen } from "./screens/Login";
+import { LoginScreen, type AuthMode } from "./screens/Login";
 import { ProjectScreen, type ProjectDraft } from "./screens/Project";
 import { ProjectsScreen } from "./screens/Projects";
 import { ViewerScreen } from "./screens/ViewerScreen";
 import { useAppearance } from "./appearance";
-import { Busy, Button, ErrorText, Screen } from "./ui";
+import { AppearanceScreen, Busy, Button, ErrorText, ScaledText as Text, Screen } from "./ui";
 
+type RootPage = "projects" | "new-project" | "claim-invite" | "notifications" | "settings" | "account" | "password";
+type JobPage = "job-logs" | "result" | "downloads" | "shares";
 type Route =
-  | { name: "projects" }
+  | { name: RootPage | "appearance" | "configure" | "project-management" | JobPage }
   | { name: "project"; id: string; label: string; draft?: ProjectDraft }
-  | { name: "job"; id: string }
+  | { name: "job"; id: string; entry: "job" | "result" }
   | { name: "viewer"; reconstructionId: string }
   | { name: "admin" };
 
@@ -43,20 +44,39 @@ type Session = "loading" | "signed-in" | "signed-out" | "offline";
 const RETRY_AFTER_MS = 5 * 60_000;
 const MAX_WAIT_MS = 6 * 60 * 60_000;
 
+const ROUTE_TITLES: Record<string, string> = {
+  projects: "项目列表",
+  "new-project": "新建项目",
+  "claim-invite": "领取邀请",
+  notifications: "通知",
+  settings: "设置",
+  appearance: "外观",
+  account: "账户",
+  password: "修改密码",
+  configure: "配置重建",
+  "project-management": "项目管理",
+  job: "任务详情",
+  "job-logs": "运行日志",
+  result: "成果详情",
+  downloads: "下载与校验",
+  shares: "分享管理",
+  viewer: "三维场景",
+  admin: "管理控制台",
+};
+
 function routeTitle(route: Route): string {
   if (route.name === "project") return route.label;
-  if (route.name === "job") return "重建任务";
-  if (route.name === "viewer") return "三维场景";
-  if (route.name === "admin") return "管理";
-  return "项目";
+  return ROUTE_TITLES[route.name] ?? "ReScene";
 }
 
 export function AppRoot() {
   const { theme, dark } = useAppearance();
   const [session, setSession] = useState<Session>("loading");
   const [routes, setRoutes] = useState<Route[]>([{ name: "projects" }]);
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [notice, setNotice] = useState("");
   const [revision, setRevision] = useState(0);
+  const [materialsRequest, setMaterialsRequest] = useState(0);
   const route = routes[routes.length - 1]!;
 
   const push = (next: Route) => setRoutes((current) => [...current, next]);
@@ -64,8 +84,15 @@ export function AppRoot() {
     () => setRoutes((current) => (current.length > 1 ? current.slice(0, -1) : current)),
     [],
   );
+  const backToProject = useCallback(() => setRoutes((current) => {
+    for (let index = current.length - 1; index >= 0; index -= 1) {
+      if (current[index]?.name === "project") return current.slice(0, index + 1);
+    }
+    return current;
+  }), []);
   const resetToLogin = useCallback((message: string) => {
     setRoutes([{ name: "projects" }]);
+    setAuthMode("login");
     setNotice(message);
     setSession("signed-out");
   }, []);
@@ -173,12 +200,24 @@ export function AppRoot() {
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
-      if (session !== "signed-in" || routes.length <= 1) return false;
-      back();
-      return true;
+      if (routes.length > 1 && (session === "signed-in" || session === "signed-out" || session === "offline")) {
+        const top = routes[routes.length - 1];
+        const projectBelow = routes.some((item) => item.name === "project");
+        if (session === "signed-in" && projectBelow && (top?.name === "settings" || top?.name === "notifications")) {
+          backToProject();
+        } else {
+          back();
+        }
+        return true;
+      }
+      if (session === "signed-out" && authMode !== "login") {
+        setAuthMode("login");
+        return true;
+      }
+      return false;
     });
     return () => subscription.remove();
-  }, [back, routes.length, session]);
+  }, [authMode, back, backToProject, routes, session]);
 
   useEffect(() => {
     if (session !== "signed-in") return;
@@ -217,17 +256,22 @@ export function AppRoot() {
       </Screen>
     );
   } else if (session === "offline") {
-    content = (
+    content = route.name === "appearance" ? <AppearanceScreen onBack={back} /> : (
       <Screen title="无法验证会话">
         <ErrorText>{notice || "无法连接服务器，请检查网络后重试。"}</ErrorText>
         <Text style={{ color: theme.muted }}>服务器地址：{apiBaseUrl}</Text>
         <Button label="重试" onPress={() => void bootstrap()} />
+        <Button label="外观" onPress={() => push({ name: "appearance" })} tone="ghost" />
         <Button label="清除本地会话" onPress={() => void forgetLocalSession()} tone="ghost" />
       </Screen>
     );
   } else if (session === "signed-out") {
-    content = (
+    content = <>
       <LoginScreen
+        active={route.name !== "appearance"}
+        mode={authMode}
+        onModeChange={setAuthMode}
+        onAppearance={() => push({ name: "appearance" })}
         notice={notice}
         onSignedIn={() => {
           setNotice("");
@@ -235,45 +279,77 @@ export function AppRoot() {
           setSession("signed-in");
         }}
       />
-    );
-  } else if (route.name === "admin") {
-    content = <AdminScreen onBack={back} />;
-  } else if (route.name === "viewer") {
-    content = <ViewerScreen onBack={back} reconstructionId={route.reconstructionId} />;
-  } else if (route.name === "job") {
-    content = (
-      <JobScreen
-        jobId={route.id}
-        onBack={back}
-        onReplaceAssets={(project) => setRoutes((current) => {
-          const parent = current.at(-2);
-          if (parent?.name === "project" && parent.id === project.id) return current.slice(0, -1);
-          return [...current.slice(0, -1), { name: "project", id: project.id, label: project.name }];
-        })}
-        onOpenScene={(reconstructionId) => push({ name: "viewer", reconstructionId })}
-      />
-    );
-  } else if (route.name === "project") {
-    content = (
-      <ProjectScreen
-        key={route.id}
-        onBack={back}
-        onJob={(id, draft) => setRoutes((current) => current.at(-1) === route
-          ? [...current.slice(0, -1), { ...route, draft }, { name: "job", id }]
-          : current)}
-        project={{ id: route.id, name: route.label }}
-        draft={route.draft}
-      />
-    );
+      {route.name === "appearance" && <AppearanceScreen onBack={back} />}
+    </>;
   } else {
-    content = (
+    const project = [...routes].reverse().find((item): item is Extract<Route, { name: "project" }> => item.name === "project");
+    const job = [...routes].reverse().find((item): item is Extract<Route, { name: "job" }> => item.name === "job");
+    const rootPage: RootPage | null = route.name === "projects" || route.name === "new-project" || route.name === "claim-invite" || route.name === "notifications" || route.name === "settings" || route.name === "account" || route.name === "password" ? route.name : null;
+    const projectPage = route.name === "project" || route.name === "configure" || route.name === "project-management" ? route.name : null;
+    const jobPage = route.name === "job" ? route.entry : route.name === "job-logs" || route.name === "result" || route.name === "downloads" || route.name === "shares" ? route.name : null;
+    const previousRoute = routes[routes.length - 2];
+    const projectBackLabel = previousRoute?.name === "notifications" ? "返回通知" : "返回项目列表";
+    const viewerBackLabel = previousRoute?.name === "result" ? "返回结果" : previousRoute?.name === "downloads" ? "返回下载" : "返回任务";
+    const jobBackLabel = previousRoute === undefined
+      ? "返回"
+      : previousRoute.name === "job"
+        ? "返回任务"
+        : previousRoute.name === "result"
+          ? "返回结果"
+          : previousRoute.name === "project"
+            ? job?.entry === "result" ? "返回结果" : "返回项目"
+            : previousRoute.name === "notifications" ? "返回通知" : "返回";
+    content = <>
       <ProjectsScreen
+        page={rootPage}
+        returnToProject={Boolean(project)}
+        onReturnToProject={backToProject}
+        onNavigate={(name) => name === "projects" ? setRoutes([{ name: "projects" }]) : push({ name })}
+        onBack={back}
         onAdmin={() => push({ name: "admin" })}
-        onJob={(id) => push({ name: "job", id })}
-        onOpen={(project) => push({ name: "project", id: project.id, label: project.name })}
+        onJob={(id) => push({ name: "job", id, entry: "job" })}
+        onOpen={(item) => setRoutes((current) => [...(current.at(-1)?.name === "new-project" ? current.slice(0, -1) : current), { name: "project", id: item.id, label: item.name }])}
         onSignOut={() => void signOut()}
       />
-    );
+      {project && <ProjectScreen
+        key={project.id}
+        page={projectPage}
+        backLabel={projectBackLabel}
+        materialsRequest={materialsRequest}
+        onBack={back}
+        onConfigure={() => push({ name: "configure" })}
+        onManagement={() => push({ name: "project-management" })}
+        onNavigateRoot={(name) => name === "projects" ? setRoutes([{ name: "projects" }]) : push({ name })}
+        onJob={(id, draft, entry) => setRoutes((current) => {
+          const index = current.findIndex((item) => item.name === "project" && item.id === project.id);
+          if (index < 0) return current;
+          const parent = current[index];
+          if (parent.name !== "project") return current;
+          return [...current.slice(0, index), { ...parent, draft }, { name: "job", id, entry }];
+        })}
+        project={{ id: project.id, name: project.label }}
+        draft={project.draft}
+      />}
+      {job && <JobScreen
+        key={job.id}
+        jobId={job.id}
+        page={jobPage}
+        backLabel={jobBackLabel}
+        onNavigate={(name) => push({ name })}
+        onBack={back}
+        onReplaceAssets={(item) => {
+          setMaterialsRequest((value) => value + 1);
+          setRoutes((current) => {
+            const index = current.findIndex((entry) => entry.name === "project" && entry.id === item.id);
+            return index >= 0 ? current.slice(0, index + 1) : [...current.slice(0, 1), { name: "project", id: item.id, label: item.name }];
+          });
+        }}
+        onOpenScene={(reconstructionId) => push({ name: "viewer", reconstructionId })}
+      />}
+      {route.name === "appearance" && <AppearanceScreen onBack={back} />}
+      {route.name === "admin" && <AdminScreen onBack={back} />}
+      {route.name === "viewer" && <ViewerScreen backLabel={viewerBackLabel} onBack={back} reconstructionId={route.reconstructionId} />}
+    </>;
   }
 
   return (

@@ -38,7 +38,7 @@ const modules = {
   'react-native-webview': { WebView: 'WebView' },
   '../api': { webBaseUrl: 'https://app.example.com', client: { getManifest: (id) => manifest(id) } },
   '../appearance': { useAppearance: () => ({ theme: { bg: '#fff' }, dark: false }) },
-  '../ui': { Button: 'Button', useTextStyles: () => ({ error: {} }) },
+  '../ui': { Button: 'Button', ScaledText: 'Text', useTextStyles: () => ({ error: {} }) },
 };
 const source = fs.readFileSync('apps/mobile/src/screens/ViewerScreen.tsx', 'utf8');
 const output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
@@ -135,6 +135,7 @@ async function tick() { await Promise.resolve(); await Promise.resolve(); }
       '@rescene/api-client': { ResceneApiError: class extends Error {}, ResceneClient: class {} },
       '@rescene/viewer': { Viewer: 'Viewer' },
       '@rescene/workbench': { BrandMark: 'BrandMark' },
+      'next/link': { default: 'Link' },
       '../env': { API_BASE: 'https://api.example.com' },
       '../scene': { messageOf: String, pickScene: () => '' },
     };

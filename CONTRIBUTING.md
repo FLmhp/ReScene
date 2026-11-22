@@ -48,6 +48,27 @@ export RESCENE_PUBLIC_WEB_URL=http://localhost:3000
 
 在另一个终端执行 `pnpm --filter rescene-web dev`，访问 `http://localhost:3000` 并自行注册账号。开发默认密钥只适合本机回环环境，不能用于公开部署。上传和 STS 依赖 OSS 配置，重建任务依赖 GPU Worker；启动 API 和 Web 不等于验证了完整链路。
 
+### 邮箱验证码联调
+
+登录页的「使用邮箱验证码登录」和「忘记密码」依赖 SMTP 投递。未配置 SMTP 时，开发环境（默认 `RESCENE_ENV=development`）把验证码写入 API 的 `WARNING` 日志，便于本机联调：
+
+```text
+SMTP is not configured; login code for you@example.com is 123456 (10-minute TTL, development log only)
+```
+
+需要真实投递时，在启动 API 前设置以下变量（示例为 QQ 邮箱的 SMTP 授权码，密码只放本机环境变量，不要写入仓库或提交）：
+
+```bash
+RESCENE_SMTP_HOST=smtp.qq.com
+RESCENE_SMTP_PORT=465
+RESCENE_SMTP_SECURITY=ssl          # starttls / ssl / none
+RESCENE_SMTP_USERNAME=you@qq.com
+RESCENE_SMTP_FROM=you@qq.com
+RESCENE_SMTP_PASSWORD=<SMTP 授权码>
+```
+
+`RESCENE_ENV=production` 时未配置 SMTP 只记录错误、不回显验证码；请求验证码接口仍返回 `202`，避免暴露邮箱是否注册。验证码登录、密码重置和限流的自动化用例见 `tests/test_api.py`（`-k "email_code or password_reset"`）。
+
 ### 独立官网
 
 `apps/site` 是静态 Vite 页面，不依赖 API、登录态或 GPU。开发使用 `pnpm --filter @rescene/site dev`（127.0.0.1:4320），生产构建为 `pnpm --filter @rescene/site build`，本地预览为 `pnpm --filter @rescene/site preview`（127.0.0.1:4321）。若 Windows 保留了该端口，可临时传入 `--port 14321`，不修改仓库默认端口。版本由根 `VERSION` 在构建时注入；修改后运行官网 typecheck/build，并在浏览器验证桌面、手机、无 JavaScript 导航与 FAQ。

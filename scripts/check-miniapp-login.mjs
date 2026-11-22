@@ -7,6 +7,7 @@ const dist = new URL("../apps/miniapp/dist/", import.meta.url);
 const app = JSON.parse(readFileSync(new URL("app.json", dist), "utf8"));
 assert.equal(app.entryPagePath, "pages/index/index");
 assert.equal(app.pages[0], app.entryPagePath);
+assert.ok(app.pages.includes("pages/focus/index"), "The library focus route must stay registered beside the login entry");
 assert.equal(app.lazyCodeLoading, undefined);
 // The WeChat module wrapper has a local fetch binding independent of globalThis.
 const context = createContext({ wx: {}, fetch: undefined, setTimeout, clearTimeout, URLSearchParams });
@@ -34,7 +35,7 @@ await runInContext(`
     const runtime = entries.find(([, factory]) => String(factory).includes("navigator:function()") && String(factory).includes("requestAnimationFrame:function()"));
     const entry = entries.find(([, factory]) => String(factory).includes('"rescene-session-expired"') && String(factory).includes('"rescene-token"'));
     const uploader = entries.find(([, factory]) => String(factory).includes("createOffscreenCanvas") && String(factory).includes("readFileSync"));
-    const navigation = entries.find(([, factory]) => String(factory).includes(".reLaunch({url:") && String(factory).includes('"/pages/index/index"'));
+    const navigation = entries.find(([, factory]) => String(factory).includes("reLaunch") && String(factory).includes('"/pages/index/index"'));
     const queue = entries.find(([, factory]) => String(factory).includes('"rescene-queue"') && String(factory).includes("getStorageInfoSync"));
     if (!taro || !runtime || !entry || !uploader || !navigation || !queue) throw new Error("Cannot locate built Taro, login, navigation, queue or upload modules");
     let homeUrl;
@@ -121,7 +122,7 @@ await runInContext(`
     const replay = Object.values(require(queue[0])).find(value => typeof value === "function" && String(value).includes(".replay("));
     if (!client || !authenticate || !currentOwner || !replay) throw new Error("Cannot locate compiled auth or queue API");
     globalThis.loginResult = (async () => {
-      const openHome = Object.values(require(navigation[0])).find(value => typeof value === "function");
+      const openHome = Object.values(require(navigation[0])).find(value => typeof value === "function" && String(value).includes("reLaunch"));
       await openHome();
       if (homeUrl !== "/pages/index/index") throw new Error("Stale entry did not return to the login route");
       const staleLogin = authenticate("login", "stale@example.org", "fixture-password");

@@ -25,6 +25,18 @@ class Settings:
     public_web_url: str = "https://app.rescene.xyz"
     auth_rate_limit: int = 10
     job_log_limit: int = 2000
+    environment: str = "development"
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_security: str = "starttls"
+    smtp_timeout_seconds: float = 10.0
+    email_code_ttl_minutes: int = 10
+    email_code_cooldown_seconds: int = 60
+    email_code_hourly_limit: int = 5
+    email_code_max_attempts: int = 5
 
 
 def _secret(name: str, file_name: str, default: str | None = None) -> str | None:
@@ -79,4 +91,16 @@ def settings() -> Settings:
         public_web_url=os.environ.get("RESCENE_PUBLIC_WEB_URL", "https://app.rescene.xyz"),
         auth_rate_limit=int(os.environ.get("RESCENE_AUTH_RATE_LIMIT", "10")),
         job_log_limit=int(os.environ.get("RESCENE_JOB_LOG_LIMIT", "2000")),
+        environment=os.environ.get("RESCENE_ENV", "development").strip().lower() or "development",
+        smtp_host=(os.environ.get("RESCENE_SMTP_HOST") or "").strip() or None,
+        smtp_port=int(os.environ.get("RESCENE_SMTP_PORT", "587")),
+        smtp_username=(os.environ.get("RESCENE_SMTP_USERNAME") or "").strip() or None,
+        smtp_password=_secret("RESCENE_SMTP_PASSWORD", "RESCENE_SMTP_PASSWORD_FILE"),
+        smtp_from=(os.environ.get("RESCENE_SMTP_FROM") or "").strip() or None,
+        smtp_security=os.environ.get("RESCENE_SMTP_SECURITY", "starttls").strip().lower() or "starttls",
+        smtp_timeout_seconds=float(os.environ.get("RESCENE_SMTP_TIMEOUT_SECONDS", "10")),
+        email_code_ttl_minutes=int(os.environ.get("RESCENE_EMAIL_CODE_TTL_MINUTES", "10")),
+        email_code_cooldown_seconds=int(os.environ.get("RESCENE_EMAIL_CODE_COOLDOWN_SECONDS", "60")),
+        email_code_hourly_limit=int(os.environ.get("RESCENE_EMAIL_CODE_HOURLY_LIMIT", "5")),
+        email_code_max_attempts=int(os.environ.get("RESCENE_EMAIL_CODE_MAX_ATTEMPTS", "5")),
     )

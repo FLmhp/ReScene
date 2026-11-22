@@ -42,10 +42,10 @@
         <h1 id="hero-title">照片与视频三维重建</h1>
         <p class="hero-description">上传图片或视频，选择三条重建路线之一，在 Viewer 浏览、下载或分享场景。</p>
         <div class="actions"><a class="button button-primary" href="https://app.rescene.xyz/">打开工作台</a><a class="button button-secondary" href="#results">查看重建成果</a></div>
-        <p class="hero-facts">FAST / BALANCED / QUALITY 三条路线 · <span>输出 SPZ / PLY</span></p>
+        <p class="hero-facts">FAST / BALANCED / QUALITY 3 条路线 · <span>输出 SPZ / PLY</span></p>
       </div>
       <figure class="media-frame hero-art" id="sample-inspector">
-        <div class="sample-window" id="sample-window"><img src="/media/viewer-reconstruction.webp" width="540" height="358" loading="eager" decoding="async" alt="ReScene Viewer 中渲染的三维重建场景"></div>
+        <div class="sample-window" id="sample-window"><img src="/media/viewer-reconstruction.webp" width="540" height="358" loading="eager" decoding="async" alt="ReScene Viewer 中渲染的三维重建场景"><canvas class="sample-points" aria-hidden="true" hidden></canvas></div>
         <figcaption class="sample-controls" hidden>
           <div class="sample-control-heading"><span>Viewer 场景样张</span><button class="sample-toggle" type="button" aria-controls="sample-window" aria-pressed="false">放大样张</button></div>
           <p id="sample-hint">静态样张。放大后可拖动或用方向按钮查看细节；按 Esc 还原。</p>
@@ -56,7 +56,7 @@
       </figure>
       </div>
     </section>
-    <section id="results" class="section" aria-labelledby="results-title">
+    <section id="results" class="section" tabindex="-1" aria-labelledby="results-title">
       <div class="container wrap">
       <div class="section-heading"><h2 id="results-title">重建结果与交付</h2><p>任务完成后，在工作台中查看和交付场景。</p></div>
       <div class="table-wrap" tabindex="0" role="region" aria-labelledby="results-title"><table><thead><tr><th scope="col">结果</th><th scope="col">使用方式</th></tr></thead><tbody>
@@ -66,9 +66,9 @@
       </tbody></table></div>
       </div>
     </section>
-    <section id="workflow" class="section" aria-labelledby="workflow-title">
+    <section id="workflow" class="section" tabindex="-1" aria-labelledby="workflow-title">
       <div class="container wrap">
-      <div class="section-heading"><h2 id="workflow-title">从素材到场景</h2><p>同一工作台也可在手机上通过导航抽屉进入项目。</p></div>
+      <div class="section-heading"><h2 id="workflow-title">从素材到场景</h2><p>上传素材后，在工作台跟踪任务与结果。</p></div>
       <div class="workflow-layout"><ol class="steps">
         <li><h3>素材</h3><p>上传一组图片或单个视频，选择准备好的素材。</p></li>
         <li><h3>任务</h3><p>选择路线并提交，在队列中跟踪阶段与日志。</p></li>
@@ -76,7 +76,7 @@
       </ol><figure class="media-frame mobile-shot"><img src="/media/mobile-drawer.webp" width="488" height="1055" loading="lazy" decoding="async" alt="手机工作台打开项目导航抽屉的截图"></figure></div>
       </div>
     </section>
-    <section id="technology" class="section" aria-labelledby="technology-title">
+    <section id="technology" class="section" tabindex="-1" aria-labelledby="technology-title">
       <div class="container wrap">
       <div class="section-heading"><h2 id="technology-title">三条重建路线</h2><p>根据素材规模和项目需求选择配置。</p></div>
       <div class="table-wrap" tabindex="0" role="region" aria-labelledby="technology-title">
@@ -90,16 +90,18 @@
         </table>
       </div>
       <div class="architecture"><div><h3>系统架构与任务调度</h3><p>客户端通过 API 提交任务和查询进度，PostgreSQL 保存任务状态。GPU Worker 主动领取任务并串行重建，输入与交付文件保存在私有 OSS。</p></div>
-        <figure class="architecture-frame" tabindex="0" aria-labelledby="architecture-title"><svg class="architecture-diagram" viewBox="0 0 600 250" role="img" aria-labelledby="architecture-title architecture-desc" xmlns="http://www.w3.org/2000/svg">
+        <div><div class="diagram-demo" hidden><button type="button" class="button button-secondary diagram-demo-button">演示任务流向</button><span>示意：不是实时任务状态</span><span class="diagram-status" role="status"></span></div><figure class="architecture-frame" tabindex="0" aria-labelledby="architecture-title"><svg class="architecture-diagram" viewBox="0 0 600 250" role="img" aria-labelledby="architecture-title architecture-desc" xmlns="http://www.w3.org/2000/svg">
           <title id="architecture-title">ReScene 系统架构</title><desc id="architecture-desc">客户端访问 API，API 连接 PostgreSQL。Worker 通过 API 领取任务。客户端和 Worker 访问私有 OSS。</desc>
-          <g class="diagram-lines" fill="none" stroke-width="2"><path d="M134 56H223 M343 56H438 M74 82v102h149 M513 158v-43H283V82 M343 184h95"/></g>
+          <g class="diagram-lines" fill="none" stroke-width="2"><path d="M134 56H223"/><path d="M343 56H438"/><path d="M74 82v102h149"/><path d="M513 158v-43H283V82"/><path d="M343 184h95"/></g>
+          <g class="diagram-flow" fill="none" aria-hidden="true"><path pathLength="100" d="M134 56H223"/><path pathLength="100" d="M343 56H438"/><path pathLength="100" d="M74 82v102h149"/><path pathLength="100" d="M513 158v-43H283V82"/><path pathLength="100" d="M343 184h95"/></g>
           <g class="diagram-boxes"><rect x="14" y="30" width="120" height="52" rx="10"/><rect x="223" y="30" width="120" height="52" rx="10"/><rect x="438" y="30" width="150" height="52" rx="10"/><rect x="223" y="158" width="120" height="52" rx="10"/><rect x="438" y="158" width="150" height="52" rx="10"/></g>
+          <g class="diagram-endpoints" aria-hidden="true"><circle cx="223" cy="56" r="5"/><circle cx="438" cy="56" r="5"/><circle cx="223" cy="184" r="5"/><circle cx="283" cy="82" r="5"/><circle cx="438" cy="184" r="5"/></g>
           <g class="diagram-text" font-size="21" text-anchor="middle"><text x="74" y="63">客户端</text><text x="283" y="63">API</text><text x="513" y="63">PostgreSQL</text><text x="283" y="191">私有 OSS</text><text x="513" y="191">GPU Worker</text></g>
-        </svg></figure>
+        </svg></figure></div>
       </div>
       </div>
     </section>
-    <section id="capabilities" class="section" aria-labelledby="capabilities-title">
+    <section id="capabilities" class="section" tabindex="-1" aria-labelledby="capabilities-title">
       <div class="container wrap">
       <div class="section-heading"><h2 id="capabilities-title">项目协作与管理</h2><p>在工作台中管理项目、任务与交付。</p></div>
       <div class="capabilities-layout"><div class="feature-list">
@@ -109,7 +111,7 @@
       </div><figure class="media-frame"><img src="/media/admin-console.webp" width="1600" height="1125" loading="lazy" decoding="async" alt="ReScene 管理控制台中的用户和管理信息"></figure></div>
       </div>
     </section>
-    <section id="delivery" class="section" aria-labelledby="delivery-title">
+    <section id="delivery" class="section" tabindex="-1" aria-labelledby="delivery-title">
       <div class="container wrap">
       <div class="section-heading"><h2 id="delivery-title">平台入口与常见问题</h2><p>本页面对应源码与构建版本 %RESCENE_VERSION%。从 GitHub 下载安装包需要仓库授权。</p><a class="button button-secondary release-link" href="https://github.com/FLmhp/ReScene/releases">查看发行包</a></div>
       <div class="table-wrap" tabindex="0" role="region" aria-labelledby="delivery-title"><table><thead><tr><th scope="col">平台</th><th scope="col">入口与状态</th></tr></thead><tbody>
@@ -123,7 +125,7 @@
         <details><summary>任务为什么会排队？</summary><p>Worker 可能离线或正在执行其他任务。提交后可在工作台查看队列和任务进度。</p></details>
         <details><summary>如何开始和邀请成员？</summary><p>使用邮箱注册并创建项目。项目管理者可在成员区签发一次性领取码，转交受邀者以对应邮箱登录领取。</p></details>
       </div></div>
-      <div class="boundaries"><div id="privacy"><h3>数据边界</h3><p>输入素材与交付文件保存在私有 OSS。持有有效分享链接的人可以访问对应场景，项目成员可按权限撤销链接。</p></div><div id="terms"><h3>许可与使用</h3><p>VGGT-1B 权重受学术非商用许可约束。使用相关路线前请确认适用的许可条件。</p></div></div>
+      <div class="boundaries"><div id="privacy" tabindex="-1"><h3>数据边界</h3><p>输入素材与交付文件保存在私有 OSS。持有有效分享链接的人可以访问对应场景，项目成员可按权限撤销链接。</p></div><div id="terms" tabindex="-1"><h3>许可与使用</h3><p>VGGT-1B 权重受学术非商用许可约束。使用相关路线前请确认适用的许可条件。</p></div></div>
       </div>
     </section>
   </main>

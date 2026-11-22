@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType, type RefAttributes } from "react";
-import { ActivityIndicator, Text, View } from "react-native";
+import { ActivityIndicator, View } from "react-native";
 import {
   WebView as WebViewBase,
   type WebViewMessageEvent,
@@ -8,7 +8,7 @@ import {
 
 import { client, webBaseUrl } from "../api";
 import { useAppearance } from "../appearance";
-import { Button, useTextStyles } from "../ui";
+import { Button, ScaledText as Text, useTextStyles } from "../ui";
 
 type WebViewHandle = { injectJavaScript: (script: string) => void };
 
@@ -20,7 +20,7 @@ type WebViewHandle = { injectJavaScript: (script: string) => void };
  */
 const WebView = WebViewBase as unknown as ComponentType<WebViewProps & RefAttributes<WebViewHandle>>;
 
-export function ViewerScreen({ reconstructionId, onBack }: { reconstructionId: string; onBack: () => void }) {
+export function ViewerScreen({ reconstructionId, onBack, backLabel = "返回任务" }: { reconstructionId: string; onBack: () => void; backLabel?: string }) {
   const { theme, dark } = useAppearance();
   const textStyles = useTextStyles();
   const webview = useRef<WebViewHandle>(null);
@@ -88,7 +88,7 @@ export function ViewerScreen({ reconstructionId, onBack }: { reconstructionId: s
 
   return <View style={{ flex: 1, backgroundColor: theme.bg }}>
     <View style={{ paddingHorizontal: 16, paddingVertical: 8, backgroundColor: theme.panel, borderBottomWidth: 1, borderBottomColor: theme.divider }}>
-      <Button label="返回任务" tone="ghost" onPress={onBack} />
+      <Button label={backLabel} tone="ghost" onPress={onBack} />
     </View>
     {viewer && viewer.scene === scene && !error ? <WebView
       key={viewer.generation}
