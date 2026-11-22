@@ -1,5 +1,26 @@
 import type { Asset, Job, JobStatus, Profile } from "./index";
 
+export const PROJECT_SECTIONS = [
+  { value: "materials", label: "素材" },
+  { value: "tasks", label: "任务" },
+  { value: "results", label: "结果" },
+] as const;
+
+export type ProjectSection = (typeof PROJECT_SECTIONS)[number]["value"];
+
+const PROJECTS_PER_PAGE = 8;
+
+export function projectLibraryPage<T extends { name: string }>(
+  items: readonly T[], query: string, index: number,
+): { items: T[]; count: number; index: number; pages: number } {
+  const match = query.trim().toLowerCase();
+  const filtered = match ? items.filter(({ name }) => name.toLowerCase().includes(match)) : items;
+  const pages = Math.ceil(filtered.length / PROJECTS_PER_PAGE);
+  const pageIndex = Math.max(0, Math.min(index, pages - 1));
+  const start = pageIndex * PROJECTS_PER_PAGE;
+  return { items: filtered.slice(start, start + PROJECTS_PER_PAGE), count: filtered.length, index: pageIndex, pages };
+}
+
 export const RECONSTRUCTION_PROFILES = {
   fast: { title: "快速预览", frames: 80, description: "先检查取景与视角覆盖" },
   balanced: { title: "均衡重建", frames: 80, description: "校正相机位姿，适合多数场景" },

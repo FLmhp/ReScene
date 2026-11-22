@@ -43,7 +43,25 @@ def verify_media_selection(page: Page, output: Path, client: str) -> None:
     page.remove_listener("request", record)
 
 
-def verify_project_sidebar(browser: Browser, desktop_url: str, output: Path) -> None:
+FIXTURE_EMAIL = "demo@example.test"
+FIXTURE_PASSWORD = "fixture-password"
+
+
+def sign_in(page: Page, base: str) -> None:
+    page.goto(base, wait_until="domcontentloaded")
+    page.get_by_label("邮箱", exact=False).fill(FIXTURE_EMAIL)
+    page.get_by_label("密码", exact=True).fill(FIXTURE_PASSWORD)
+    page.get_by_role("button", name="登录", exact=True).click()
+    expect(page.get_by_role("heading", name="项目列表", exact=True)).to_be_visible()
+
+
+def respond_to_login(route) -> None:
+    assert route.request.method == "POST"
+    assert route.request.post_data_json == {"email": FIXTURE_EMAIL, "password": FIXTURE_PASSWORD}
+    route.fulfill(json={"access_token": "fixture", "token_type": "bearer"})
+
+
+def verify_project_library(browser: Browser, desktop_url: str, output: Path) -> None:
     page = browser.new_page(viewport={"width": 1180, "height": 660}, color_scheme="dark")
     projects = [
         {
@@ -65,27 +83,32 @@ def verify_project_sidebar(browser: Browser, desktop_url: str, output: Path) -> 
         "/v1/workers/status": {"online": False, "workers": []},
         "/v1/notifications/count": {"unread": 0},
     }
-    page.route(
-        "**/v1/**",
-        lambda route: route.fulfill(json=fixtures.get(urlsplit(route.request.url).path, [])),
+
+    def api(route):
+        path = urlsplit(route.request.url).path
+        if path == "/v1/auth/login":
+            respond_to_login(route)
+        else:
+            route.fulfill(json=fixtures.get(path, []))
+
+    page.route("**/v1/**", api)
+    sign_in(page, desktop_url)
+    rows = page.get_by_role("button", name="ReScene 长项目名称与验收记录", exact=False)
+    expect(rows).to_have_count(8)
+    expect(page.locator("aside").get_by_role("button", name="ReScene 长项目名称与验收记录", exact=False)).to_have_count(
+        0
     )
-    page.add_init_script("localStorage.setItem('rescene-token','fixture');")
-    page.goto(desktop_url, wait_until="domcontentloaded")
-    nav = page.get_by_role("navigation", name="项目", exact=True)
-    buttons = nav.get_by_role("button")
-    expect(buttons).to_have_count(len(projects))
-    assert buttons.evaluate_all("""items => items.every(button => {
+    assert rows.evaluate_all("""items => items.every(button => {
       const bounds = button.getBoundingClientRect();
       const text = document.createRange();
       text.selectNodeContents(button);
       const content = text.getBoundingClientRect();
-      return bounds.height >= 40 && content.top >= bounds.top && content.bottom <= bounds.bottom;
+      return bounds.height >= 44 && content.top >= bounds.top && content.bottom <= bounds.bottom;
     })""")
-    buttons.last.scroll_into_view_if_needed()
-    assert nav.evaluate("element => element.scrollTop > 0")
-    nav.evaluate("element => { element.scrollTop = 0; }")
-    page.locator("aside").evaluate("element => { element.scrollTop = 0; }")
-    page.locator("aside").screenshot(path=str(output / "windows-project-sidebar.png"))
+    page.get_by_role("button", name="下一页", exact=True).click()
+    expect(page.get_by_text("第 2 / 3 页", exact=True)).to_be_visible()
+    expect(page.get_by_role("button", name=projects[8]["name"], exact=True)).to_be_visible()
+    page.screenshot(path=str(output / "windows-project-library.png"))
     page.close()
 
 
@@ -120,6 +143,9 @@ def verify_viewer(browser: Browser, web_url: str, output: Path, scene: Path) -> 
 
     def api(route):
         path = urlsplit(route.request.url).path
+        if path == "/v1/auth/login":
+            respond_to_login(route)
+            return
         if path.endswith("/manifest"):
             key = "fresh" if expired_requests else "expired"
             route.fulfill(
@@ -163,11 +189,13 @@ def verify_viewer(browser: Browser, web_url: str, output: Path, scene: Path) -> 
 
     page.route("**/v1/**", api)
     page.route("https://preview.test/**", objects)
-    page.add_init_script(
-        "localStorage.setItem('rescene-token','fixture');localStorage.setItem('rescene-project','p1');"
-    )
-    page.goto(web_url, wait_until="domcontentloaded")
+    sign_in(page, web_url)
+    page.get_by_role("button", name=project["name"], exact=True).click()
     page.get_by_role("navigation", name="项目工作区").get_by_role("button", name="结果").click()
+    page.get_by_role("button", name="均衡重建", exact=False).click()
+    expect(page.get_by_role("heading", name="成果详情", exact=True)).to_be_visible()
+    downloads_entry = page.get_by_role("button", name="下载与校验", exact=True)
+    downloads_entry.click()
     downloads = page.get_by_role("region", name="产物下载")
     expect(downloads.get_by_role("link", name="METRICS 下载")).to_be_visible()
     expect(downloads.get_by_text("1.1 KiB", exact=True)).to_be_visible()
@@ -178,9 +206,9 @@ def verify_viewer(browser: Browser, web_url: str, output: Path, scene: Path) -> 
       const previous = items[index - 1]?.getBoundingClientRect();
       return button.top >= box.top && button.bottom <= box.bottom && (!previous || previous.bottom < box.top);
     })""")
-    page.locator(".result-panel").screenshot(path=str(output / "desktop-result-layout.png"))
-    open_scene = page.get_by_role("button", name="打开 Viewer", exact=True)
-    open_scene.click()
+    downloads.screenshot(path=str(output / "desktop-result-layout.png"))
+    page.get_by_role("button", name="← 返回成果", exact=True).click()
+    page.get_by_role("button", name="打开三维场景", exact=True).click()
     dialog = page.get_by_role("dialog", name="场景查看器")
     expect(dialog.get_by_role("alert")).to_contain_text("过期", timeout=30_000)
     assert expired_requests > 0
@@ -192,6 +220,7 @@ def verify_viewer(browser: Browser, web_url: str, output: Path, scene: Path) -> 
     page.keyboard.press("Escape")
     expect(dialog).to_have_count(0)
     page.set_viewport_size({"width": 390, "height": 790})
+    downloads_entry.click()
     downloads.get_by_text("校验值（SHA-256）", exact=True).click()
     expect(downloads.get_by_text(digest).first).to_be_visible()
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
@@ -234,21 +263,27 @@ def verify(web_url: str, desktop_url: str, output: Path, image: Path, scene: Pat
         browser = playwright.chromium.launch(
             channel="msedge", args=["--enable-unsafe-swiftshader", "--use-angle=swiftshader"]
         )
-        verify_project_sidebar(browser, desktop_url, output)
-        results.append({"client": "windows-ui", "check": "long project names remain readable", "status": "PASS"})
-        for client, base, widths in [("web", web_url, [1440, 1024, 768, 390]), ("windows-ui", desktop_url, [1280])]:
+        verify_project_library(browser, desktop_url, output)
+        results.append({"client": "windows-ui", "check": "paged long project names remain readable", "status": "PASS"})
+        for client, base, widths in [
+            ("web", web_url, [1440, 1024, 390, 320]),
+            ("windows-ui", desktop_url, [1280, 960]),
+        ]:
             for width in widths:
                 for appearance in ("light", "dark"):
                     page = browser.new_page(viewport={"width": width, "height": 960}, color_scheme=appearance)
                     errors = []
                     posts = []
+                    attempted_pages = []
                     jobs = [base_job.copy()]
                     page.on("pageerror", lambda error, errors=errors: errors.append(str(error)))
 
-                    def api(route, request, *, jobs=jobs, posts=posts):
+                    def api(route, request, *, jobs=jobs, posts=posts, attempted_pages=attempted_pages):
                         url = urlsplit(route.request.url)
                         path = url.path
-                        if path.endswith("/events"):
+                        if path == "/v1/auth/login":
+                            respond_to_login(route)
+                        elif path.endswith("/events"):
                             route.fulfill(body="", content_type="text/event-stream")
                         elif path.endswith("/logs"):
                             route.fulfill(json={"items": []})
@@ -270,11 +305,19 @@ def verify(web_url: str, desktop_url: str, output: Path, image: Path, scene: Pat
                             )
                         elif path == "/v1/projects/p1/assets":
                             page_two = parse_qs(url.query).get("cursor") == ["page2"]
+                            if page_two:
+                                attempted_pages.append("a7")
+                                if len(attempted_pages) == 1:
+                                    route.fulfill(status=503, json={"detail": "分页暂时不可用"})
+                                    return
                             items = [{**assets[0], "id": "a7", "filename": "厨房视角-07.jpg"}] if page_two else assets
                             route.fulfill(json={"items": items, "next_cursor": None if page_two else "page2"})
                         elif path == "/v1/projects/p1/jobs" and route.request.method == "POST":
-                            posts.append(route.request.post_data_json)
-                            job = {**base_job, "id": "new-job", "profile": posts[-1]["profile"]}
+                            posts.append((route.request.headers.get("idempotency-key"), route.request.post_data_json))
+                            if len(posts) == 1:
+                                route.fulfill(status=503, json={"detail": "创建暂时不可用"})
+                                return
+                            job = {**base_job, "id": "new-job", "profile": posts[-1][1]["profile"]}
                             jobs.insert(0, job)
                             route.fulfill(status=201, json=job)
                         elif path == "/v1/projects/p1/jobs":
@@ -299,11 +342,9 @@ def verify(web_url: str, desktop_url: str, output: Path, image: Path, scene: Pat
                         "https://preview.test/**",
                         lambda route: route.fulfill(body=image.read_bytes(), content_type="image/jpeg"),
                     )
-                    page.add_init_script("localStorage.setItem('rescene-token','fixture');")
-                    page.goto(base, wait_until="domcontentloaded")
-                    expect(page.get_by_role("heading", name="我的项目")).to_be_visible()
+                    sign_in(page, base)
                     page.screenshot(path=str(output / f"{client}-{width}-{appearance}-projects.png"), full_page=True)
-                    page.get_by_role("button", name="打开项目").click()
+                    page.get_by_role("button", name=project["name"], exact=True).click()
                     expect(page.get_by_role("heading", name=project["name"])).to_be_visible()
                     if width <= 1024:
                         drawer = page.locator("aside")
@@ -325,10 +366,12 @@ def verify(web_url: str, desktop_url: str, output: Path, image: Path, scene: Pat
                     expect(page.locator(".upload-panel")).to_have_count(1)
                     expect(page.locator(".task-detail, .result-panel")).to_have_count(0)
                     panes.get_by_role("button", name="任务", exact=True).click()
-                    expect(page.locator(".task-detail")).to_have_count(1)
+                    page.get_by_role("button", name="均衡重建", exact=False).click()
+                    expect(page.get_by_role("heading", name="任务详情", exact=True)).to_be_visible()
                     expect(page.locator(".upload-panel, .route-panel, .result-panel")).to_have_count(0)
+                    page.get_by_role("button", name="← 返回任务", exact=True).click()
                     panes.get_by_role("button", name="结果", exact=True).click()
-                    expect(page.locator(".result-panel")).to_have_count(1)
+                    expect(page.get_by_text("本页暂无重建结果", exact=False)).to_be_visible()
                     expect(page.locator(".upload-panel, .route-panel, .task-detail")).to_have_count(0)
                     panes.get_by_role("button", name="素材", exact=True).click()
                     expect(page.locator(".upload-panel")).to_have_count(1)
@@ -338,30 +381,42 @@ def verify(web_url: str, desktop_url: str, output: Path, image: Path, scene: Pat
                         results.append(
                             {"client": client, "check": "format, blur, duplicate preflight", "status": "PASS"}
                         )
-                    start = page.get_by_role("button", name="开始三维重建")
-                    expect(start).to_be_disabled()
+                    start = page.get_by_role("button", name="开始重建", exact=True)
+                    expect(start).to_have_count(0)
                     expect(page.get_by_role("checkbox", name="正在上传", exact=False)).to_be_disabled()
                     page.get_by_role("button", name="全选本页图片", exact=True).click()
-                    expect(start).to_be_enabled()
-                    expect(page.get_by_text("已选 6 个素材", exact=False)).to_contain_text("离线")
+                    action_bar = page.locator(".material-actions")
+                    config = action_bar.get_by_role("button", name="配置重建", exact=True)
+                    expect(config).to_be_enabled()
+                    expect(action_bar).to_contain_text("已选 6 个")
+                    first_asset = page.get_by_role("checkbox", name="厨房视角-01.jpg", exact=False)
+                    first_asset.uncheck()
+                    expect(action_bar).to_contain_text("已选 5 个")
+                    config.click()
+                    expect(page.get_by_role("heading", name="配置重建", exact=True)).to_be_focused()
+                    expect(panes).to_have_count(0)
+                    expect(page.locator(".upload-panel")).to_have_count(0)
+                    expect(page.get_by_text("计算节点离线", exact=False)).to_be_visible()
                     quality = page.get_by_role("button", name="精细重建", exact=False)
                     quality.click()
                     expect(quality).to_have_attribute("aria-pressed", "true")
-                    page.get_by_role("checkbox", name="厨房视角-01.jpg", exact=False).uncheck()
-                    expect(page.get_by_text("已选 5 个素材", exact=False)).to_be_visible()
+                    assert page.locator(".profiles button").evaluate_all("""items => items.every((button, index) => {
+                      const box = button.getBoundingClientRect();
+                      const previous = items[index-1]?.getBoundingClientRect();
+                      return box.height >= 44 && (!previous || previous.bottom <= box.top);
+                    })""")
+                    page.screenshot(path=str(output / f"{client}-{width}-{appearance}-configure.png"))
+                    page.get_by_role("button", name="返回素材", exact=True).click()
+                    expect(action_bar).to_contain_text("已选 5 个")
+                    assert not posts
                     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                     expect(page.locator("html")).to_have_attribute("data-theme", appearance)
-                    if width == 390:
-                        action_bar = page.locator(".material-actions")
+                    if width <= 390:
                         page.evaluate("window.scrollTo(0, 0)")
-                        assert action_bar.evaluate("""element => {
-                          if (Math.abs(element.getBoundingClientRect().bottom - innerHeight) > 1) return false;
-                          return [...element.querySelectorAll('.profiles button')].every(button => {
-                            const label = button.querySelector('strong').getBoundingClientRect();
-                            const code = button.querySelector('span').getBoundingClientRect();
-                            return label.bottom <= code.top && label.width >= label.height;
-                          });
-                        }""")
+                        expect(action_bar.get_by_role("button")).to_have_count(1)
+                        assert action_bar.evaluate(
+                            "element => Math.abs(element.getBoundingClientRect().bottom - innerHeight) <= 1"
+                        )
                         page.screenshot(path=str(output / f"{client}-{width}-{appearance}-workspace.png"))
                         page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
                         last_asset = page.locator(".asset-row").last.bounding_box()
@@ -377,36 +432,44 @@ def verify(web_url: str, desktop_url: str, output: Path, image: Path, scene: Pat
                             path=str(output / f"{client}-{width}-{appearance}-workspace.png"), full_page=True
                         )
                     if width >= 1280:
-                        control = page.get_by_label("外观主题")
-                        control.select_option("dark" if appearance == "light" else "light")
-                        expect(page.get_by_text("已选 5 个素材", exact=False)).to_be_visible()
-                        page.reload()
-                        expect(page.locator("html")).to_have_attribute(
-                            "data-theme", "dark" if appearance == "light" else "light"
-                        )
-                        page.get_by_role("button", name="全选本页图片", exact=True).click()
-                        page.get_by_role("button", name="精细重建", exact=False).click()
+                        page.get_by_role("button", name="设置", exact=True).click()
+                        page.get_by_role("button", name="外观", exact=True).click()
+                        opposite = "dark" if appearance == "light" else "light"
+                        page.get_by_label("外观主题", exact=True).select_option(opposite)
+                        expect(page.locator("html")).to_have_attribute("data-theme", opposite)
+                        page.get_by_role("button", name="← 返回设置", exact=True).click()
+                        page.get_by_role("button", name="返回项目", exact=True).click()
+                        expect(action_bar).to_contain_text("已选 5 个")
                     asset_pages = page.get_by_role("navigation", name="素材分页")
                     asset_pages.get_by_role("button", name="下一页").click()
+                    expect(page.get_by_role("alert").filter(has_text="无法加载第 2 页")).to_be_visible()
+                    expect(asset_pages.get_by_text("第 1 页", exact=True)).to_be_visible()
+                    expect(first_asset).to_be_visible()
+                    page.get_by_role("button", name="重试翻页", exact=True).click()
                     additional = page.get_by_role("checkbox", name="厨房视角-07.jpg", exact=False)
                     expect(additional).to_be_visible()
+                    expect(asset_pages.get_by_text("第 2 页", exact=True)).to_be_visible()
                     additional.check()
                     asset_pages.get_by_role("button", name="上一页").click()
                     expect(page.get_by_role("checkbox", name="厨房视角-02.jpg", exact=False)).to_be_checked()
+                    config.click()
+                    expect(quality).to_have_attribute("aria-pressed", "true")
+                    assert not posts
                     start.click()
-                    expect(page.get_by_role("status").filter(has_text="任务已进入队列")).to_be_visible()
-                    assert len(posts) == 1, posts
-                    assert posts[0]["profile"] == "quality", posts
-                    expected_ids = {f"a{index}" for index in range(1 if width >= 1280 else 2, 8)}
-                    assert set(posts[0]["asset_ids"]) == expected_ids, posts
+                    expect(page.get_by_text("创建暂时不可用", exact=False)).to_be_visible()
+                    assert len(posts) == 1
+                    start.evaluate("el => { el.click(); el.click(); }")
+                    expect(page.get_by_role("heading", name="任务详情", exact=True)).to_be_visible()
+                    assert len(posts) == 2 and posts[0][0] and posts[0] == posts[1], posts
+                    assert posts[0][1]["profile"] == "quality", posts
+                    assert set(posts[0][1]["asset_ids"]) == {f"a{index}" for index in range(2, 8)}, posts
                     expect(page.locator(".job-state")).to_have_text("排队中")
-                    if width == 390:
-                        expect(
-                            page.get_by_role("navigation", name="项目工作区").get_by_role("button", name="任务")
-                        ).to_have_attribute("aria-pressed", "true")
-                        page.screenshot(
-                            path=str(output / f"{client}-{width}-{appearance}-offline-queue.png"), full_page=True
-                        )
+                    page.screenshot(path=str(output / f"{client}-{width}-{appearance}-offline-queue.png"))
+                    page.get_by_role("button", name="← 返回任务", exact=True).click()
+                    expect(start).to_have_count(0)
+                    expect(panes.get_by_role("button", name="任务", exact=True)).to_have_attribute(
+                        "aria-pressed", "true"
+                    )
                     assert not errors, errors
                     results.append({"client": client, "width": width, "theme": appearance, "status": "PASS"})
                     print(client, width, appearance, "PASS", flush=True)

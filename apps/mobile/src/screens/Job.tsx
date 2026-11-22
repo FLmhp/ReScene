@@ -32,9 +32,10 @@ const SHARE_PRESETS: { value: SharePreset; label: string; ms: number | null }[] 
   { value: "30d", label: "30 天", ms: 2_592_000_000 },
 ];
 
-export function JobScreen({ jobId, page, onNavigate, onOpenScene, onReplaceAssets, onBack }: {
+export function JobScreen({ jobId, page, backLabel = "返回", onNavigate, onOpenScene, onReplaceAssets, onBack }: {
   jobId: string;
   page: "job" | "job-logs" | "result" | "downloads" | "shares" | null;
+  backLabel?: string;
   onNavigate: (page: "job-logs" | "result" | "downloads" | "shares") => void;
   onOpenScene: (reconstructionId: string) => void;
   onReplaceAssets: (project: { id: string; name: string }) => void;
@@ -228,7 +229,7 @@ export function JobScreen({ jobId, page, onNavigate, onOpenScene, onReplaceAsset
   if (!page) return null;
   const title = { job: "任务详情", "job-logs": "运行日志", result: "成果详情", downloads: "下载与校验", shares: "分享管理" }[page];
   return (
-    <Screen title={title} scroll onBack={onBack}>
+    <Screen title={title} scroll onBack={onBack} backLabel={backLabel}>
       {page === "job" ? <Card>
         <Text accessibilityLiveRegion="polite" style={[textStyles.heading, job?.status === "SUCCEEDED" && { color: theme.success }, job?.status === "FAILED" && textStyles.error]}>
           {job ? JOB_STATUS_LABELS[job.status] : "加载中…"}
@@ -246,7 +247,7 @@ export function JobScreen({ jobId, page, onNavigate, onOpenScene, onReplaceAsset
         </> : null}
         {job?.status === "QUEUED" ? <Text style={textStyles.muted}>{queuedJobHint(online)}</Text> : null}
         {job?.error_message || job?.error_code ? <Text accessibilityLiveRegion="polite" style={textStyles.error}>{jobErrorHint(job.error_code) || job.error_message || job.error_code}</Text> : null}
-        {writer && job && ACTIVE[job.status] ? <Button label={job.cancel_requested ? "取消中" : "取消任务"} tone="ghost" disabled={busy || job.cancel_requested} onPress={() => Alert.alert("取消任务", "确定取消此任务？", [{ text: "返回", style: "cancel" }, { text: "取消任务", style: "destructive", onPress: () => void action(async () => setJob(await client.cancelJob(job.id))) }])} /> : null}
+        {writer && job && ACTIVE[job.status] ? <Button accessibilityLabel="取消任务" label={job.cancel_requested ? "取消中" : "取消任务"} tone="ghost" disabled={busy || job.cancel_requested} onPress={() => Alert.alert("取消任务", "确定取消此任务？", [{ text: "返回", style: "cancel" }, { text: "取消任务", style: "destructive", onPress: () => void action(async () => setJob(await client.cancelJob(job.id))) }])} /> : null}
         {writer && job?.error_code === "INVALID_INPUT" ? <Button label="更换素材" disabled={busy} onPress={() => void action(async () => onReplaceAssets(await client.getProjectSummary(job.project_id)))} /> : null}
         {writer && job && canRetryJob(job) ? <Button label="重试任务" disabled={busy} onPress={() => void action(async () => {
           setJob(await client.retryJob(job.id));
@@ -260,6 +261,14 @@ export function JobScreen({ jobId, page, onNavigate, onOpenScene, onReplaceAsset
         {artifacts.some((artifact) => artifact.kind === "spz" || artifact.kind === "ply") ? <Button label="打开三维场景" onPress={() => onOpenScene(job.reconstruction_id!)} /> : null}
         <Button label="下载与校验" tone="ghost" onPress={() => onNavigate("downloads")} />
         {writer ? <Button label="分享管理" tone="ghost" onPress={() => onNavigate("shares")} /> : null}
+      </Card> : null}
+      {page === "result" && job && !(job.status === "SUCCEEDED" && job.reconstruction_id) ? <Card>
+        <Text style={textStyles.body}>该任务尚无可用成果。</Text>
+        <Button label="返回任务详情" tone="ghost" onPress={onBack} />
+      </Card> : null}
+      {page === "downloads" && artifacts.length === 0 && job?.status === "SUCCEEDED" && job.reconstruction_id ? <Card>
+        <Text style={textStyles.body}>暂无可下载产物。</Text>
+        <Button label="重新读取" tone="ghost" onPress={() => setResultRevision((value) => value + 1)} />
       </Card> : null}
       {page === "downloads" && artifacts.length > 0 ? <Card>
         <Text accessibilityRole="header" style={textStyles.heading}>下载</Text>

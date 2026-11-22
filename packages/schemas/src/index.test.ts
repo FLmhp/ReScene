@@ -11,11 +11,28 @@ import {
   NotificationSchema,
   ProjectDetailSchema,
   canRetryJob,
+  projectLibraryPage,
   queuedJobHint,
   reconcileWorkspaceSelection,
   selectWorkspaceAssets,
   UploadGrantSchema,
 } from "./index";
+
+describe("project library pages", () => {
+  const projects = Array.from({ length: 17 }, (_, id) => ({ id, name: `${id % 2 ? "Oak" : "Maple"} ${id}` }));
+
+  it("keeps server order and recovers an out-of-range page after filtering", () => {
+    expect(projectLibraryPage(projects, "", 1)).toEqual({ items: projects.slice(8, 16), count: 17, index: 1, pages: 3 });
+    expect(projectLibraryPage(projects, " OaK ", 2)).toEqual({
+      items: projects.filter(({ id }) => id % 2 === 1), count: 8, index: 0, pages: 1,
+    });
+    expect(projectLibraryPage(projects, "maple", 99)).toEqual({ items: [projects[16]], count: 9, index: 1, pages: 2 });
+  });
+
+  it("returns an empty first page for no results", () => {
+    expect(projectLibraryPage(projects, "pine", 2)).toEqual({ items: [], count: 0, index: 0, pages: 0 });
+  });
+});
 
 const job = {
   id: "job-1",

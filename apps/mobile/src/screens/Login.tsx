@@ -1,20 +1,32 @@
 import { ResceneApiError } from "@rescene/api-client";
-import { useState } from "react";
-import { Text, View } from "react-native";
+import { useEffect, useState } from "react";
+import { View } from "react-native";
 
 import { authenticate } from "../api";
-import { Button, Card, ErrorText, Field, Screen, Segmented, useTextStyles } from "../ui";
+import { Button, ErrorText, Field, ScaledText as Text, Screen, useTextStyles } from "../ui";
 
 const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
-export function LoginScreen({ onSignedIn, notice }: { onSignedIn: () => void; notice?: string }) {
+export function LoginScreen({ onSignedIn, notice, mode, onModeChange, onAppearance, active }: {
+  onSignedIn: () => void;
+  notice?: string;
+  mode: "login" | "register";
+  onModeChange: (mode: "login" | "register") => void;
+  onAppearance: () => void;
+  active: boolean;
+}) {
   const textStyles = useTextStyles();
-  const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setPassword("");
+    setConfirm("");
+    setError("");
+  }, [mode]);
 
   async function submit() {
     if (busy) return;
@@ -46,26 +58,22 @@ export function LoginScreen({ onSignedIn, notice }: { onSignedIn: () => void; no
     }
   }
 
+  if (!active) return null;
+
   return (
-    <Screen scroll title={mode === "register" ? "创建 ReScene 账号" : "登录团队工作台"}>
-      <View style={{ width: "100%", maxWidth: 460, alignSelf: "center", gap: 16 }}>
-      <Card>
+    <Screen
+      scroll
+      title={mode === "register" ? "注册" : "登录"}
+      navigation={<View style={{ flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: 16, paddingBottom: 12 }}>
+        <Button label="外观" tone="ghost" onPress={onAppearance} />
+      </View>}
+    >
+      <View style={{ width: "100%", maxWidth: 420, alignSelf: "center", gap: 16 }}>
         {notice ? (
           <Text accessibilityLiveRegion="polite" accessibilityRole="alert" style={textStyles.muted}>
             {notice}
           </Text>
         ) : null}
-        <Segmented
-          value={mode}
-          onChange={(next) => {
-            setMode(next);
-            setError("");
-          }}
-          options={[
-            { value: "login", label: "登录" },
-            { value: "register", label: "注册" },
-          ]}
-        />
         <Field
           autoComplete="email"
           keyboardType="email-address"
@@ -76,6 +84,7 @@ export function LoginScreen({ onSignedIn, notice }: { onSignedIn: () => void; no
           value={email}
         />
         <Field
+          key={mode}
           autoComplete={mode === "login" ? "current-password" : "new-password"}
           label={mode === "login" ? "密码" : "密码（至少 12 位）"}
           onChangeText={setPassword}
@@ -98,13 +107,19 @@ export function LoginScreen({ onSignedIn, notice }: { onSignedIn: () => void; no
           />
         ) : null}
         <Button
+          accessibilityLabel={mode === "register" ? "创建账号" : "登录"}
           disabled={busy || !email.trim() || !password || (mode === "register" && !confirm)}
           label={busy ? (mode === "register" ? "正在创建…" : "正在登录…") : mode === "register" ? "创建账号" : "登录"}
           onPress={() => void submit()}
         />
         {error ? <ErrorText>{error}</ErrorText> : null}
-      </Card>
-      <Text style={textStyles.muted}>首次使用请先注册；密码至少 12 位，仅支持邮箱密码登录。</Text>
+        <Button label={mode === "login" ? "注册账号" : "返回登录"} tone="ghost" disabled={busy}
+          onPress={() => {
+            setPassword("");
+            setConfirm("");
+            setError("");
+            onModeChange(mode === "login" ? "register" : "login");
+          }} />
       </View>
     </Screen>
   );

@@ -45,7 +45,7 @@ export function ThemeControl() {
 
   const previewPrimary = normalizePrimary(primaryInput);
   return <div className="appearance-controls">
-    <label className="theme-control">外观
+    <label className="theme-control">外观主题
       <select aria-label="外观主题" value={preference} onChange={(event) => apply(themePreference(event.target.value), display)}>
         {THEME_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
@@ -67,7 +67,7 @@ export function ThemeControl() {
         setInvalidPrimary(false);
         apply(preference, { ...display, primary });
       }}>应用主色</button>
-      {invalidPrimary && <span id="appearance-primary-error" role="alert">请输入六位十六进制颜色，例如 #28536B。</span>}
+      {invalidPrimary && <span id="appearance-primary-error" role="alert">请输入 6 位十六进制颜色，例如 #28536B。</span>}
       {previewPrimary && <div aria-label="主色预览" style={{ display: "flex", gap: 8 }}>
         {[false, true].map((dark) => {
           const palette = resolvePalette("custom", dark, previewPrimary);
@@ -78,22 +78,22 @@ export function ThemeControl() {
         })}
       </div>}
     </div>}
-    <label className="theme-control">字号
-      <select aria-label="字号" value={display.fontSize} onChange={(event) => apply(preference, displayPreferences({ ...display, fontSize: event.target.value }))}>
-        <option value="standard">标准</option><option value="large">大</option><option value="extra-large">特大</option>
+    <label className="theme-control">字体大小
+      <select aria-label="字体大小" value={display.fontSize} onChange={(event) => apply(preference, displayPreferences({ ...display, fontSize: event.target.value }))}>
+        <option value="standard">标准 100%</option><option value="large">较大 115%</option><option value="extra-large">特大 130%</option>
       </select>
     </label>
-    <label className="theme-control">界面材质
-      <select aria-label="界面材质" value={display.surface} onChange={(event) => apply(preference, displayPreferences({ ...display, surface: event.target.value }))}>
-        <option value="auto">自动</option><option value="solid">纯色</option>
+    <label className="theme-control">面板效果
+      <select aria-label="面板效果" value={display.surface} onChange={(event) => apply(preference, displayPreferences({ ...display, surface: event.target.value }))}>
+        <option value="auto">跟随设备</option><option value="solid">实色</option>
       </select>
     </label>
-    <button type="button" onClick={() => {
+    <button type="button" className="text-action" onClick={() => {
       const defaults = displayPreferences(null);
       setPrimaryInput(defaults.primary);
       setInvalidPrimary(false);
       apply("system", defaults);
-    }}>恢复默认</button>
-    {storageError && <span role="alert">外观已应用，但无法保存。请检查浏览器存储权限后重试。</span>}
+    }}>恢复默认外观</button>
+    {storageError && <span role="status">未能保存到此设备；本次运行中的外观仍然有效。</span>}
   </div>;
 }

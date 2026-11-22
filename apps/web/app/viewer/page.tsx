@@ -2,7 +2,7 @@
 
 import { ResceneApiError, ResceneClient } from "@rescene/api-client";
 import { Viewer } from "@rescene/viewer";
-import { BrandMark } from "@rescene/workbench";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { API_BASE as API } from "../env";
 import { messageOf, pickScene } from "../scene";
@@ -177,8 +177,8 @@ export default function ViewerPage() {
   return (
     <main className="shared-scene">
       <header className="shared-brand">
-        <span className="mark"><BrandMark size={20} /></span>
-        <strong>ReScene</strong>
+        {!native ? <Link href="/" prefetch={false}>返回工作台</Link> : null}
+        <h1>三维场景</h1>
       </header>
       {phase === "ready" && src ? (
         <Viewer key={`${src}:${renewal}`} src={src} reconstructionId={reconstructionId} onRetry={retry} />

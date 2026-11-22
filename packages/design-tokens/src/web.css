@@ -1,6 +1,6 @@
 @font-face { font-family: Inter; src: url("../assets/InterVariable.woff2") format("woff2"); font-style: normal; font-weight: 100 900; font-display: swap; }
 /* Palette values mirror tokens.ts. */
-/* Colorway overrides are below the shared jade defaults. */
+/* Runtime colorways are applied from the shared palette tokens. */
 :root {
   color-scheme: light;
   --brand-ink: #101827;
@@ -123,44 +123,4 @@
   --font-body: 14px;
   --font-title: 18px;
   --font-display: 40px;
-}
-
-/* Explicit light and missing-theme defaults use the light colorway. */
-:root[data-colorway="ultramarine"]:not([data-theme="dark"]) {
-  --bg: #EEF2FC; --bg-deep: #DDE6FA; --bg-soft: #F8FAFF; --panel-alt: #F3F6FE;
-  --surface-strong: #E0E8FE; --border: #6D80AF; --border-soft: #CCD7F0; --divider: #DEE5F6;
-  --fg: #17254A; --muted: #435680; --accent: #274A9C; --accent-strong: #203C84; --accent-alt: #355AAE;
-  --overlay: rgba(19,29,58,0.54);
-}
-:root[data-colorway="ink"]:not([data-theme="dark"]) {
-  --bg: #F0F1F3; --bg-deep: #DBDEE3; --bg-soft: #FBFBFC; --panel-alt: #F5F6F7;
-  --surface-strong: #E1E4E9; --border: #737B88; --border-soft: #D2D6DD; --divider: #E0E3E8;
-  --fg: #22262D; --muted: #505967; --accent: #3B4657; --accent-strong: #2B3442; --accent-alt: #4C5C73;
-  --overlay: rgba(25,29,37,0.51);
-}
-:root[data-colorway="ultramarine"][data-theme="dark"] {
-  --bg: #10182D; --bg-deep: #0A1021; --bg-soft: #253563; --panel: #1C2847; --panel-alt: #17213A;
-  --surface: rgba(231,238,255,0.06); --surface-strong: rgba(174,192,255,0.16); --border: #6E82B7;
-  --border-soft: rgba(188,204,255,0.24); --divider: rgba(188,204,255,0.12); --fg: #EEF2FF; --muted: #BBC8E9;
-  --accent: #AEC0FF; --accent-strong: #C4D0FF; --accent-alt: #A9C8FA; --on-accent: #152655; --overlay: rgba(6,11,25,0.80);
-}
-:root[data-colorway="ink"][data-theme="dark"] {
-  --bg: #16181D; --bg-deep: #0D0E12; --bg-soft: #303540; --panel: #232730; --panel-alt: #1B1E25;
-  --surface: rgba(237,240,245,0.06); --surface-strong: rgba(213,220,233,0.15); --border: #737D90;
-  --border-soft: rgba(220,227,240,0.22); --divider: rgba(220,227,240,0.12); --fg: #F1F3F7; --muted: #BCC4D0;
-  --accent: #CFD6E3; --accent-strong: #E0E5ED; --accent-alt: #BFCDE6; --on-accent: #202631; --overlay: rgba(6,8,12,0.79);
-}
-@media (prefers-color-scheme: dark) {
-  :root[data-colorway="ultramarine"]:not([data-theme]) {
-    --bg: #10182D; --bg-deep: #0A1021; --bg-soft: #253563; --panel: #1C2847; --panel-alt: #17213A;
-    --surface: rgba(231,238,255,0.06); --surface-strong: rgba(174,192,255,0.16); --border: #6E82B7;
-    --border-soft: rgba(188,204,255,0.24); --divider: rgba(188,204,255,0.12); --fg: #EEF2FF; --muted: #BBC8E9;
-    --accent: #AEC0FF; --accent-strong: #C4D0FF; --accent-alt: #A9C8FA; --on-accent: #152655; --overlay: rgba(6,11,25,0.80);
-  }
-  :root[data-colorway="ink"]:not([data-theme]) {
-    --bg: #16181D; --bg-deep: #0D0E12; --bg-soft: #303540; --panel: #232730; --panel-alt: #1B1E25;
-    --surface: rgba(237,240,245,0.06); --surface-strong: rgba(213,220,233,0.15); --border: #737D90;
-    --border-soft: rgba(220,227,240,0.22); --divider: rgba(220,227,240,0.12); --fg: #F1F3F7; --muted: #BCC4D0;
-    --accent: #CFD6E3; --accent-strong: #E0E5ED; --accent-alt: #BFCDE6; --on-accent: #202631; --overlay: rgba(6,8,12,0.79);
-  }
 }

@@ -340,12 +340,19 @@ page { font-family: -apple-system, 'PingFang SC', sans-serif; font-size: 32px; l
 .appearance-swatch { width: 64px; height: 64px; flex-shrink: 0; border: 1px solid var(--border); border-radius: 8px; }
 .appearance-preview { display: flex; align-items: center; gap: 16px; color: var(--muted); font-size: var(--mini-font-28); }
 .appearance-preview-swatch { height: 48px; flex: 1; border: 1px solid var(--border-soft); border-radius: 8px; }
-.project-tile { padding: 24px; min-height: 108px; box-sizing: border-box; border-radius: 20px; background: var(--panel); border: 1px solid var(--border-soft); display: flex; flex-direction: column; justify-content: center; gap: 6px; }
+.project-tile { padding: 16px; min-height: 108px; box-sizing: border-box; border-radius: 20px; background: var(--panel); border: 1px solid var(--border-soft); display: flex; flex-direction: row; align-items: center; gap: 16px; }
+.project-tile .project-cover { width: 96px; flex: none; }
+.project-tile .project-cover .preview-image { width: 96px; height: 96px; }
+.project-tile-body { display: flex; flex-direction: column; justify-content: center; gap: 6px; min-width: 0; flex: 1; }
 .project-tile .label { font-size: var(--mini-font-32); overflow-wrap: anywhere; }
 .preview-image { width: 124px; height: 124px; flex-shrink: 0; border-radius: 12px; background: var(--bg-deep); }
 .preview-placeholder { display: flex; align-items: center; justify-content: center; font-size: var(--mini-font-28); color: var(--muted); }
 .selection-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .selection-tools .button { flex: 1; }
+.library-top { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.library-actions { display: flex; align-items: stretch; gap: 8px; }
+.library-actions .button:first-child { flex: 1; }
+.library-actions .button.ghost { flex: none; }
 .button.selected { border-color: var(--accent); background: var(--surface-strong); color: var(--accent); }
 .asset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .asset-tile { min-width: 0; overflow: hidden; border: 1px solid var(--border-soft); border-radius: 16px; background: var(--panel-alt); }

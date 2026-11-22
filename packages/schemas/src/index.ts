@@ -9,8 +9,10 @@ import { z } from "zod";
 
 export {
   ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, jobErrorHint,
-  canRetryJob, queuedJobHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel,
+  PROJECT_SECTIONS, canRetryJob, projectLibraryPage, queuedJobHint, reconcileWorkspaceSelection,
+  selectWorkspaceAssets, selectionBytes, stageLabel,
 } from "./reconstruction-labels";
+export type { ProjectSection } from "./reconstruction-labels";
 
 export const ProfileSchema = z.enum(["fast", "balanced", "quality"]);
 export const JobStatusSchema = z.enum(["QUEUED", "LEASED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]);

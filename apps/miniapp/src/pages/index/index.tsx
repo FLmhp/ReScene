@@ -1,3 +1,4 @@
+import { AssetThumbnail } from "../../asset-thumbnail";
 import { Screen } from "../../screen";
 import { explainError, ResceneApiError } from "@rescene/api-client";
 import { JOB_STATUS_LABELS, projectLibraryPage, type Project, type ProjectSummary, type User } from "@rescene/schemas";
@@ -40,22 +41,14 @@ function message(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback;
 }
 
-function ProjectTile({ project, onError }: { project: Project; onError: () => void }) {
-  const [summary, setSummary] = useState<ProjectSummary | null>(null);
-  const [summaryFailed, setSummaryFailed] = useState(false);
-  useEffect(() => {
-    let active = true;
-    setSummary(null);
-    setSummaryFailed(false);
-    void client.getProjectSummary(project.id).then((value) => {
-      if (active) setSummary(value);
-    }).catch(() => { if (active) setSummaryFailed(true); });
-    return () => { active = false; };
-  }, [project.id]);
+function ProjectTile({ project, onError }: { project: ProjectSummary; onError: () => void }) {
   return <View className="project-tile" role="button" onClick={() => void Taro.navigateTo({ url: `/pages/project/index?id=${encodeURIComponent(project.id)}&name=${encodeURIComponent(project.name)}`, fail: onError })}>
-    <Text className="label">{project.name}</Text>
-    <Text className="muted">{ROLE_LABEL[project.effective_role]}</Text>
-    <Text className="muted">{summary ? `${summary.asset_count} 个素材 · ${summary.job_count} 个任务${summary.latest_job ? ` · ${JOB_STATUS_LABELS[summary.latest_job.status]}` : " · 暂无任务"}` : summaryFailed ? "项目概况暂不可用" : "正在加载项目概况…"}</Text>
+    {project.cover ? <View className="project-cover"><AssetThumbnail asset={project.cover} /></View> : null}
+    <View className="project-tile-body">
+      <Text className="label">{project.name}</Text>
+      <Text className="muted">{ROLE_LABEL[project.effective_role]}</Text>
+      <Text className="muted">{`${project.asset_count} 个素材 · ${project.job_count} 个任务${project.latest_job ? ` · ${JOB_STATUS_LABELS[project.latest_job.status]}` : " · 暂无任务"}`}</Text>
+    </View>
   </View>;
 }
 
@@ -64,7 +57,7 @@ export default function IndexPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [recovering, setRecovering] = useState(hasToken());
-  const [projects, setProjects] = useState<Project[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [search, setSearch] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -100,7 +93,7 @@ export default function IndexPage() {
 
   const loadProjects = useCallback(async (owner: QueueOwner) => {
     try {
-      const list = await queueClient(owner).listProjects();
+      const list = await queueClient(owner).listProjectSummaries();
       if (isQueueOwnerCurrent(owner)) setProjects(list);
     } catch (reason) {
       if (isQueueOwnerCurrent(owner)) throw reason;
@@ -291,15 +284,15 @@ export default function IndexPage() {
 
   return (
     <Screen>
-      <View className="selection-tools">
-        <Text className="label">ReScene</Text>
+      <View className="library-top">
         <Button className="button ghost compact" onClick={() => openFocus("notifications")}>通知（{unread}）</Button>
         <Button className="button ghost compact" onClick={() => openFocus("settings")}>设置</Button>
       </View>
       <Text className="title">项目列表</Text>
-      {!user ? <Button className="button ghost" onClick={() => void recover()}>重试恢复登录</Button> : null}
-      <Button className="button" onClick={() => openFocus("new-project")}>新建项目</Button>
-      <Button className="button ghost compact" onClick={() => openFocus("claim-invite")}>领取邀请</Button>
+      <View className="library-actions">
+        <Button className="button" onClick={() => openFocus("new-project")}>新建项目</Button>
+        <Button className="button ghost compact" onClick={() => openFocus("claim-invite")}>领取邀请</Button>
+      </View>
       <View className="field">
         <Text className="label">搜索项目</Text>
         <Input className="input" value={search} onInput={(event) => { setSearch(event.detail.value); setProjectPage(0); }} />
