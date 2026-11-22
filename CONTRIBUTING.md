@@ -179,15 +179,17 @@ TARO_APP_API_URL=https://api.rescene.xyz TARO_APP_WEB_URL=https://app.rescene.xy
 
 PowerShell 可先分别用 `$env:TARO_APP_API_URL`、`$env:TARO_APP_WEB_URL`、`$env:TARO_APP_WECHAT_APP_ID` 设置相同值，再运行 `pnpm --filter @rescene/miniapp build:weapp`。AppID 和域名必须与微信公众平台后台一致；编译成功不代表已经通过平台审核或发布。
 
-[check.yml](.github/workflows/check.yml) 定义五个检查：
+[check.yml](.github/workflows/check.yml) 在 `pull_request` 和 push 到 `main` 时运行，跳过纯文档与 Markdown 改动，只保留最新一次运行；[desktop.yml](.github/workflows/desktop.yml) 单独检查桌面壳，仅在桌面、共享包或锁文件变化时触发：
 
 | 检查 | 覆盖 |
 |---|---|
 | `python` | Python 检查和测试，含 PostgreSQL 16 服务 |
 | `workspace` | 版本、类型、测试及官网、Web、桌面前端、移动端导出、小程序构建；小程序使用示例配置 |
-| `desktop-shell` | Windows 桌面前端构建、Rust fmt 和 clippy |
 | `commit-messages` | PR 或 push 范围内的提交标题 |
 | `images` | API 和 Web Docker 镜像构建 |
+| `desktop-shell`（desktop.yml） | Windows 桌面前端构建、Rust fmt、clippy 和测试 |
+
+功能分支不再直接触发检查，先推送分支并开 PR 才会运行。私有仓库的 Actions 分钟数有限，Windows 按 2 倍、macOS 按 10 倍计费；额度不足时改用下方本地命令和 `pnpm quality` 自证，再在 [release.yml](.github/workflows/release.yml) 的标签构建或自托管运行器上补做。
 
 例如桌面壳检查可运行：
 
