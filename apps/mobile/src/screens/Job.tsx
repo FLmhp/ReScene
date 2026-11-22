@@ -2,11 +2,11 @@ import { explainError } from "@rescene/api-client";
 import { JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, canRetryJob, jobErrorHint, queuedJobHint, stageLabel } from "@rescene/schemas";
 import type { Artifact, Job, JobLog, ShareSummary } from "@rescene/schemas";
 import { useEffect, useRef, useState } from "react";
-import { Alert, Image, Linking, Platform, Share, Text, View } from "react-native";
+import { Alert, Image, Linking, Share, View } from "react-native";
 
 import { client, webBaseUrl } from "../api";
 import { useAppearance } from "../appearance";
-import { Button, Card, Screen, Segmented, useTextStyles } from "../ui";
+import { Button, Card, ScaledText as Text, Screen, Segmented, useTextStyles } from "../ui";
 
 const ACTIVE: Record<string, true> = { QUEUED: true, LEASED: true, RUNNING: true };
 const LOG_POLL_MS = 3000;
@@ -32,8 +32,10 @@ const SHARE_PRESETS: { value: SharePreset; label: string; ms: number | null }[] 
   { value: "30d", label: "30 天", ms: 2_592_000_000 },
 ];
 
-export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
+export function JobScreen({ jobId, page, onNavigate, onOpenScene, onReplaceAssets, onBack }: {
   jobId: string;
+  page: "job" | "job-logs" | "result" | "downloads" | "shares" | null;
+  onNavigate: (page: "job-logs" | "result" | "downloads" | "shares") => void;
   onOpenScene: (reconstructionId: string) => void;
   onReplaceAssets: (project: { id: string; name: string }) => void;
   onBack: () => void;
@@ -41,13 +43,12 @@ export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
   const { theme } = useAppearance();
   const textStyles = useTextStyles();
   const LOG_TEXT = {
-  color: theme.muted,
-  fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
-  fontSize: 13,
-  paddingVertical: 4,
-  borderBottomWidth: 1,
-  borderBottomColor: theme.border,
-} as const;
+    color: theme.muted,
+    fontSize: 14,
+    paddingVertical: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.border,
+  } as const;
   const [job, setJob] = useState<Job | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [shares, setShares] = useState<ShareSummary[]>([]);
@@ -59,12 +60,21 @@ export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
   const [shareToken, setShareToken] = useState("");
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
+  const [resultRevision, setResultRevision] = useState(0);
   const [logs, setLogs] = useState<JobLog[]>([]);
-  const [showLogs, setShowLogs] = useState(false);
   const [logLevel, setLogLevel] = useState<LogLevel>("all");
+  const [logError, setLogError] = useState("");
+  const [logRevision, setLogRevision] = useState(0);
+  const [showMetrics, setShowMetrics] = useState(false);
   const [hasEarlier, setHasEarlier] = useState(false);
   const logTail = useRef(0);
   const logReady = useRef(false);
+  const logGeneration = useRef(0);
+
+  useEffect(() => {
+    logGeneration.current += 1;
+    return () => { logGeneration.current += 1; };
+  }, [jobId, page, logLevel]);
 
   useEffect(() => {
     let active = true;
@@ -82,12 +92,12 @@ export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
         setJob((current) => current ? { ...current, progress: event.progress, current_stage: event.stage } : current);
         setTimeline((current) => [...current, { key: `live-${Date.now()}-${event.stage}`, stage: event.stage, status: event.status, progress: event.progress, message: event.message, metrics: event.metrics }].slice(-100));
       } else { receivedSnapshot = true; setJob(event); }
-      setError("");
     }, (reason) => { if (active) setError(reason.message); }, { transport: "polling" });
     return () => { active = false; stop(); };
   }, [jobId, reload]);
 
   useEffect(() => {
+    if (page !== "job" || job?.status !== "QUEUED") return;
     let active = true;
     async function refreshWorker() {
       const status = await client.getWorkerStatus().catch(() => null);
@@ -97,9 +107,10 @@ export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
     void refreshWorker();
     const timer = setInterval(() => void refreshWorker(), 15_000);
     return () => { active = false; clearInterval(timer); };
-  }, [jobId]);
+  }, [jobId, page, job?.status]);
 
   useEffect(() => { setShareToken(""); setTimeline([]); }, [jobId]);
+  useEffect(() => { setError(""); }, [page]);
 
   useEffect(() => {
     let active = true;
@@ -119,7 +130,9 @@ export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
 
   // Newest slice for the current level; the tail marks where polling resumes.
   useEffect(() => {
+    if (page !== "job-logs") return;
     let active = true;
+    setLogError("");
     logTail.current = 0;
     logReady.current = false;
     setLogs([]);
@@ -131,12 +144,12 @@ export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
       setLogs(rows);
       setHasEarlier(rows.length >= LOG_PAGE_SIZE);
       logReady.current = true;
-    }).catch(() => { if (active) logReady.current = true; });
+    }).catch((reason: unknown) => { if (active) setLogError(explainError(reason, "加载运行日志失败")); });
     return () => { active = false; };
-  }, [jobId, logLevel]);
+  }, [jobId, logLevel, page, logRevision]);
 
   useEffect(() => {
-    if (!jobStatus || !ACTIVE[jobStatus]) return;
+    if (page !== "job-logs" || !jobStatus || !ACTIVE[jobStatus]) return;
     let active = true;
     let polling = false;
     const level = logLevel === "all" ? undefined : logLevel;
@@ -152,19 +165,28 @@ export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
           const fresh = rows.filter((row) => !seen.has(row.id));
           return fresh.length > 0 ? [...current, ...fresh].slice(-LOG_KEEP) : current;
         });
-      }).catch(() => { polling = false; });
+      }).catch((reason: unknown) => { polling = false; if (active) setLogError(explainError(reason, "加载运行日志失败")); });
     }, LOG_POLL_MS);
     return () => { active = false; clearInterval(timer); };
-  }, [jobId, jobStatus, logLevel]);
+  }, [jobId, jobStatus, logLevel, page]);
 
   useEffect(() => {
     const id = job?.reconstruction_id;
-    if (!id || job?.status !== "SUCCEEDED") return;
+    if (!id || job?.status !== "SUCCEEDED" || (page !== "result" && page !== "downloads")) return;
     let active = true;
-    void client.getManifest(id).then((manifest) => { if (active) setArtifacts(manifest.artifacts); }).catch((reason: unknown) => { if (active) setError(explainError(reason, "操作失败，请检查网络后重试")); });
-    if (writer) void client.listShares(id).then((value) => { if (active) setShares(value); }).catch((reason: unknown) => { if (active) setError(explainError(reason, "操作失败，请检查网络后重试")); });
+    setArtifacts([]);
+    void client.getManifest(id).then((manifest) => { if (active) setArtifacts(manifest.artifacts); }).catch((reason: unknown) => { if (active) setError(explainError(reason, "加载成果失败")); });
     return () => { active = false; };
-  }, [job?.reconstruction_id, job?.status, writer]);
+  }, [job?.reconstruction_id, job?.status, page, resultRevision]);
+
+  useEffect(() => {
+    const id = job?.reconstruction_id;
+    if (!id || job?.status !== "SUCCEEDED" || page !== "shares" || !writer) return;
+    let active = true;
+    setShares([]);
+    void client.listShares(id).then((value) => { if (active) setShares(value); }).catch((reason: unknown) => { if (active) setError(explainError(reason, "加载分享失败")); });
+    return () => { active = false; };
+  }, [job?.reconstruction_id, job?.status, writer, page, resultRevision]);
 
   async function action(fn: () => Promise<void>) {
     if (busy) return;
@@ -175,9 +197,16 @@ export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
     const oldest = logs[0]?.id;
     if (!oldest) return;
     const level = logLevel === "all" ? undefined : logLevel;
-    const rows = await client.listJobLogs(jobId, { beforeId: oldest, limit: LOG_PAGE_SIZE, level });
-    setHasEarlier(rows.length >= LOG_PAGE_SIZE);
-    if (rows.length > 0) setLogs((current) => [...rows, ...current]);
+    const generation = logGeneration.current;
+    try {
+      const rows = await client.listJobLogs(jobId, { beforeId: oldest, limit: LOG_PAGE_SIZE, level });
+      if (generation !== logGeneration.current) return;
+      setLogError("");
+      setHasEarlier(rows.length >= LOG_PAGE_SIZE);
+      if (rows.length > 0) setLogs((current) => [...rows, ...current]);
+    } catch (reason) {
+      if (generation === logGeneration.current) setLogError(explainError(reason, "加载更早日志失败"));
+    }
   }
   async function createShare() {
     if (!job?.reconstruction_id) return;
@@ -196,9 +225,11 @@ export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
     await Linking.openURL(artifact.url);
   }
   const progress = Math.round((job?.progress ?? 0) * 100);
+  if (!page) return null;
+  const title = { job: "任务详情", "job-logs": "运行日志", result: "成果详情", downloads: "下载与校验", shares: "分享管理" }[page];
   return (
-    <Screen title="重建任务" scroll>
-      <Card>
+    <Screen title={title} scroll onBack={onBack}>
+      {page === "job" ? <Card>
         <Text accessibilityLiveRegion="polite" style={[textStyles.heading, job?.status === "SUCCEEDED" && { color: theme.success }, job?.status === "FAILED" && textStyles.error]}>
           {job ? JOB_STATUS_LABELS[job.status] : "加载中…"}
         </Text>
@@ -221,17 +252,25 @@ export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
           setJob(await client.retryJob(job.id));
           setReload((value) => value + 1);
         })} /> : null}
-        {job?.reconstruction_id && artifacts.some((a) => a.kind === "spz" || a.kind === "ply") ? <Button label="打开三维场景" onPress={() => onOpenScene(job.reconstruction_id!)} /> : null}
-      </Card>
-      {artifacts.length > 0 ? <Card>
+        {job?.status === "SUCCEEDED" && job.reconstruction_id ? <Button label="查看结果" onPress={() => onNavigate("result")} /> : null}
+        <Button label="运行日志" tone="ghost" onPress={() => onNavigate("job-logs")} />
+      </Card> : null}
+      {page === "result" && job?.status === "SUCCEEDED" && job.reconstruction_id ? <Card>
+        <Text style={textStyles.muted}>任务 {job.id.slice(0, 8)} · {RECONSTRUCTION_PROFILES[job.profile].title}</Text>
+        {artifacts.some((artifact) => artifact.kind === "spz" || artifact.kind === "ply") ? <Button label="打开三维场景" onPress={() => onOpenScene(job.reconstruction_id!)} /> : null}
+        <Button label="下载与校验" tone="ghost" onPress={() => onNavigate("downloads")} />
+        {writer ? <Button label="分享管理" tone="ghost" onPress={() => onNavigate("shares")} /> : null}
+      </Card> : null}
+      {page === "downloads" && artifacts.length > 0 ? <Card>
         <Text accessibilityRole="header" style={textStyles.heading}>下载</Text>
         {artifacts.map((artifact) => <View key={artifact.kind} style={{ paddingVertical: 8, gap: 8, borderBottomWidth: 1, borderBottomColor: theme.divider }}>
           <Text style={textStyles.body}>{artifact.kind.toUpperCase()} · {artifact.size == null ? "大小未知" : `${(artifact.size / 1024 / 1024).toFixed(1)} MB`}</Text>
           <Text selectable style={textStyles.muted}>SHA-256: {artifact.sha256 ?? "未提供"}</Text>
           <Button label={`下载 ${artifact.kind.toUpperCase()}`} disabled={busy} onPress={() => void action(() => download(artifact.kind))} />
+          {artifact.kind === "ply" && job?.reconstruction_id ? <Button label="打开 PLY 场景" tone="ghost" onPress={() => onOpenScene(job.reconstruction_id!)} /> : null}
         </View>)}
       </Card> : null}
-      {writer && job?.reconstruction_id && job.status === "SUCCEEDED" ? <Card>
+      {page === "shares" && writer && job?.reconstruction_id && job.status === "SUCCEEDED" ? <Card>
         <Text accessibilityRole="header" style={textStyles.heading}>分享管理</Text>
         <Text style={textStyles.muted}>新链接有效期（已有链接不会显示原始令牌）</Text>
         <Segmented value={sharePreset} onChange={setSharePreset} options={SHARE_PRESETS.map(({ value, label }) => ({ value, label }))} />
@@ -246,29 +285,27 @@ export function JobScreen({ jobId, onOpenScene, onReplaceAssets, onBack }: {
           {!share.revoked_at ? <Button label="撤销分享" disabled={busy} tone="ghost" onPress={() => Alert.alert("撤销分享", "撤销后链接将立即失效。", [{ text: "返回", style: "cancel" }, { text: "撤销", style: "destructive", onPress: () => void action(async () => { await client.revokeShare(share.id); setShares(await client.listShares(job.reconstruction_id!)); if (shareToken) setShareToken(""); }) }])} /> : null}
         </View>)}
       </Card> : null}
-      {timeline.length > 0 ? <Card>
+      {page === "job" && timeline.length > 0 ? <Card>
         <Text accessibilityRole="header" style={textStyles.heading}>阶段记录</Text>
+        {timeline.some((row) => Object.keys(row.metrics).length > 0) ? <Button tone="ghost" label={showMetrics ? "隐藏技术指标" : "查看技术指标"} onPress={() => setShowMetrics((value) => !value)} /> : null}
         {timeline.map((row) => <View key={row.key} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: theme.border }}>
           <Text style={textStyles.body}>{stageLabel(row.stage)} · {row.status} · {Math.round(row.progress * 100)}%</Text>
           {row.message ? <Text style={textStyles.muted}>{row.message}</Text> : null}
-          {Object.keys(row.metrics).length > 0 ? <Text style={textStyles.muted}>{JSON.stringify(row.metrics)}</Text> : null}
+          {showMetrics && Object.keys(row.metrics).length > 0 ? <Text style={textStyles.muted}>{JSON.stringify(row.metrics)}</Text> : null}
         </View>)}
       </Card> : null}
-      <Card>
-        <Button tone="ghost" label={showLogs ? "收起运行日志" : `查看运行日志（${logs.length}）`} onPress={() => setShowLogs((value) => !value)} />
-        {showLogs ? <>
-          <Segmented value={logLevel} onChange={setLogLevel} options={LOG_LEVELS} />
-          {logs.length === 0 ? <Text style={textStyles.muted}>{jobStatus && ACTIVE[jobStatus] ? "等待 Worker 输出…" : "暂无运行日志。"}</Text> : logs.map((row) => (
-            <Text key={row.id} selectable style={LOG_TEXT}>{new Date(row.created_at).toLocaleTimeString()} · {LOG_TAG[row.level]} · {row.message}</Text>
-          ))}
-          {hasEarlier ? <Button disabled={busy} label="加载更早" tone="ghost" onPress={() => void action(loadEarlier)} /> : null}
-        </> : null}
-      </Card>
+      {page === "job-logs" ? <Card>
+        <Segmented value={logLevel} onChange={setLogLevel} options={LOG_LEVELS} />
+        {logError ? <><Text accessibilityRole="alert" style={textStyles.error}>{logError}</Text><Button label="重试加载日志" onPress={() => setLogRevision((value) => value + 1)} /></> : null}
+        {!logError && logs.length === 0 ? <Text style={textStyles.muted}>{jobStatus && ACTIVE[jobStatus] ? "等待 Worker 输出…" : "暂无运行日志。"}</Text> : logs.map((row) => (
+          <Text key={row.id} selectable style={LOG_TEXT}>{new Date(row.created_at).toLocaleTimeString()} · {LOG_TAG[row.level]} · {row.message}</Text>
+        ))}
+        {hasEarlier ? <Button disabled={busy} label="加载更早" tone="ghost" onPress={() => void action(loadEarlier)} /> : null}
+      </Card> : null}
       {error ? <Card>
         <Text accessibilityRole="alert" style={textStyles.error}>{error}</Text>
-        <Button label="重新加载任务" onPress={() => { setError(""); setReload((value) => value + 1); }} />
+        <Button label="重试" onPress={() => { setError(""); if (page === "job" || !job) setReload((value) => value + 1); else setResultRevision((value) => value + 1); }} />
       </Card> : null}
-      <Button label="返回项目" onPress={onBack} tone="ghost" />
     </Screen>
   );
 }
