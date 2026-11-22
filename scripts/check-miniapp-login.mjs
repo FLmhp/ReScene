@@ -7,6 +7,7 @@ const dist = new URL("../apps/miniapp/dist/", import.meta.url);
 const app = JSON.parse(readFileSync(new URL("app.json", dist), "utf8"));
 assert.equal(app.entryPagePath, "pages/index/index");
 assert.equal(app.pages[0], app.entryPagePath);
+assert.ok(app.pages.includes("pages/focus/index"), "The library focus route must stay registered beside the login entry");
 assert.equal(app.lazyCodeLoading, undefined);
 // The WeChat module wrapper has a local fetch binding independent of globalThis.
 const context = createContext({ wx: {}, fetch: undefined, setTimeout, clearTimeout, URLSearchParams });
