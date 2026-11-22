@@ -19,6 +19,7 @@ import base64
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -84,7 +85,11 @@ class Recorder:
 
 
 class Remote:
-    """One SSH client; every call runs a bash script on stdin."""
+    """One SSH client; each call runs a bash script passed as an argument.
+
+    The script must not arrive on stdin: `docker compose exec` inherits the
+    shell's stdin and would swallow the rest of the script when it does.
+    """
 
     def __init__(self, recorder: Recorder, key: str, known_hosts: str) -> None:
         host = os.environ["DEPLOY_HOST"]
@@ -104,7 +109,6 @@ class Remote:
             "-o", "ServerAliveInterval=30",
             "-o", "ServerAliveCountMax=6",
             self.dest,
-            "bash", "-s",
         ]  # fmt: skip
 
     def run(self, name: str, script: str, timeout: int = 600) -> str:
@@ -117,9 +121,9 @@ class Remote:
     def exec(self, name: str, script: str, timeout: int) -> str:
         started = now()
         try:
-            done = subprocess.run(  # noqa: S603 - fixed binary, arguments are not shell-interpreted
-                self.base,
-                input=script.encode(),
+            done = subprocess.run(  # noqa: S603 - fixed binary, the script is one quoted argument
+                [*self.base, "bash", "-c", shlex.quote(script)],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=timeout,
                 check=False,
@@ -200,6 +204,38 @@ def fill(script: str, **values: str) -> str:
     return script
 
 
+DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+BUILD = {
+    "api": "docker build -f infra/api/Dockerfile -t 'rescene-api:@@VERSION@@' .",
+    "web": (
+        "docker build -f infra/web/Dockerfile "
+        "--build-arg NEXT_PUBLIC_API_URL=https://api.rescene.xyz "
+        "-t 'rescene-web:@@VERSION@@' ."
+    ),
+}
+
+
+def build_image(remote: Remote, service: str, version: str) -> str:
+    """Build one service image and read back its digest.
+
+    The build log interleaves base-image digests with the layers, so the image
+    identity comes from a separate inspect rather than from that output.
+    """
+    remote.run(
+        f"build-{service}",
+        fill("cd /root/rescene-stage-@@VERSION@@\n", VERSION=version) + fill(BUILD[service], VERSION=version) + "\n",
+        1800,
+    )
+    digest = remote.run(
+        f"image-{service}",
+        f"docker image inspect --format '{{{{.Id}}}}' 'rescene-{service}:{version}'\n",
+    ).strip()
+    if not DIGEST.match(digest):
+        raise DeployError(f"image-{service}: unexpected image id {digest!r}")
+    return digest
+
+
 def deploy(recorder: Recorder, root: Path, args: argparse.Namespace, key: str, known_hosts: str) -> None:
     remote = Remote(recorder, key, known_hosts)
     stage = f"/root/rescene-stage-{args.version}"
@@ -240,32 +276,9 @@ echo "staged $(cat "@@STAGE@@/VERSION")"
 
     remote.run("docker-prune", "docker builder prune -f\n")
 
-    api_id = remote.run(
-        "build-api",
-        fill(
-            """
-cd "@@STAGE@@"
-docker build -f infra/api/Dockerfile -t "rescene-api:@@VERSION@@" .
-docker image inspect --format '{{.Id}}' "rescene-api:@@VERSION@@"
-""",
-            **tokens,
-        ),
-        1800,
-    ).strip()
+    api_id = build_image(remote, "api", args.version)
     recorder.summary["images"] = {"api": api_id}
-
-    web_id = remote.run(
-        "build-web",
-        fill(
-            """
-cd "@@STAGE@@"
-docker build -f infra/web/Dockerfile --build-arg NEXT_PUBLIC_API_URL=https://api.rescene.xyz -t "rescene-web:@@VERSION@@" .
-docker image inspect --format '{{.Id}}' "rescene-web:@@VERSION@@"
-""",
-            **tokens,
-        ),
-        1800,
-    ).strip()
+    web_id = build_image(remote, "web", args.version)
     recorder.summary["images"] = {"api": api_id, "web": web_id}
 
     backup = remote.run(
@@ -307,6 +320,10 @@ printf 'backup=%s\\ndump=%s\\ndump_sha256=%s\\n' "$backup" "$dump" "$(sha256sum 
             recorder.summary["dumpPath"] = value
         elif key_name == "dump_sha256":
             recorder.summary["dumpSha256"] = value
+    # A deploy without a verified snapshot must not reach the release log.
+    missing = [k for k in ("backupDir", "dumpPath", "dumpSha256") if not recorder.summary[k]]
+    if missing:
+        raise DeployError(f"backup: the snapshot was not recorded ({', '.join(missing)})")
 
     for service in ("api", "web"):
         remote.run(
