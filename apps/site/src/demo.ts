@@ -16,9 +16,11 @@ if (!viewport || !modelSrc) {
   createRoot(viewport).render(
     createElement(Viewer, {
       src: modelSrc,
-      poster: "/media/demo-houseplant.webp",
+      poster: "/media/knock-community-hall.webp",
       keyboardControls: true,
-      loadErrorMessage: "公开模型加载失败，请重试",
+      viewDirection: [0.93, 0.22, -0.29],
+      viewDistance: 1.25,
+      loadErrorMessage: "公开建筑模型加载失败，请重试",
     }),
   );
 }

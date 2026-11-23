@@ -54,7 +54,7 @@ rescene.xyz {
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
 		Content-Security-Policy "default-src 'none'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; form-action 'none'"
 	}
-	handle /assets/houseplant-ce9d490b18f1.splat {
+	handle /assets/knock-community-hall.spz {
 		header Cache-Control "public, max-age=31536000, immutable"
 		header Content-Type "application/octet-stream"
 		root * /var/www/rescene-site
@@ -65,7 +65,7 @@ rescene.xyz {
 	@demo path /demo/ /demo/index.html
 	handle @demo {
 		header Cache-Control "no-cache"
-		header Content-Security-Policy "default-src 'none'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src https://rescene.xyz/assets/houseplant-ce9d490b18f1.splat; worker-src blob:; form-action 'none'"
+		header Content-Security-Policy "default-src 'none'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src https://rescene.xyz/assets/knock-community-hall.spz; worker-src blob:; form-action 'none'"
 		root * /var/www/rescene-site/current
 		file_server
 	}

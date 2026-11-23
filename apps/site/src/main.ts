@@ -280,21 +280,25 @@ if (demo && demoButton && demoStatus && diagram && flow && endpointGroup) {
     const started = performance.now();
     const timing: [number, number][] = [
       [0, 360],
-      [320, 650],
-      [1100, 1660],
-      [650, 1100],
-      [1100, 1660],
+      [300, 620],
+      [660, 1020],
+      [420, 820],
+      [900, 1280],
+      [1120, 1480],
     ];
     const animate = (now: number) => {
       const elapsed = now - started;
       endpointGroup.classList.add("active");
       timing.forEach(([start, end], index) => {
+        const path = paths[index];
+        const endpoint = endpoints[index];
+        if (!path || !endpoint) return;
         const progress = (elapsed - start) / (end - start);
-        paths[index].classList.toggle("active", progress >= 0 && progress <= 1);
-        paths[index].style.strokeDashoffset = String(100 - Math.max(0, Math.min(1, progress)) * 118);
-        endpoints[index].classList.toggle("active", progress >= 0.8 && progress <= 1);
+        path.classList.toggle("active", progress >= 0 && progress <= 1);
+        path.style.strokeDashoffset = String(100 - Math.max(0, Math.min(1, progress)) * 118);
+        endpoint.classList.toggle("active", progress >= 0.8 && progress <= 1);
       });
-      if (elapsed < 1660) animationFrame = requestAnimationFrame(animate);
+      if (elapsed < 1600) animationFrame = requestAnimationFrame(animate);
       else {
         reset();
         demoStatus.textContent = "任务流向演示结束。";

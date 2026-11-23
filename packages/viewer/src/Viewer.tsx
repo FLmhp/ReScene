@@ -21,14 +21,29 @@ export type ViewerProps = {
   keyboardControls?: boolean;
   /** Replace the reconstruction-load failure text when the source is not a signed URL. */
   loadErrorMessage?: string;
+  /** Direction from the scene centre to the initial camera, in scene units. */
+  viewDirection?: [number, number, number];
+  /** Initial camera distance as a multiple of the bounding-sphere radius. */
+  viewDistance?: number;
 };
 
+const DEFAULT_VIEW_DIRECTION: [number, number, number] = [0.35, 0.2, 1];
 const LOADING = "正在加载场景";
 const EXPIRED = "场景地址可能已过期，或场景文件解析失败。请重试以刷新下载地址。";
 const ORBIT_STEP = THREE.MathUtils.degToRad(15);
 const ZOOM_STEP = 1.15;
 
-export function Viewer({ src, poster, onStatus, onRetry, keyboardControls = false, loadErrorMessage }: ViewerProps) {
+export function Viewer({
+  src,
+  poster,
+  onStatus,
+  onRetry,
+  keyboardControls = false,
+  loadErrorMessage,
+  viewDirection = DEFAULT_VIEW_DIRECTION,
+  viewDistance = 2.2,
+}: ViewerProps) {
+  const [viewX, viewY, viewZ] = viewDirection;
   const host = useRef<HTMLDivElement>(null);
   const shell = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
@@ -111,7 +126,7 @@ export function Viewer({ src, poster, onStatus, onRetry, keyboardControls = fals
           controls.target.copy(sphere.center);
           camera.position
             .copy(sphere.center)
-            .addScaledVector(new THREE.Vector3(0.35, 0.2, 1).normalize(), 2.2 * sphere.radius);
+            .addScaledVector(new THREE.Vector3(viewX, viewY, viewZ).normalize(), viewDistance * sphere.radius);
           camera.near = Math.max(0.001, sphere.radius / 500);
           camera.far = Math.max(100, 30 * sphere.radius);
           camera.updateProjectionMatrix();
@@ -163,7 +178,7 @@ export function Viewer({ src, poster, onStatus, onRetry, keyboardControls = fals
       renderer.domElement.remove();
       delete element.dataset.rendered;
     };
-  }, [src, attempt]);
+  }, [src, attempt, viewDistance, viewX, viewY, viewZ]);
 
   useEffect(() => {
     if (!keyboardControls) return;

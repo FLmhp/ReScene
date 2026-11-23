@@ -1,10 +1,13 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import { paletteCssVariables, resolvePalette, type Palette } from "../../packages/design-tokens/src/index";
-import { DEMO_MODEL_PATH, loadDemoModel } from "./demo-assets";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
+const DEMO_MODEL_PATH = "/assets/knock-community-hall.spz";
+const DEMO_MODEL_BYTES = 4_983_948;
+const DEMO_MODEL_SHA256 = "6f9ad119cb6fdb765cc99862af060f4376b4cd238fab15089749ca511e0ff585";
 
 /**
  * The workspace package ships TypeScript sources and is externalised from the
@@ -38,34 +41,18 @@ function sitePalette(): Plugin {
   };
 }
 
-/** Fails the build instead of shipping a missing or substituted demo scene. */
-function demoModel(): Plugin {
-  let pending: Promise<Buffer> | undefined;
-  const load = () => (pending ??= loadDemoModel());
+/** Fails the build instead of shipping a missing, stale or substituted demo scene. */
+function demoModelCheck(): Plugin {
   return {
     name: "rescene-site-demo-model",
-    configureServer(server) {
-      server.middlewares.use((request, response, next) => {
-        if (request.url?.split("?")[0] !== DEMO_MODEL_PATH) return next();
-        void load().then(
-          (bytes) => {
-            response.statusCode = 200;
-            response.setHeader("Content-Type", "application/octet-stream");
-            response.setHeader("Content-Length", String(bytes.length));
-            response.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-            response.end(bytes);
-          },
-          (error: unknown) => {
-            response.statusCode = 503;
-            response.setHeader("Content-Type", "text/plain; charset=utf-8");
-            response.end(`演示模型不可用：${error instanceof Error ? error.message : String(error)}`);
-          },
-        );
-      });
-    },
-    async buildStart() {
-      const bytes = await load();
-      this.emitFile({ type: "asset", fileName: DEMO_MODEL_PATH.slice(1), source: bytes });
+    buildStart() {
+      const bytes = readFileSync(new URL(`./public${DEMO_MODEL_PATH}`, import.meta.url));
+      if (bytes.length !== DEMO_MODEL_BYTES) {
+        throw new Error(`Demo model must be ${DEMO_MODEL_BYTES} bytes, found ${bytes.length}`);
+      }
+      if (createHash("sha256").update(bytes).digest("hex") !== DEMO_MODEL_SHA256) {
+        throw new Error("Demo model SHA-256 differs from the pinned digest");
+      }
     },
   };
 }
@@ -105,7 +92,7 @@ export default defineConfig({
     },
   },
   esbuild: { jsx: "automatic" },
-  plugins: [sitePalette(), demoModel(), licenseNotices(), {
+  plugins: [sitePalette(), demoModelCheck(), licenseNotices(), {
     name: "rescene-site-html",
     transformIndexHtml: {
       order: "pre",

@@ -19,9 +19,9 @@ BASELINE_URLS = (
 SITE = "https://rescene.xyz"
 TIMEOUT_SECONDS = 20
 HOME_HEADING = "Reconstruct Reality in 3D."
-DEMO_MODEL_PATH = "/assets/houseplant-ce9d490b18f1.splat"
-DEMO_MODEL_BYTES = 3_636_736
-DEMO_MODEL_SHA256 = "ce9d490b18f16d6730d832227bf541431b8b1a5d167c5a3fe89af4f324c0d8fd"
+DEMO_MODEL_PATH = "/assets/knock-community-hall.spz"
+DEMO_MODEL_BYTES = 4_983_948
+DEMO_MODEL_SHA256 = "6f9ad119cb6fdb765cc99862af060f4376b4cd238fab15089749ca511e0ff585"
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -187,7 +187,7 @@ def check_site():
         ("/social-card.svg", "image/svg+xml"),
         ("/media/admin-console.webp", "image/webp"),
         ("/media/mobile-drawer.webp", "image/webp"),
-        ("/media/demo-houseplant.webp", "image/webp"),
+        ("/media/knock-community-hall.webp", "image/webp"),
         ("/media/viewer-reconstruction.webp", "image/webp"),
         ("/robots.txt", "text/plain"),
         ("/sitemap.xml", "application/xml"),

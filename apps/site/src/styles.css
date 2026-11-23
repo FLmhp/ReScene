@@ -220,6 +220,8 @@
   height: 100%;
   object-fit: contain;
   filter: drop-shadow(0 22px 34px rgba(2, 6, 18, 0.55));
+  -webkit-mask-image: linear-gradient(to bottom, #000 80%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 80%, transparent 100%);
 }
 
 .sample-points {
@@ -237,23 +239,24 @@
 
 .inspector-meta {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   align-items: center;
-  gap: 8px 16px;
+  gap: 6px;
   padding: 14px 16px 16px;
   border-block-start: 1px solid var(--divider);
   color: var(--muted);
   font-size: 13px;
+  text-align: center;
 }
 
 .inspector-credit {
-  flex: 1 1 14rem;
   min-width: 0;
 }
 
 .inspector-links {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 4px 14px;
 }
 
@@ -263,7 +266,7 @@
 }
 
 .inspector-open {
-  flex: 1 1 100%;
+  width: 100%;
 }
 
 /* ---------- Sections ---------- */
@@ -475,38 +478,31 @@
 
 .workflow-evidence {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   align-items: center;
-  gap: clamp(16px, 3vw, 40px);
+  gap: 16px;
   margin-block-start: clamp(32px, 4vw, 56px);
   padding-block-start: clamp(24px, 3vw, 32px);
   border-block-start: 1px solid var(--divider);
+  text-align: center;
 }
 
-.workflow-evidence figure {
-  flex: none;
+.workflow-evidence img {
   width: min(100%, 208px);
-  overflow: hidden;
   border: 1px solid var(--border-soft);
   border-radius: 16px;
   background: var(--panel);
 }
 
-.workflow-evidence img {
-  width: 100%;
-  height: auto;
-}
-
-.workflow-evidence-text {
-  flex: 1 1 18rem;
+.workflow-evidence-caption {
   max-width: 34rem;
 }
 
-.workflow-evidence-text h3 {
+.workflow-evidence-caption h3 {
   font-size: 17px;
 }
 
-.workflow-evidence-text p {
+.workflow-evidence-caption p {
   margin-block-start: 8px;
   color: var(--muted);
   font-size: 15px;
@@ -646,13 +642,16 @@
 /* ---------- Architecture ---------- */
 
 .architecture {
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 5fr);
-  align-items: start;
-  gap: clamp(24px, 3vw, 48px);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(20px, 3vw, 32px);
   margin-block-start: clamp(40px, 5vw, 64px);
   padding-block-start: clamp(28px, 4vw, 40px);
   border-block-start: 1px solid var(--divider);
+}
+
+.architecture-intro {
+  max-width: 72ch;
 }
 
 .architecture h3 {
@@ -674,23 +673,113 @@
   background: var(--panel);
 }
 
+.architecture-scroll {
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.architecture-scroll:focus-visible {
+  border-radius: 8px;
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
 .architecture-diagram {
+  display: block;
   width: 100%;
   height: auto;
 }
 
-.diagram-lines {
-  stroke: var(--border-soft);
+.architecture-frame figcaption {
+  margin-block-start: 12px;
+  padding-block-start: 12px;
+  border-block-start: 1px solid var(--divider);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
 }
 
-.diagram-boxes {
+.diagram-lines {
+  stroke: var(--muted);
+  opacity: 0.5;
+}
+
+.diagram-arrowhead {
+  fill: var(--muted);
+}
+
+.diagram-boxes rect {
   fill: var(--panel-alt);
   stroke: var(--border-soft);
 }
 
+.diagram-zone {
+  fill: none;
+  stroke: var(--border-soft);
+  stroke-dasharray: 3 6;
+}
+
+.diagram-zone-label,
+.diagram-caption,
+.diagram-edge-labels,
+.diagram-legend text,
+.diagram-blocked text {
+  fill: var(--muted);
+}
+
 .diagram-text {
-  fill: var(--fg);
   font-family: var(--font-family, Inter, sans-serif);
+}
+
+.diagram-title {
+  fill: var(--fg);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.diagram-caption {
+  font-size: 12px;
+}
+
+.diagram-zone-label {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 5px;
+}
+
+.diagram-icons {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.diagram-edge-labels {
+  font-size: 10.5px;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.diagram-blocked {
+  stroke: var(--muted);
+  opacity: 0.75;
+}
+
+.diagram-blocked circle {
+  fill: var(--panel);
+}
+
+.diagram-blocked text {
+  font-size: 11px;
+  text-anchor: start;
+  stroke: none;
 }
 
 .diagram-demo {
@@ -698,7 +787,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 12px;
-  margin-block-end: 14px;
+  margin-block-start: 14px;
   color: var(--muted);
   font-size: 13px;
 }
@@ -755,6 +844,32 @@
   opacity: 1;
 }
 
+.diagram-legend line {
+  stroke: var(--muted);
+  stroke-width: 2;
+}
+
+.diagram-legend circle {
+  fill: var(--panel);
+  stroke: var(--muted);
+}
+
+.diagram-legend g path {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+.diagram-legend text {
+  font-size: 11.5px;
+}
+
+.diagram-legend-note {
+  font-size: 11px;
+  opacity: 0.85;
+}
+
 /* ---------- Capabilities ---------- */
 
 .capabilities-layout {
@@ -789,6 +904,14 @@
   border: 1px solid var(--border-soft);
   border-radius: 16px;
   background: var(--panel);
+}
+
+.capabilities-layout figcaption {
+  padding: 10px 14px 12px;
+  border-block-start: 1px solid var(--divider);
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
 }
 
 .capabilities-layout img {
@@ -972,7 +1095,6 @@
     width: min(100%, 640px);
   }
 
-  .architecture,
   .capabilities-layout {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -982,6 +1104,12 @@
   .result-grid,
   .route-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .architecture-diagram {
+    min-width: 680px;
   }
 }
 
@@ -1008,13 +1136,23 @@
     block-size: calc(100% - 12px);
   }
 
-  .workflow-evidence figure {
+  .workflow-evidence img {
     width: min(100%, 190px);
   }
 
   .faq-section,
   .boundaries {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media print {
+  .architecture-scroll {
+    overflow: visible;
+  }
+
+  .architecture-diagram {
+    min-width: 0;
   }
 }
 

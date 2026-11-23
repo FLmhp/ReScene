@@ -137,6 +137,7 @@ The project's own source code and documentation are [MIT licensed](LICENSE), © 
 
 - **VGGT-1B weights** — [facebook/VGGT-1B](https://huggingface.co/facebook/VGGT-1B) is CC BY-NC 4.0 (non-commercial). Running the FAST and BALANCED routes does not grant commercial rights to those weights.
 - **Inter font** — SIL Open Font License 1.1, see [Inter-LICENSE.txt](packages/design-tokens/assets/Inter-LICENSE.txt).
+- **Knock Community Hall** — [public scene](https://superspl.at/scene/0ff2e6dc) by scbenoit, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The public site ships a decimated SPZ and a rendered preview; attribution and modification notes are in [knock-community-hall.LICENSE.txt](apps/site/public/assets/knock-community-hall.LICENSE.txt).
 - **ETH3D data** — used in experiments under the ETH3D dataset terms at <https://www.eth3d.net/>.
 - **plyfile** — [GPLv3](https://pypi.org/project/plyfile/), a runtime dependency of the Python engine.
 
