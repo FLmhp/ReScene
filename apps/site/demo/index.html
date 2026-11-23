@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN" data-site-theme="system" data-type="software" data-radius="soft" data-buttons="solid">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="page-type" content="software">
+  <meta name="site-kind" content="software">
+  <title>三维演示 · ReScene</title>
+  <meta name="description" content="在浏览器中旋转与缩放公开的 Houseplant Gaussian Splat 场景。">
+  <link rel="canonical" href="https://rescene.xyz/demo/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="三维演示 · ReScene">
+  <meta property="og:description" content="在浏览器中旋转与缩放公开的 Houseplant Gaussian Splat 场景。">
+  <meta property="og:url" content="https://rescene.xyz/demo/">
+  <meta property="og:image" content="https://rescene.xyz/social-card.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="三维演示 · ReScene">
+  <meta name="twitter:description" content="在浏览器中旋转与缩放公开的 Houseplant Gaussian Splat 场景。">
+  <meta name="twitter:image" content="https://rescene.xyz/social-card.png">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/src/demo.css">
+  <script type="module" src="/src/demo.ts"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner container">
+      <a class="skip-link" href="#main">跳到正文</a>
+      <a class="brand" href="/" aria-label="ReScene 首页">
+        <span class="brand-mark"><img src="/media/rescene-mark.svg" alt="" width="34" height="34"></span>
+        <span class="brand-word">ReScene</span>
+      </a>
+      <a class="link-back" href="/">返回官网</a>
+      <div class="appearance" data-site-theme-control hidden>
+        <label for="site-theme">外观</label>
+        <select id="site-theme" name="site-theme"></select>
+      </div>
+    </div>
+  </header>
+  <main id="main" tabindex="-1" class="demo-main">
+    <div class="container">
+      <div class="demo-intro">
+        <p class="eyebrow">3D VIEWPORT · 公开模型</p>
+        <h1>Houseplant</h1>
+        <p>在浏览器中绕场景旋转与缩放。模型由 Marcel Padilla 以 CC BY 4.0 发布，ReScene 只提供查看器；这不是 ReScene 的重建产物。</p>
+      </div>
+      <figure class="demo-stage">
+        <div id="demo-viewport" data-model-src="%RESCENE_DEMO_MODEL%">
+          <div class="demo-fallback" data-demo-fallback>
+            <img src="/media/demo-houseplant.webp" width="540" height="358" alt="Houseplant 公开模型的渲染预览">
+            <p data-demo-status>启用 JavaScript 与 WebGL2 后可在页面内旋转与缩放；当前仅显示模型预览图。</p>
+            <p class="demo-fallback-hint">模型文件约 3.5 MB，仅在进入本页后按需下载。</p>
+          </div>
+        </div>
+        <figcaption class="demo-credit">
+          <span>Houseplant · Marcel Padilla · CC BY 4.0</span>
+          <span class="demo-credit-links">
+            <a class="link link-external" href="https://github.com/marcelpadilla/splats/tree/c3e5ec0a8ddb3ab26f28a067a29d272fe1a23411/data/plant">原始样例<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+            <a class="link link-external" href="https://creativecommons.org/licenses/by/4.0/">许可证<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+            <a class="link" href="/">回到官网</a>
+          </span>
+        </figcaption>
+      </figure>
+      <p class="demo-note">键盘操作：Tab 进入画面，方向键旋转，<kbd>+</kbd> / <kbd>−</kbd> 缩放，Home 还原。触屏可拖动与双指缩放。</p>
+    </div>
+  </main>
+</body>
+</html>

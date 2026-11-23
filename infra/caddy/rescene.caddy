@@ -54,6 +54,21 @@ rescene.xyz {
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
 		Content-Security-Policy "default-src 'none'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; form-action 'none'"
 	}
+	handle /assets/houseplant-ce9d490b18f1.splat {
+		header Cache-Control "public, max-age=31536000, immutable"
+		header Content-Type "application/octet-stream"
+		root * /var/www/rescene-site
+		file_server
+	}
+	# Only /demo/ gets the WASM, blob-worker and single-model exceptions; the
+	# homepage keeps connect-src 'none' and no eval.
+	@demo path /demo/ /demo/index.html
+	handle @demo {
+		header Cache-Control "no-cache"
+		header Content-Security-Policy "default-src 'none'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src https://rescene.xyz/assets/houseplant-ce9d490b18f1.splat; worker-src blob:; form-action 'none'"
+		root * /var/www/rescene-site/current
+		file_server
+	}
 	handle /assets/* {
 		header Cache-Control "public, max-age=31536000, immutable"
 		root * /var/www/rescene-site

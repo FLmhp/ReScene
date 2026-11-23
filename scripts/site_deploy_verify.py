@@ -18,6 +18,10 @@ BASELINE_URLS = (
 )
 SITE = "https://rescene.xyz"
 TIMEOUT_SECONDS = 20
+HOME_HEADING = "Reconstruct Reality in 3D."
+DEMO_MODEL_PATH = "/assets/houseplant-ce9d490b18f1.splat"
+DEMO_MODEL_BYTES = 3_636_736
+DEMO_MODEL_SHA256 = "ce9d490b18f16d6730d832227bf541431b8b1a5d167c5a3fe89af4f324c0d8fd"
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -102,17 +106,18 @@ def check_response(url, expected_status, content_types=None):
     return headers, body
 
 
-def check_site():
-    headers, body = check_response(SITE + "/", 200, {"text/html"})
-    require("no-cache" in headers.get("Cache-Control", "").lower(), "Homepage must use Cache-Control: no-cache")
-    csp = headers.get("Content-Security-Policy", "")
-    directives = [directive.strip().split() for directive in csp.split(";") if directive.strip()]
-    connect = [directive[1:] for directive in directives if directive[0].lower() == "connect-src"]
-    require(connect == [["'none'"]], "Homepage CSP must specify connect-src 'none'")
-    page = SiteHTML()
-    page.feed(body.decode("utf-8"))
-    require("".join(page.heading).strip() == "照片与视频三维重建", "Homepage H1 differs from expected text")
-    require(page.stylesheets and page.scripts, "Homepage must reference both CSS and JavaScript assets")
+def content_security_policy(headers):
+    """Return the response CSP as lowercase directive names mapped to sources."""
+    directives = {}
+    for directive in headers.get("Content-Security-Policy", "").split(";"):
+        parts = directive.strip().split()
+        if parts:
+            directives[parts[0].lower()] = parts[1:]
+    return directives
+
+
+def check_fingerprinted_assets(page):
+    """Require same-origin, immutable `/assets/` references for scripts and styles."""
     for references, content_types in (
         (page.stylesheets, {"text/css"}),
         (page.scripts, {"text/javascript", "application/javascript", "application/x-javascript"}),
@@ -131,17 +136,65 @@ def check_site():
                 f"{url}: missing immutable long-lived Cache-Control",
             )
 
+
+def check_demo():
+    """Require the isolated demo policy and the pinned, verified public model."""
+    headers, body = check_response(SITE + "/demo/", 200, {"text/html"})
+    require("no-cache" in headers.get("Cache-Control", "").lower(), "Demo page must use Cache-Control: no-cache")
+    directives = content_security_policy(headers)
+    require(
+        directives.get("script-src") == ["'self'", "'wasm-unsafe-eval'"],
+        "Demo CSP must allow self scripts and wasm",
+    )
+    require(directives.get("worker-src") == ["blob:"], "Demo CSP must allow blob workers")
+    require(
+        directives.get("connect-src") == [SITE + DEMO_MODEL_PATH],
+        "Demo CSP must allow only the pinned model",
+    )
+    page = SiteHTML()
+    page.feed(body.decode("utf-8"))
+    require(page.stylesheets and page.scripts, "Demo page must reference both CSS and JavaScript assets")
+    check_fingerprinted_assets(page)
+    model_headers, model_body = check_response(SITE + DEMO_MODEL_PATH, 200, {"application/octet-stream"})
+    cache = model_headers.get("Cache-Control", "").lower()
+    require("immutable" in cache and "max-age=31536000" in cache, "Demo model must be immutable")
+    require(
+        model_headers.get("Content-Length") == str(DEMO_MODEL_BYTES),
+        "Demo model length differs from the pinned size",
+    )
+    require(
+        hashlib.sha256(model_body).hexdigest() == DEMO_MODEL_SHA256,
+        "Demo model SHA-256 differs from the pinned digest",
+    )
+
+
+def check_site():
+    headers, body = check_response(SITE + "/", 200, {"text/html"})
+    require("no-cache" in headers.get("Cache-Control", "").lower(), "Homepage must use Cache-Control: no-cache")
+    require(
+        content_security_policy(headers).get("connect-src") == ["'none'"],
+        "Homepage CSP must specify connect-src 'none'",
+    )
+    page = SiteHTML()
+    page.feed(body.decode("utf-8"))
+    require("".join(page.heading).strip() == HOME_HEADING, "Homepage H1 differs from expected text")
+    require(page.stylesheets and page.scripts, "Homepage must reference both CSS and JavaScript assets")
+    check_fingerprinted_assets(page)
+
     for path, content_type in (
         ("/favicon.svg", "image/svg+xml"),
         ("/social-card.png", "image/png"),
         ("/social-card.svg", "image/svg+xml"),
         ("/media/admin-console.webp", "image/webp"),
         ("/media/mobile-drawer.webp", "image/webp"),
+        ("/media/demo-houseplant.webp", "image/webp"),
         ("/media/viewer-reconstruction.webp", "image/webp"),
         ("/robots.txt", "text/plain"),
         ("/sitemap.xml", "application/xml"),
     ):
         check_response(SITE + path, 200, {content_type, "text/xml"} if path == "/sitemap.xml" else {content_type})
+
+    check_demo()
 
     for path in ("/does-not-exist", "/deployments/", "/.env", "/.git/config"):
         check_response(SITE + path, 404)

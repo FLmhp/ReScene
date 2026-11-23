@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="dark" data-type="software" data-radius="soft" data-buttons="solid">
+<html lang="zh-CN" data-site-theme="system" data-type="software" data-radius="soft" data-buttons="solid">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <meta name="page-type" content="software">
   <meta name="site-kind" content="software">
-  <meta name="theme-color" content="#101A1B">
   <title>ReScene：照片与视频三维重建</title>
   <meta name="description" content="上传图片或视频，选择三条重建路线之一，在 Viewer 浏览、下载或分享场景。">
   <link rel="canonical" href="https://rescene.xyz/">
@@ -23,112 +23,314 @@
   <script type="module" src="/src/main.ts"></script>
 </head>
 <body>
-  <header class="site-header nav">
-    <div class="header-inner container wrap">
+  <header class="site-header">
+    <div class="header-inner container">
       <a class="skip-link" href="#main">跳到正文</a>
-      <a class="brand" href="/" aria-label="ReScene 首页"><img src="/media/rescene-mark.svg" alt="" width="38" height="38"><span>ReScene</span></a>
-      <nav class="desktop-nav" aria-label="主导航"><a href="#results">重建成果</a><a href="#workflow">工作流程</a><a href="#technology">技术路线</a><a href="#capabilities">产品能力</a><a href="#delivery">交付状态</a></nav>
-      <a class="button button-secondary header-cta" href="https://app.rescene.xyz/">打开工作台</a>
+      <a class="brand" href="/" aria-label="ReScene 首页">
+        <span class="brand-mark"><img src="/media/rescene-mark.svg" alt="" width="34" height="34"></span>
+        <span class="brand-word">ReScene</span>
+      </a>
+      <nav class="desktop-nav" aria-label="主导航">
+        <a href="#results">成果</a><a href="#workflow">流程</a><a href="#technology">技术</a><a href="#capabilities">协作</a><a href="#delivery">交付</a>
+      </nav>
+      <div class="appearance" data-site-theme-control hidden>
+        <label for="site-theme">外观</label>
+        <select id="site-theme" name="site-theme"></select>
+      </div>
+      <a class="button button-primary header-cta" href="https://app.rescene.xyz/">打开工作台</a>
       <details id="mobile-navigation" class="mobile-navigation">
         <summary>导航 <span class="menu-icon" aria-hidden="true"></span></summary>
-        <nav aria-label="移动导航"><a href="#results">重建成果</a><a href="#workflow">工作流程</a><a href="#technology">技术路线</a><a href="#capabilities">产品能力</a><a href="#delivery">交付状态</a><a href="https://app.rescene.xyz/">打开工作台</a></nav>
+        <nav aria-label="移动导航">
+          <a href="#results">成果</a><a href="#workflow">流程</a><a href="#technology">技术</a><a href="#capabilities">协作</a><a href="#delivery">交付</a><a href="https://app.rescene.xyz/">打开工作台</a>
+        </nav>
       </details>
     </div>
   </header>
   <main id="main" tabindex="-1">
-    <section class="hero" aria-labelledby="hero-title" data-enter>
-      <div class="container wrap hero-inner">
-      <div class="hero-copy">
-        <h1 id="hero-title">照片与视频三维重建</h1>
-        <p class="hero-description">上传图片或视频，选择三条重建路线之一，在 Viewer 浏览、下载或分享场景。</p>
-        <div class="actions"><a class="button button-primary" href="https://app.rescene.xyz/">打开工作台</a><a class="button button-secondary" href="#results">查看重建成果</a></div>
-        <p class="hero-facts">FAST / BALANCED / QUALITY 3 条路线 · <span>输出 SPZ / PLY</span></p>
-      </div>
-      <figure class="media-frame hero-art" id="sample-inspector">
-        <div class="sample-window" id="sample-window"><img src="/media/viewer-reconstruction.webp" width="540" height="358" loading="eager" decoding="async" alt="ReScene Viewer 中渲染的三维重建场景"><canvas class="sample-points" aria-hidden="true" hidden></canvas></div>
-        <figcaption class="sample-controls" hidden>
-          <div class="sample-control-heading"><span>Viewer 场景样张</span><button class="sample-toggle" type="button" aria-controls="sample-window" aria-pressed="false">放大样张</button></div>
-          <p id="sample-hint">静态样张。放大后可拖动或用方向按钮查看细节；按 Esc 还原。</p>
-          <div class="sample-directions" role="group" aria-label="移动放大样张" hidden>
-            <button type="button" data-pan="left" aria-label="查看左侧">←</button><button type="button" data-pan="up" aria-label="查看上方">↑</button><button type="button" data-pan="down" aria-label="查看下方">↓</button><button type="button" data-pan="right" aria-label="查看右侧">→</button>
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-inner container">
+        <div class="hero-copy">
+          <p class="eyebrow">ReScene · 三维重建工作流</p>
+          <h1 id="hero-title" lang="en">Reconstruct Reality in 3D.</h1>
+          <p class="hero-description">将照片与视频转化为可交互的三维空间。</p>
+          <ul class="hero-tags" aria-label="支持的技术与格式">
+            <li>VGGT</li><li>COLMAP</li><li>SPZ</li><li>PLY</li>
+          </ul>
+          <div class="actions">
+            <a class="button button-primary" href="https://app.rescene.xyz/">开始重建</a>
+            <a class="button button-secondary" href="#results">探索重建成果</a>
           </div>
-        </figcaption>
-      </figure>
+        </div>
+        <figure class="inspector" id="sample-inspector">
+          <div class="inspector-toolbar">
+            <span class="inspector-label">3D VIEWPORT <span aria-hidden="true">/</span> 公开模型</span>
+            <span class="inspector-live">静态预览</span>
+          </div>
+          <div class="inspector-stage">
+            <div class="inspector-decor" aria-hidden="true">
+              <span class="inspector-grid"></span>
+              <span class="inspector-corner inspector-corner--tl"></span>
+              <span class="inspector-corner inspector-corner--tr"></span>
+              <span class="inspector-corner inspector-corner--bl"></span>
+              <span class="inspector-corner inspector-corner--br"></span>
+              <svg class="inspector-axes" viewBox="0 0 72 72" width="56" height="56" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <g stroke="var(--signal)" stroke-width="1.2" stroke-linecap="round" opacity="0.8">
+                  <path d="M22 56V20"/><path d="M22 56l32 8"/><path d="M22 56l22-24"/>
+                </g>
+                <g fill="var(--muted)" font-size="9" font-family="Inter, sans-serif">
+                  <text x="16" y="16">Y</text><text x="58" y="68">X</text><text x="46" y="28">Z</text>
+                </g>
+              </svg>
+            </div>
+            <img class="inspector-poster" src="/media/demo-houseplant.webp" width="540" height="358" loading="eager" fetchpriority="high" decoding="async" alt="公开 Houseplant Gaussian Splat 模型的渲染预览">
+            <canvas class="sample-points" aria-hidden="true" hidden></canvas>
+          </div>
+          <figcaption class="inspector-meta">
+            <p class="inspector-credit">Houseplant · Marcel Padilla · CC BY 4.0</p>
+            <p class="inspector-links">
+              <a class="link link-external" href="https://github.com/marcelpadilla/splats/tree/c3e5ec0a8ddb3ab26f28a067a29d272fe1a23411/data/plant">原始样例<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+              <a class="link link-external" href="https://creativecommons.org/licenses/by/4.0/">许可证<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+            </p>
+            <a class="button button-secondary inspector-open" href="/demo/">打开交互三维演示</a>
+          </figcaption>
+        </figure>
       </div>
     </section>
     <section id="results" class="section" tabindex="-1" aria-labelledby="results-title">
-      <div class="container wrap">
-      <div class="section-heading"><h2 id="results-title">重建结果与交付</h2><p>任务完成后，在工作台中查看和交付场景。</p></div>
-      <div class="table-wrap" tabindex="0" role="region" aria-labelledby="results-title"><table><thead><tr><th scope="col">结果</th><th scope="col">使用方式</th></tr></thead><tbody>
-        <tr><th scope="row">Viewer 浏览</th><td>旋转和缩放场景，检查重建细节。</td></tr>
-        <tr><th scope="row">SPZ / PLY 下载</th><td>下载重建产物，用于后续查看和处理。</td></tr>
-        <tr><th scope="row">限时分享链接</th><td>按权限创建或撤销场景分享链接。</td></tr>
-      </tbody></table></div>
+      <div class="container">
+        <div class="section-heading">
+          <p class="eyebrow">01 · 成果</p>
+          <h2 id="results-title">重建结果与交付</h2>
+          <p>任务完成后，在同一处浏览、下载与分享场景。</p>
+        </div>
+        <ul class="result-grid">
+          <li class="result-card">
+            <div class="result-top">
+              <span class="result-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 20 7.5v9L12 21 4 16.5v-9z"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/></svg></span>
+              <span class="result-badge">Interactive</span>
+            </div>
+            <h3>3D Viewer</h3>
+            <p>交互式浏览与检查重建场景。</p>
+          </li>
+          <li class="result-card">
+            <div class="result-top">
+              <span class="result-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M5 19h14"/></svg></span>
+              <span class="result-badge">Export</span>
+            </div>
+            <h3>SPZ / PLY</h3>
+            <p>下载重建文件。</p>
+          </li>
+          <li class="result-card">
+            <div class="result-top">
+              <span class="result-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 13.5a4 4 0 0 0 5.7 0l2.4-2.4a4 4 0 0 0-5.7-5.7l-1.3 1.3"/><path d="M13.5 10.5a4 4 0 0 0-5.7 0l-2.4 2.4a4 4 0 0 0 5.7 5.7l1.3-1.3"/></svg></span>
+              <span class="result-badge">Sharing</span>
+            </div>
+            <h3>Scene Sharing</h3>
+            <p>创建或撤销限时场景分享。</p>
+          </li>
+        </ul>
       </div>
     </section>
     <section id="workflow" class="section" tabindex="-1" aria-labelledby="workflow-title">
-      <div class="container wrap">
-      <div class="section-heading"><h2 id="workflow-title">从素材到场景</h2><p>上传素材后，在工作台跟踪任务与结果。</p></div>
-      <div class="workflow-layout"><ol class="steps">
-        <li><h3>素材</h3><p>上传一组图片或单个视频，选择准备好的素材。</p></li>
-        <li><h3>任务</h3><p>选择路线并提交，在队列中跟踪阶段与日志。</p></li>
-        <li><h3>结果</h3><p>完成后浏览场景、下载文件或创建分享链接。</p></li>
-      </ol><figure class="media-frame mobile-shot"><img src="/media/mobile-drawer.webp" width="488" height="1055" loading="lazy" decoding="async" alt="手机工作台打开项目导航抽屉的截图"></figure></div>
+      <div class="container">
+        <div class="section-heading">
+          <p class="eyebrow">02 · 流程</p>
+          <h2 id="workflow-title">从素材到场景</h2>
+          <p>上传素材后，在工作台跟踪任务状态、阶段日志与结果。</p>
+        </div>
+        <ol class="steps">
+          <li class="step">
+            <span class="step-index" aria-hidden="true">01</span>
+            <span class="step-key">01 UPLOAD</span>
+            <h3>上传素材</h3>
+            <p>直传一组同场景图片或单个视频，按项目选择准备好的素材。</p>
+          </li>
+          <li class="step">
+            <span class="step-index" aria-hidden="true">02</span>
+            <span class="step-key">02 RECONSTRUCT</span>
+            <h3>提交 GPU 任务</h3>
+            <p>选择路线并提交，在队列中查看阶段、日志与可恢复的失败原因。</p>
+          </li>
+          <li class="step">
+            <span class="step-index" aria-hidden="true">03</span>
+            <span class="step-key">03 EXPLORE</span>
+            <h3>浏览与交付</h3>
+            <p>在 Viewer 检查场景，下载 SPZ / PLY，或创建限时场景分享。</p>
+          </li>
+        </ol>
+        <div class="workflow-evidence">
+          <figure><img src="/media/mobile-drawer.webp" width="488" height="1055" loading="lazy" decoding="async" alt="手机工作台打开项目导航抽屉的截图"></figure>
+          <div class="workflow-evidence-text">
+            <h3>移动端同样跟踪任务</h3>
+            <p>上传、任务与项目导航沿用同一套业务层级，窄屏下以抽屉打开。</p>
+          </div>
+        </div>
       </div>
     </section>
     <section id="technology" class="section" tabindex="-1" aria-labelledby="technology-title">
-      <div class="container wrap">
-      <div class="section-heading"><h2 id="technology-title">三条重建路线</h2><p>根据素材规模和项目需求选择配置。</p></div>
-      <div class="table-wrap" tabindex="0" role="region" aria-labelledby="technology-title">
-        <table>
-          <thead><tr><th scope="col">路线</th><th scope="col">配置</th><th scope="col">训练步数</th><th scope="col">输入帧数</th></tr></thead>
-          <tbody>
-            <tr><th scope="row">FAST</th><td>快速预览 · VGGT</td><td>7,000 步</td><td>最多 80 帧</td></tr>
-            <tr><th scope="row">BALANCED</th><td>均衡重建（默认） · VGGT + Bundle Adjustment</td><td>20,000 步</td><td>最多 80 帧</td></tr>
-            <tr><th scope="row">QUALITY</th><td>精细重建 · COLMAP SfM / BA / MVS</td><td>20,000 步</td><td>最多 250 帧</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="architecture"><div><h3>系统架构与任务调度</h3><p>客户端通过 API 提交任务和查询进度，PostgreSQL 保存任务状态。GPU Worker 主动领取任务并串行重建，输入与交付文件保存在私有 OSS。</p></div>
-        <div><div class="diagram-demo" hidden><button type="button" class="button button-secondary diagram-demo-button">演示任务流向</button><span>示意：不是实时任务状态</span><span class="diagram-status" role="status"></span></div><figure class="architecture-frame" tabindex="0" aria-labelledby="architecture-title"><svg class="architecture-diagram" viewBox="0 0 600 250" role="img" aria-labelledby="architecture-title architecture-desc" xmlns="http://www.w3.org/2000/svg">
-          <title id="architecture-title">ReScene 系统架构</title><desc id="architecture-desc">客户端访问 API，API 连接 PostgreSQL。Worker 通过 API 领取任务。客户端和 Worker 访问私有 OSS。</desc>
-          <g class="diagram-lines" fill="none" stroke-width="2"><path d="M134 56H223"/><path d="M343 56H438"/><path d="M74 82v102h149"/><path d="M513 158v-43H283V82"/><path d="M343 184h95"/></g>
-          <g class="diagram-flow" fill="none" aria-hidden="true"><path pathLength="100" d="M134 56H223"/><path pathLength="100" d="M343 56H438"/><path pathLength="100" d="M74 82v102h149"/><path pathLength="100" d="M513 158v-43H283V82"/><path pathLength="100" d="M343 184h95"/></g>
-          <g class="diagram-boxes"><rect x="14" y="30" width="120" height="52" rx="10"/><rect x="223" y="30" width="120" height="52" rx="10"/><rect x="438" y="30" width="150" height="52" rx="10"/><rect x="223" y="158" width="120" height="52" rx="10"/><rect x="438" y="158" width="150" height="52" rx="10"/></g>
-          <g class="diagram-endpoints" aria-hidden="true"><circle cx="223" cy="56" r="5"/><circle cx="438" cy="56" r="5"/><circle cx="223" cy="184" r="5"/><circle cx="283" cy="82" r="5"/><circle cx="438" cy="184" r="5"/></g>
-          <g class="diagram-text" font-size="21" text-anchor="middle"><text x="74" y="63">客户端</text><text x="283" y="63">API</text><text x="513" y="63">PostgreSQL</text><text x="283" y="191">私有 OSS</text><text x="513" y="191">GPU Worker</text></g>
-        </svg></figure></div>
-      </div>
+      <div class="container">
+        <div class="section-heading">
+          <p class="eyebrow">03 · 技术</p>
+          <h2 id="technology-title">三条重建路线</h2>
+          <p>根据素材规模与交付精度选择配置；步数是场景优化步数，不是重新训练 VGGT。</p>
+        </div>
+        <ul class="route-grid">
+          <li class="route-card route-fast">
+            <p class="route-tier">快速预览</p>
+            <h3>FAST</h3>
+            <dl class="route-facts">
+              <div><dt>重建管线</dt><dd>VGGT</dd></div>
+              <div><dt>场景优化</dt><dd>7,000 步</dd></div>
+              <div><dt>输入上限</dt><dd>最多 80 帧</dd></div>
+            </dl>
+            <details class="route-details">
+              <summary>技术说明</summary>
+              <p>由 VGGT 估计相机与初始点，不做 Bundle Adjustment。</p>
+            </details>
+          </li>
+          <li class="route-card route-balanced">
+            <p class="route-tier">均衡重建 <span class="route-flag">默认</span></p>
+            <h3>BALANCED</h3>
+            <dl class="route-facts">
+              <div><dt>重建管线</dt><dd>VGGT + BA</dd></div>
+              <div><dt>场景优化</dt><dd>20,000 步</dd></div>
+              <div><dt>输入上限</dt><dd>最多 80 帧</dd></div>
+            </dl>
+            <details class="route-details">
+              <summary>技术说明</summary>
+              <p>在 VGGT 结果上执行 Bundle Adjustment，不做稠密重建。</p>
+            </details>
+          </li>
+          <li class="route-card route-quality">
+            <p class="route-tier">精细重建</p>
+            <h3>QUALITY</h3>
+            <dl class="route-facts">
+              <div><dt>重建管线</dt><dd>COLMAP SfM / BA / MVS</dd></div>
+              <div><dt>场景优化</dt><dd>20,000 步</dd></div>
+              <div><dt>输入上限</dt><dd>最多 250 帧</dd></div>
+            </dl>
+            <details class="route-details">
+              <summary>技术说明</summary>
+              <p>COLMAP 全流程，包含稠密重建，适合更大规模素材。</p>
+            </details>
+          </li>
+        </ul>
+        <div class="architecture">
+          <div>
+            <h3>系统架构与任务调度</h3>
+            <p>客户端通过 API 提交任务并查询进度，PostgreSQL 保存任务与租约状态。GPU Worker 向 API 领取租约后串行重建；Worker 不直接连接数据库。素材与交付文件保存在私有 OSS。</p>
+            <div class="diagram-demo" hidden>
+              <button type="button" class="button button-secondary diagram-demo-button">演示任务流向</button>
+              <span>示意：不是实时任务状态</span>
+              <span class="diagram-status" role="status"></span>
+            </div>
+          </div>
+          <figure class="architecture-frame" tabindex="0" aria-labelledby="architecture-title">
+            <svg class="architecture-diagram" viewBox="0 0 600 250" role="img" aria-labelledby="architecture-title architecture-desc" xmlns="http://www.w3.org/2000/svg">
+              <title id="architecture-title">ReScene 系统架构</title>
+              <desc id="architecture-desc">客户端调用 API，API 使用 PostgreSQL 保存状态。Worker 通过 API 领取任务。客户端与 Worker 读写私有 OSS，Worker 不直接连接数据库。</desc>
+              <g class="diagram-lines" fill="none" stroke-width="2"><path d="M134 56H223"/><path d="M343 56H438"/><path d="M74 82v102h149"/><path d="M513 158v-43H283V82"/><path d="M343 184h95"/></g>
+              <g class="diagram-flow" fill="none" aria-hidden="true"><path pathLength="100" d="M134 56H223"/><path pathLength="100" d="M343 56H438"/><path pathLength="100" d="M74 82v102h149"/><path pathLength="100" d="M513 158v-43H283V82"/><path pathLength="100" d="M343 184h95"/></g>
+              <g class="diagram-boxes"><rect x="14" y="30" width="120" height="52" rx="10"/><rect x="223" y="30" width="120" height="52" rx="10"/><rect x="438" y="30" width="150" height="52" rx="10"/><rect x="223" y="158" width="120" height="52" rx="10"/><rect x="438" y="158" width="150" height="52" rx="10"/></g>
+              <g class="diagram-endpoints" aria-hidden="true"><circle cx="223" cy="56" r="5"/><circle cx="438" cy="56" r="5"/><circle cx="223" cy="184" r="5"/><circle cx="283" cy="82" r="5"/><circle cx="438" cy="184" r="5"/></g>
+              <g class="diagram-text" font-size="21" text-anchor="middle"><text x="74" y="63">客户端</text><text x="283" y="63">FastAPI</text><text x="513" y="63">PostgreSQL</text><text x="283" y="191">私有 OSS</text><text x="513" y="191">GPU Worker</text></g>
+            </svg>
+          </figure>
+        </div>
       </div>
     </section>
     <section id="capabilities" class="section" tabindex="-1" aria-labelledby="capabilities-title">
-      <div class="container wrap">
-      <div class="section-heading"><h2 id="capabilities-title">项目协作与管理</h2><p>在工作台中管理项目、任务与交付。</p></div>
-      <div class="capabilities-layout"><div class="feature-list">
-        <article><h3>项目权限</h3><p>邀请协作者，为项目成员分配编辑或查看权限。</p></article>
-        <article><h3>任务日志</h3><p>查看运行阶段和日志，取消任务或重试可恢复的失败。</p></article>
-        <article><h3>文件与分享</h3><p>下载 SPZ 或 PLY，按权限创建或撤销场景分享。</p></article>
-      </div><figure class="media-frame"><img src="/media/admin-console.webp" width="1600" height="1125" loading="lazy" decoding="async" alt="ReScene 管理控制台中的用户和管理信息"></figure></div>
+      <div class="container">
+        <div class="section-heading">
+          <p class="eyebrow">04 · 协作</p>
+          <h2 id="capabilities-title">项目协作与管理</h2>
+          <p>在工作台中管理项目、任务与交付。</p>
+        </div>
+        <div class="capabilities-layout">
+          <div class="feature-list">
+            <article><h3>项目权限</h3><p>邀请协作者，为项目成员分配编辑或查看权限。</p></article>
+            <article><h3>任务日志</h3><p>查看运行阶段和日志，取消任务或重试可恢复的失败。</p></article>
+            <article><h3>文件与分享</h3><p>下载 SPZ 或 PLY，按权限创建或撤销场景分享。</p></article>
+          </div>
+          <figure><img src="/media/admin-console.webp" width="1600" height="1125" loading="lazy" decoding="async" alt="ReScene 管理控制台中的用户和管理信息"></figure>
+        </div>
       </div>
     </section>
     <section id="delivery" class="section" tabindex="-1" aria-labelledby="delivery-title">
-      <div class="container wrap">
-      <div class="section-heading"><h2 id="delivery-title">平台入口与常见问题</h2><p>本页面对应源码与构建版本 %RESCENE_VERSION%。从 GitHub 下载安装包需要仓库授权。</p><a class="button button-secondary release-link" href="https://github.com/FLmhp/ReScene/releases">查看发行包</a></div>
-      <div class="table-wrap" tabindex="0" role="region" aria-labelledby="delivery-title"><table><thead><tr><th scope="col">平台</th><th scope="col">入口与状态</th></tr></thead><tbody>
-        <tr><th scope="row">Web</th><td><a href="https://app.rescene.xyz/">打开在线工作台</a></td></tr>
-        <tr><th scope="row">Windows / Linux / macOS</th><td>安装包以发行页面实际资产为准。</td></tr>
-        <tr><th scope="row">Android</th><td>签名 APK 以发行页面实际资产为准。</td></tr>
-        <tr><th scope="row">微信小程序</th><td>开发版 / 体验版以微信平台实际状态为准。</td></tr>
-      </tbody></table></div>
-      <div class="faq-section"><h3>常见问题</h3><div class="faq">
-        <details><summary>素材有什么要求？</summary><p>选择一组同场景图片或一个视频。图片建议 20–80 张；视角不足可能导致重建失败。</p></details>
-        <details><summary>任务为什么会排队？</summary><p>Worker 可能离线或正在执行其他任务。提交后可在工作台查看队列和任务进度。</p></details>
-        <details><summary>如何开始和邀请成员？</summary><p>使用邮箱注册并创建项目。项目管理者可在成员区签发一次性领取码，转交受邀者以对应邮箱登录领取。</p></details>
-      </div></div>
-      <div class="boundaries"><div id="privacy" tabindex="-1"><h3>数据边界</h3><p>输入素材与交付文件保存在私有 OSS。持有有效分享链接的人可以访问对应场景，项目成员可按权限撤销链接。</p></div><div id="terms" tabindex="-1"><h3>许可与使用</h3><p>VGGT-1B 权重受学术非商用许可约束。使用相关路线前请确认适用的许可条件。</p></div></div>
+      <div class="container">
+        <div class="section-heading">
+          <p class="eyebrow">05 · 交付</p>
+          <h2 id="delivery-title">平台入口与常见问题</h2>
+          <p>本页面对应源码与构建版本 %RESCENE_VERSION%。安装包与签名以发行页面的实际资产为准。</p>
+          <div class="release-row">
+            <a class="button button-secondary" href="https://github.com/FLmhp/ReScene/releases">查看发行包</a>
+            <a class="link link-external" href="https://github.com/FLmhp/ReScene">GitHub 项目<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+          </div>
+        </div>
+        <dl class="platform-table">
+          <div class="platform-row"><dt>Web</dt><dd><a class="link" href="https://app.rescene.xyz/">打开在线工作台</a></dd></div>
+          <div class="platform-row"><dt>Windows / Linux / macOS</dt><dd>桌面安装包是否提供，以发行页面当前资产为准。</dd></div>
+          <div class="platform-row"><dt>Android</dt><dd>签名 APK 是否提供，以发行页面当前资产为准。</dd></div>
+          <div class="platform-row"><dt>微信小程序</dt><dd>以源码与开发版形式维护，尚未上架微信平台。</dd></div>
+        </dl>
+        <div class="faq-section">
+          <div class="faq-intro">
+            <h3>常见问题</h3>
+            <p>素材、任务与协作的常见处理方式。</p>
+          </div>
+          <div class="faq">
+            <details><summary><span class="faq-category">素材</span>素材有什么要求？</summary><p>选择一组同场景图片或一个视频。图片建议 20–80 张；视角不足可能导致重建失败。</p></details>
+            <details><summary><span class="faq-category">任务</span>任务为什么会排队？</summary><p>Worker 可能离线或正在执行其他任务。提交后可在工作台查看队列和任务进度。</p></details>
+            <details><summary><span class="faq-category">协作</span>如何开始和邀请成员？</summary><p>使用邮箱注册并创建项目。项目管理者可在成员区签发一次性领取码，转交受邀者以对应邮箱登录领取。</p></details>
+          </div>
+        </div>
+        <div class="boundaries">
+          <div id="privacy" tabindex="-1">
+            <h3>数据边界</h3>
+            <p>输入素材与交付文件保存在私有 OSS。持有有效分享链接的人可以访问对应场景，项目成员可按权限撤销链接。</p>
+          </div>
+          <div id="terms" tabindex="-1">
+            <h3>许可与使用</h3>
+            <p>ReScene 的源码与文档以 MIT 许可发布；VGGT-1B 权重受学术非商用许可约束，使用相关路线前请确认适用条件。</p>
+            <a class="link link-external" href="https://github.com/FLmhp/ReScene/blob/main/LICENSE">MIT 许可全文<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+          </div>
+        </div>
       </div>
     </section>
   </main>
-  <footer class="site-footer closing"><div class="container wrap footer-inner"><a class="brand" href="/"><img src="/media/rescene-mark.svg" alt="" width="38" height="38"><span>ReScene</span></a><div class="footer-end"><span>© 2026 ReScene</span><a href="#privacy">数据边界</a><a href="#terms">许可与使用</a><a href="https://app.rescene.xyz/">打开工作台</a><span>源码与构建版本 %RESCENE_VERSION%</span></div></div></footer>
+  <footer class="site-footer">
+    <div class="footer-inner container">
+      <div class="footer-brand">
+        <a class="brand" href="/">
+          <span class="brand-mark"><img src="/media/rescene-mark.svg" alt="" width="34" height="34"></span>
+          <span class="brand-word">ReScene</span>
+        </a>
+        <p>照片与视频三维重建工作流：上传、任务、Viewer 与交付在同一个项目里完成。</p>
+      </div>
+      <div class="footer-group">
+        <h2 class="footer-title">项目</h2>
+        <a href="https://github.com/FLmhp/ReScene">GitHub 项目<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        <a href="https://app.rescene.xyz/">工作台<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        <a href="https://github.com/FLmhp/ReScene/releases">发行包<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+      </div>
+      <div class="footer-group">
+        <h2 class="footer-title">许可</h2>
+        <a href="https://github.com/FLmhp/ReScene/blob/main/LICENSE">MIT 许可<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        <a href="#terms">数据与权重</a>
+        <a href="#privacy">数据边界</a>
+      </div>
+      <div class="footer-group">
+        <h2 class="footer-title">状态</h2>
+        <a href="https://api.rescene.xyz/health/ready">API 就绪状态<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        <span>源码与构建版本 %RESCENE_VERSION%</span>
+      </div>
+    </div>
+    <div class="footer-meta">
+      <div class="container">
+        <span>© 2026 ReScene contributors</span>
+        <span>Houseplant 样例由 Marcel Padilla 以 CC BY 4.0 发布</span>
+      </div>
+    </div>
+  </footer>
 </body>
 </html>

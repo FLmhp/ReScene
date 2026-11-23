@@ -1,7 +1,7 @@
 FROM python:3.11-slim@sha256:65bd3d9f1d7fa268dd1909973ba7eb4bdf41f6dcf2cfbe76ba9528b170f3fd79
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
-COPY pyproject.toml README.md VERSION ./
+COPY pyproject.toml README.md LICENSE VERSION ./
 COPY infra/api/constraints.txt ./
 COPY infra/api/uvicorn-log-config.json ./
 COPY src ./src

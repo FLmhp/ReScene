@@ -1,0 +1,163 @@
+@import "./base.css";
+
+@rescene-site-palette;
+
+.demo-main {
+  padding-block: clamp(24px, 3.5vw, 40px) clamp(48px, 6vw, 80px);
+}
+
+.link-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  margin-inline-start: auto;
+  min-height: 44px;
+  color: var(--muted);
+  font-weight: 500;
+  white-space: nowrap;
+  transition: color 160ms ease;
+}
+
+.link-back::before {
+  content: "←";
+  color: var(--accent);
+}
+
+.link-back:hover {
+  color: var(--fg);
+}
+
+.demo-intro {
+  max-width: 46rem;
+}
+
+.demo-intro h1 {
+  margin-block-start: 10px;
+  font-size: clamp(28px, 3.2vw, 40px);
+}
+
+.demo-intro p:last-child {
+  margin-block-start: 12px;
+  color: var(--muted);
+}
+
+.demo-stage {
+  margin: clamp(20px, 3vw, 32px) 0 0;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 18px;
+  background: var(--bg-deep);
+  box-shadow: var(--shadow-panel);
+}
+
+#demo-viewport {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+}
+
+.demo-fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.demo-fallback img {
+  width: min(100%, 540px);
+  height: auto;
+  margin-inline: auto;
+}
+
+.demo-fallback p {
+  max-width: 34rem;
+  margin-inline: auto;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.demo-fallback-hint {
+  font-size: 13px;
+}
+
+/* Loading and error keep the same model image instead of a dimmed backdrop. */
+.demo-stage .viewer-poster {
+  opacity: 1;
+  object-fit: contain;
+}
+
+.demo-stage .viewer-shell {
+  background: transparent;
+}
+
+.demo-stage .viewer-message {
+  max-width: min(100% - 32px, 32rem);
+}
+
+.demo-credit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 20px;
+  padding: 12px 16px;
+  border-block-start: 1px solid var(--divider);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.demo-credit-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.demo-credit-links .link {
+  min-height: 44px;
+  font-size: 13px;
+}
+
+.demo-note {
+  margin-block-start: 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.demo-note kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--panel);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  #demo-viewport {
+    aspect-ratio: 4 / 5;
+  }
+
+  .demo-stage .viewer-keyhint {
+    inset: auto 12px 66px 12px;
+    max-width: none;
+    font-size: 12px;
+    text-align: center;
+  }
+
+  .demo-stage .viewer-controls {
+    inset: auto 12px 12px 12px;
+    justify-content: stretch;
+  }
+
+  .demo-stage .viewer-controls button {
+    flex: 1 1 auto;
+  }
+
+  .demo-credit {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
