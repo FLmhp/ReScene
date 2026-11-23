@@ -35,7 +35,7 @@ done
 tar -C "$work/source/apps/site/dist" -czf "$work/site.tar.gz" .
 archive_sha=$(sha256sum "$work/site.tar.gz" | cut -d' ' -f1)
 block_sha=$(sha256sum "$work/block.caddy" | cut -d' ' -f1)
-random=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+random=$(node -p 'require("crypto").randomBytes(4).toString("hex")')
 id="$(date -u +%Y%m%dT%H%M%SZ)-${commit:0:12}-$random"
 upload="/root/rescene-site-upload-$id"
 ssh_opts=(-o BatchMode=yes -o ConnectTimeout=20)
