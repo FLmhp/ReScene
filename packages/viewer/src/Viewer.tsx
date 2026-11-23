@@ -1,9 +1,16 @@
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
-import { useEffect, useId, useRef, useState } from "react";
+import { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 export type ViewerStatus = "loading" | "ready" | "error";
+
+export type ViewerHandle = {
+  /** Restore the camera saved after the scene bounding sphere was resolved. */
+  reset: () => void;
+  /** Multiply the current orbit distance; values below 1 zoom in. */
+  zoom: (factor: number) => void;
+};
 
 export type ViewerProps = {
   src: string;
@@ -25,6 +32,12 @@ export type ViewerProps = {
   viewDirection?: [number, number, number];
   /** Initial camera distance as a multiple of the bounding-sphere radius. */
   viewDistance?: number;
+  /** Rotate the camera while the pointer is idle; interaction pauses it briefly. */
+  autoRotate?: boolean;
+  /** Seconds for one idle revolution. Defaults to 40. */
+  autoRotateSeconds?: number;
+  /** Keep the built-in reset/fullscreen toolbar; hosts can provide their own. */
+  showControls?: boolean;
 };
 
 const DEFAULT_VIEW_DIRECTION: [number, number, number] = [0.35, 0.2, 1];
@@ -33,7 +46,7 @@ const EXPIRED = "场景地址可能已过期，或场景文件解析失败。请
 const ORBIT_STEP = THREE.MathUtils.degToRad(15);
 const ZOOM_STEP = 1.15;
 
-export function Viewer({
+export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
   src,
   poster,
   onStatus,
@@ -42,7 +55,10 @@ export function Viewer({
   loadErrorMessage,
   viewDirection = DEFAULT_VIEW_DIRECTION,
   viewDistance = 2.2,
-}: ViewerProps) {
+  autoRotate = false,
+  autoRotateSeconds = 40,
+  showControls = true,
+}: ViewerProps, ref) {
   const [viewX, viewY, viewZ] = viewDirection;
   const host = useRef<HTMLDivElement>(null);
   const shell = useRef<HTMLDivElement>(null);
@@ -57,6 +73,10 @@ export function Viewer({
   statusCallback.current = onStatus;
   const failureMessage = useRef(loadErrorMessage);
   failureMessage.current = loadErrorMessage;
+  const autoRotateRef = useRef(autoRotate);
+  autoRotateRef.current = autoRotate;
+  const autoRotateSecondsRef = useRef(autoRotateSeconds);
+  autoRotateSecondsRef.current = autoRotateSeconds;
 
   useEffect(() => {
     const sync = () => setFullscreen(document.fullscreenElement === shell.current);
@@ -73,6 +93,22 @@ export function Viewer({
     }
     if (target.requestFullscreen) void target.requestFullscreen().catch(() => {});
   };
+
+  useImperativeHandle(ref, () => ({
+    reset() {
+      controlsRef.current?.reset();
+    },
+    zoom(factor: number) {
+      const controls = controlsRef.current;
+      const camera = cameraRef.current;
+      if (!controls || !camera) return;
+      const offset = camera.position.clone().sub(controls.target);
+      const distance = offset.length() * factor;
+      if (!Number.isFinite(distance) || distance < 0.001) return;
+      camera.position.copy(controls.target).add(offset.setLength(Math.min(distance, 1000)));
+      controls.update();
+    },
+  }), []);
 
   useEffect(() => {
     if (!host.current) return;
@@ -107,12 +143,23 @@ export function Viewer({
     scene.add(splats);
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
+    controls.autoRotateSpeed = 60 / Math.max(10, autoRotateSecondsRef.current);
+    controls.autoRotate = autoRotateRef.current;
     controlsRef.current = controls;
     cameraRef.current = camera;
     let needsRender = true;
     let settleUntil = 0;
     let lastSettleRender = 0;
+    let visible = true;
+    let loopRunning = false;
+    let idlePausedUntil = 0;
+    const pauseAutoRotate = () => {
+      idlePausedUntil = performance.now() + 4000;
+      controls.autoRotate = false;
+      needsRender = true;
+    };
     controls.addEventListener("change", () => { needsRender = true; });
+    controls.addEventListener("start", pauseAutoRotate);
     let decoded = false;
     void splats.initialized.then(
       () => {
@@ -148,11 +195,14 @@ export function Viewer({
       renderer.setSize(nextWidth, nextHeight);
       needsRender = true;
     };
-    const observer = new ResizeObserver(resize);
-    observer.observe(element);
-    renderer.setAnimationLoop(() => {
-      controls.update();
+    const resizeObserver = new ResizeObserver(resize);
+    resizeObserver.observe(element);
+
+    const render = () => {
       const now = performance.now();
+      controls.autoRotate = Boolean(autoRotateRef.current) && visible && now >= idlePausedUntil;
+      controls.autoRotateSpeed = 60 / Math.max(10, autoRotateSecondsRef.current);
+      controls.update();
       if (now < settleUntil && now - lastSettleRender >= 100) {
         lastSettleRender = now;
         needsRender = true;
@@ -165,11 +215,41 @@ export function Viewer({
         element.dataset.rendered = "true";
         report("ready");
       }
-    });
+    };
+    const startLoop = () => {
+      if (!active || loopRunning) return;
+      loopRunning = true;
+      renderer.setAnimationLoop(render);
+    };
+    const stopLoop = () => {
+      loopRunning = false;
+      renderer.setAnimationLoop(null);
+    };
+
+    let visibilityObserver: IntersectionObserver | undefined;
+    if (typeof IntersectionObserver === "undefined") {
+      startLoop();
+    } else {
+      visibilityObserver = new IntersectionObserver((entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        visible = entry.isIntersecting;
+        if (visible) {
+          needsRender = true;
+          startLoop();
+        } else {
+          stopLoop();
+        }
+      }, { threshold: 0.01 });
+      visibilityObserver.observe(element);
+    }
+
     return () => {
       active = false;
-      observer.disconnect();
-      renderer.setAnimationLoop(null);
+      visibilityObserver?.disconnect();
+      resizeObserver.disconnect();
+      stopLoop();
+      controls.removeEventListener("start", pauseAutoRotate);
       controlsRef.current = null;
       cameraRef.current = null;
       controls.dispose();
@@ -179,6 +259,13 @@ export function Viewer({
       delete element.dataset.rendered;
     };
   }, [src, attempt, viewDistance, viewX, viewY, viewZ]);
+
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    controls.autoRotateSpeed = 60 / Math.max(10, autoRotateSeconds);
+    controls.autoRotate = autoRotate;
+  }, [autoRotate, autoRotateSeconds, src, attempt]);
 
   useEffect(() => {
     if (!keyboardControls) return;
@@ -229,10 +316,14 @@ export function Viewer({
       {status ? <p className="viewer-message" role={failed ? "alert" : "status"}>{status}</p> : null}
       {keyboardControls ? <p className="viewer-keyhint" id={hintId}>方向键旋转 · + / − 缩放 · Home 还原</p> : null}
       <div className="viewer-controls">
-        <button type="button" onClick={() => controlsRef.current?.reset()} aria-label="将相机恢复到初始视角">重置视角</button>
-        <button type="button" onClick={toggleFullscreen} aria-pressed={fullscreen}>
-          {fullscreen ? "退出全屏" : "全屏"}
-        </button>
+        {showControls ? (
+          <>
+            <button type="button" onClick={() => controlsRef.current?.reset()} aria-label="将相机恢复到初始视角">重置视角</button>
+            <button type="button" onClick={toggleFullscreen} aria-pressed={fullscreen}>
+              {fullscreen ? "退出全屏" : "全屏"}
+            </button>
+          </>
+        ) : null}
         {failed ? <button type="button" onClick={() => {
           onRetry?.();
           setAttempt((value) => value + 1);
@@ -240,4 +331,4 @@ export function Viewer({
       </div>
     </div>
   );
-}
+});

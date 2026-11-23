@@ -57,6 +57,25 @@ function demoModelCheck(): Plugin {
   };
 }
 
+/** Injects a tiny blocking, hashed script before CSS so a saved theme never flashes. */
+function themeBootstrap(): Plugin {
+  let tag = "";
+  return {
+    name: "rescene-site-theme-bootstrap",
+    apply: "build",
+    buildStart() {
+      const source = readFileSync(new URL("./src/theme-init.js", import.meta.url), "utf8");
+      const digest = createHash("sha256").update(source).digest("hex").slice(0, 10);
+      const fileName = `assets/theme-init-${digest}.js`;
+      this.emitFile({ type: "asset", fileName, source });
+      tag = `<script src="/${fileName}"></script>`;
+    },
+    transformIndexHtml(html) {
+      return html.replace("<!-- rescene-theme-init -->", tag);
+    },
+  };
+}
+
 /** Ships the project and font licences beside the built site, outside `/assets/`. */
 function licenseNotices(): Plugin {
   return {
@@ -92,7 +111,7 @@ export default defineConfig({
     },
   },
   esbuild: { jsx: "automatic" },
-  plugins: [sitePalette(), demoModelCheck(), licenseNotices(), {
+  plugins: [sitePalette(), demoModelCheck(), themeBootstrap(), licenseNotices(), {
     name: "rescene-site-html",
     transformIndexHtml: {
       order: "pre",

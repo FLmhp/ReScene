@@ -137,7 +137,7 @@ pnpm --filter @rescene/site dev # 静态官网 http://127.0.0.1:4320
 
 - **VGGT-1B 权重** — [facebook/VGGT-1B](https://huggingface.co/facebook/VGGT-1B) 为 CC BY-NC 4.0（非商用）。运行 FAST 与 BALANCED 路线不代表获得这些权重的商用权利。
 - **Inter 字体** — SIL Open Font License 1.1，见 [Inter-LICENSE.txt](packages/design-tokens/assets/Inter-LICENSE.txt)。
-- **Knock Community Hall** — scbenoit 的[公开场景](https://superspl.at/scene/0ff2e6dc)，[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。官网附带裁剪后的 SPZ 与渲染预览；署名与修改说明见 [knock-community-hall.LICENSE.txt](apps/site/public/assets/knock-community-hall.LICENSE.txt)。
+- **Knock Community Hall** — scbenoit 的[公开场景](https://superspl.at/scene/0ff2e6dc)，[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。官网首屏在点击后加载裁剪后的 SPZ，`/demo/` 可直接打开；署名与修改说明见 [knock-community-hall.LICENSE.txt](apps/site/public/assets/knock-community-hall.LICENSE.txt)。
 - **ETH3D 数据** — 实验中所用数据受 ETH3D 数据集条款约束，见 <https://www.eth3d.net/>。
 - **plyfile** — [GPLv3](https://pypi.org/project/plyfile/)，Python 引擎的运行时依赖。
 

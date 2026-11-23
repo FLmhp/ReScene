@@ -171,9 +171,15 @@ def check_demo():
 def check_site():
     headers, body = check_response(SITE + "/", 200, {"text/html"})
     require("no-cache" in headers.get("Cache-Control", "").lower(), "Homepage must use Cache-Control: no-cache")
+    directives = content_security_policy(headers)
     require(
-        content_security_policy(headers).get("connect-src") == ["'none'"],
-        "Homepage CSP must specify connect-src 'none'",
+        directives.get("script-src") == ["'self'", "'wasm-unsafe-eval'"],
+        "Homepage CSP must allow self scripts and wasm",
+    )
+    require(directives.get("worker-src") == ["blob:"], "Homepage CSP must allow blob workers")
+    require(
+        directives.get("connect-src") == [SITE + DEMO_MODEL_PATH],
+        "Homepage CSP must allow only the pinned model",
     )
     page = SiteHTML()
     page.feed(body.decode("utf-8"))

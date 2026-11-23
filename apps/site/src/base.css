@@ -176,7 +176,7 @@ a.button-primary:hover {
 }
 
 .button:active {
-  transform: translateY(1px);
+  transform: scale(0.98);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -307,29 +307,49 @@ a.button-primary:hover {
   font-weight: 500;
 }
 
-.appearance {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.theme-toggle {
+  display: grid;
+  place-items: center;
   flex: none;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: transparent;
   color: var(--muted);
-  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    transform 180ms ease;
 }
 
-.appearance[hidden] {
+.theme-toggle[hidden] {
   display: none;
 }
 
-.appearance select {
-  min-height: 44px;
-  padding-inline: 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel-alt);
+.theme-toggle [data-icon="sun"] {
+  display: none;
+}
+
+:root[data-site-theme="dark"] .theme-toggle [data-icon="sun"] {
+  display: block;
+}
+
+:root[data-site-theme="dark"] .theme-toggle [data-icon="moon"] {
+  display: none;
+}
+
+.theme-toggle:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
   color: var(--fg);
-  font: inherit;
-  font-size: 14px;
-  cursor: pointer;
+}
+
+.theme-toggle:active {
+  transform: scale(0.94);
 }
 
 .header-cta {
@@ -434,16 +454,12 @@ a.button-primary:hover {
     padding-block: 10px;
   }
 
-  .site-header .appearance {
-    order: 6;
-    flex-basis: 100%;
-    justify-content: space-between;
-    padding-block-start: 8px;
-    border-block-start: 1px solid var(--divider);
+  .header-cta {
+    display: none;
   }
 
-  .site-header .appearance select {
-    flex: 1 1 auto;
+  .theme-toggle {
+    margin-inline-start: auto;
   }
 }
 
@@ -455,9 +471,22 @@ a.button-primary:hover {
   color: var(--fg);
 }
 
+body,
+.site-header,
+.site-footer,
+.inspector,
+.architecture-frame,
+.platform-list,
+.route-grid {
+  transition:
+    background-color 240ms ease,
+    color 240ms ease,
+    border-color 240ms ease;
+}
+
 .footer-inner {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.5fr) repeat(2, minmax(0, 1fr));
   gap: 32px;
   padding-block: 52px 36px;
 }
@@ -502,15 +531,6 @@ a.button-primary:hover {
   align-items: center;
   min-height: 44px;
   color: var(--muted);
-}
-
-.footer-group.appearance {
-  align-items: stretch;
-  justify-content: flex-start;
-}
-
-.footer-group.appearance select {
-  width: 100%;
 }
 
 .footer-meta {
@@ -572,7 +592,6 @@ a.button-primary:hover {
 
   .site-header,
   .skip-link,
-  .appearance,
   .mobile-navigation,
   .diagram-demo {
     display: none !important;

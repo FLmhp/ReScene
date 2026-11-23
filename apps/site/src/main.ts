@@ -4,6 +4,33 @@ export {};
 
 initSiteTheme();
 
+const heroStage = document.querySelector<HTMLElement>("[data-hero-stage]");
+const heroLoad = heroStage?.querySelector<HTMLAnchorElement>("[data-hero-load]");
+if (heroStage && heroLoad) {
+  let loading = false;
+  heroLoad.addEventListener("click", async (event) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const src = heroStage.dataset.modelSrc;
+    if (!src || loading) return;
+    event.preventDefault();
+    loading = true;
+    const label = heroLoad.querySelector("span");
+    const original = label?.textContent ?? "";
+    if (label) label.textContent = "正在加载场景…";
+    heroLoad.setAttribute("aria-busy", "true");
+    try {
+      // A static import would ship React and the 3.3 MB WebGL engine to every visitor.
+      const { mountHeroViewer } = await import("./hero-viewer");
+      mountHeroViewer(heroStage);
+    } catch {
+      heroLoad.removeAttribute("aria-busy");
+      if (label) label.textContent = original;
+      loading = false;
+      window.location.assign(heroLoad.href);
+    }
+  });
+}
+
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 const header = document.querySelector<HTMLElement>(".site-header");
 const navigation = document.querySelector<HTMLDetailsElement>("#mobile-navigation");
@@ -39,9 +66,14 @@ const sections = sectionIds
 const navLinks = document.querySelectorAll<HTMLAnchorElement>(
   ".desktop-nav a[href^='#'], .mobile-navigation a[href^='#']",
 );
+const backToTop = document.querySelector<HTMLButtonElement>("[data-back-to-top]");
 let navFrame = 0;
 const updateNavigation = () => {
   navFrame = 0;
+  const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+  const progress = scrollable > 0 ? Math.min(1, Math.max(0, window.scrollY / scrollable)) : 0;
+  document.documentElement.style.setProperty("--scroll-progress", progress.toFixed(3));
+  if (backToTop) backToTop.hidden = window.scrollY < 600;
   if (!header) return;
   const headerHeight = header.offsetHeight;
   document.documentElement.style.setProperty("--header-offset", `${headerHeight}px`);
@@ -74,6 +106,102 @@ document.addEventListener("click", (event) => {
   if (navigation) navigation.open = false;
   target.focus({ preventScroll: true });
 });
+
+if (backToTop) {
+  backToTop.addEventListener("click", () => {
+    const root = document.documentElement;
+    const previous = root.style.scrollBehavior;
+    root.style.scrollBehavior = "auto";
+    window.scrollTo(0, 0);
+    root.style.scrollBehavior = previous;
+    document.getElementById("main")?.focus({ preventScroll: true });
+  });
+}
+
+/* ---------- Route tabs ---------- */
+
+const routeTabs = document.querySelector<HTMLElement>("[data-route-tabs]");
+if (routeTabs) {
+  const tabs = Array.from(routeTabs.querySelectorAll<HTMLButtonElement>("[data-route-tab]"));
+  const panels = Array.from(routeTabs.querySelectorAll<HTMLElement>("[data-route-panel]"));
+  for (const panel of panels) panel.setAttribute("role", "tabpanel");
+  const activate = (name: string, focusTab = false) => {
+    for (const tab of tabs) {
+      const selected = tab.dataset.routeTab === name;
+      tab.setAttribute("aria-selected", String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      if (selected && focusTab) tab.focus();
+    }
+    for (const panel of panels) {
+      const selected = panel.dataset.routePanel === name;
+      panel.classList.toggle("is-active", selected);
+      panel.hidden = !selected;
+    }
+  };
+  for (const [index, tab] of tabs.entries()) {
+    tab.addEventListener("click", () => activate(tab.dataset.routeTab ?? "balanced"));
+    tab.addEventListener("keydown", (event) => {
+      const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+      if (!keys.includes(event.key)) return;
+      event.preventDefault();
+      let next = index;
+      if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+      else if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = tabs.length - 1;
+      activate(tabs[next].dataset.routeTab ?? "balanced", true);
+    });
+  }
+  activate("balanced");
+}
+
+/* ---------- Screenshot lightbox ---------- */
+
+const lightbox = document.querySelector<HTMLDialogElement>("[data-lightbox]");
+const lightboxImage = lightbox?.querySelector<HTMLImageElement>("[data-lightbox-image]");
+if (lightbox && lightboxImage) {
+  let opener: HTMLElement | null = null;
+  for (const trigger of document.querySelectorAll<HTMLAnchorElement>("[data-lightbox-trigger]")) {
+    trigger.addEventListener("click", (event) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      if (typeof lightbox.showModal !== "function") return;
+      event.preventDefault();
+      opener = trigger;
+      const image = trigger.querySelector("img");
+      lightboxImage.alt = image?.alt ?? "";
+      lightboxImage.src = trigger.href;
+      lightbox.setAttribute("aria-label", lightboxImage.alt || "截图预览");
+      lightbox.showModal();
+    });
+  }
+  lightbox.querySelector("[data-lightbox-close]")?.addEventListener("click", () => lightbox.close());
+  lightbox.addEventListener("click", (event) => {
+    if (event.target === lightbox) lightbox.close();
+  });
+  lightbox.addEventListener("close", () => {
+    lightboxImage.removeAttribute("src");
+    opener?.focus();
+    opener = null;
+  });
+}
+
+/* ---------- Reveal ---------- */
+
+const revealTargets = Array.from(document.querySelectorAll<HTMLElement>("[data-reveal]"));
+if (revealTargets.length) {
+  if (typeof IntersectionObserver === "undefined" || reducedMotion.matches) {
+    for (const target of revealTargets) target.classList.add("is-visible");
+  } else {
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        entry.target.classList.add("is-visible");
+        observer.unobserve(entry.target);
+      }
+    }, { rootMargin: "0px 0px -8% 0px", threshold: 0.05 });
+    for (const target of revealTargets) observer.observe(target);
+  }
+}
 
 /* ---------- Architecture flow demo ---------- */
 

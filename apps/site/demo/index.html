@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <meta name="page-type" content="software">
   <meta name="site-kind" content="software">
+  <!-- rescene-theme-init -->
   <title>Knock Community Hall 三维演示 · ReScene</title>
   <meta name="description" content="在浏览器中旋转与缩放公开的 Knock Community Hall 建筑 Gaussian Splat 场景。">
   <link rel="canonical" href="https://rescene.xyz/demo/">
@@ -31,10 +32,10 @@
         <span class="brand-word">ReScene</span>
       </a>
       <a class="link-back" href="/">返回官网</a>
-      <div class="appearance" data-site-theme-control hidden>
-        <label for="site-theme">外观</label>
-        <select id="site-theme" name="site-theme"></select>
-      </div>
+      <button class="theme-toggle" type="button" data-theme-toggle hidden aria-label="切换主题">
+        <svg data-icon="sun" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"/></svg>
+        <svg data-icon="moon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5Z"/></svg>
+      </button>
     </div>
   </header>
   <main id="main" tabindex="-1" class="demo-main">

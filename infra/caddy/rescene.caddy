@@ -52,7 +52,10 @@ rescene.xyz {
 		Referrer-Policy strict-origin-when-cross-origin
 		X-Frame-Options DENY
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
-		Content-Security-Policy "default-src 'none'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; form-action 'none'"
+		# The homepage and /demo/ both render the pinned Spark scene. WASM needs
+		# 'wasm-unsafe-eval'; Spark's worker is a blob and the only network fetch
+		# is the exact same-origin model URL. Nothing else is reachable.
+		Content-Security-Policy "default-src 'none'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src https://rescene.xyz/assets/knock-community-hall.spz; worker-src blob:; form-action 'none'"
 	}
 	handle /assets/knock-community-hall.spz {
 		header Cache-Control "public, max-age=31536000, immutable"
@@ -60,12 +63,9 @@ rescene.xyz {
 		root * /var/www/rescene-site
 		file_server
 	}
-	# Only /demo/ gets the WASM, blob-worker and single-model exceptions; the
-	# homepage keeps connect-src 'none' and no eval.
 	@demo path /demo/ /demo/index.html
 	handle @demo {
 		header Cache-Control "no-cache"
-		header Content-Security-Policy "default-src 'none'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src https://rescene.xyz/assets/knock-community-hall.spz; worker-src blob:; form-action 'none'"
 		root * /var/www/rescene-site/current
 		file_server
 	}
