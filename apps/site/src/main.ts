@@ -5,148 +5,8 @@ export {};
 initSiteTheme();
 
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-const printMedia = window.matchMedia("print");
-const finePointer = window.matchMedia("(hover: hover) and (pointer: fine)");
 const header = document.querySelector<HTMLElement>(".site-header");
 const navigation = document.querySelector<HTMLDetailsElement>("#mobile-navigation");
-const inspector = document.querySelector<HTMLElement>("#sample-inspector");
-const sampleWindow = inspector?.querySelector<HTMLElement>(".inspector-stage");
-const sampleImage = sampleWindow?.querySelector<HTMLImageElement>(".inspector-poster");
-const points = sampleWindow?.querySelector<HTMLCanvasElement>(".sample-points");
-
-let cancelSample = () => {};
-
-/* ---------- One-shot pixel preview over the public-model poster ---------- */
-
-if (sampleWindow && sampleImage && points) {
-  const frameWindow = sampleWindow;
-  const image = sampleImage;
-  const canvas = points;
-  let cancelled = false;
-  let frame = 0;
-  const visible = () => {
-    const rect = frameWindow.getBoundingClientRect();
-    return rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
-  };
-  let observer: IntersectionObserver | undefined;
-  cancelSample = () => {
-    cancelled = true;
-    cancelAnimationFrame(frame);
-    canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
-    canvas.hidden = true;
-    observer?.disconnect();
-  };
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) cancelSample();
-  });
-  reducedMotion.addEventListener("change", () => {
-    if (reducedMotion.matches) cancelSample();
-  });
-  printMedia.addEventListener("change", () => {
-    if (printMedia.matches) cancelSample();
-  });
-  window.addEventListener("pagehide", cancelSample);
-  if ("IntersectionObserver" in window) {
-    observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => !entry.isIntersecting)) cancelSample();
-    });
-    observer.observe(frameWindow);
-  }
-  const navigationEntry = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
-  if (!visible() || document.hidden || reducedMotion.matches || printMedia.matches || navigationEntry?.type === "back_forward") cancelSample();
-
-  const start = async () => {
-    try {
-      if (cancelled) return;
-      await image.decode();
-      if (cancelled || !visible() || document.hidden || reducedMotion.matches || printMedia.matches) return cancelSample();
-      const source = document.createElement("canvas");
-      source.width = 36;
-      source.height = 24;
-      const sourceContext = source.getContext("2d", { willReadFrequently: true });
-      const context = canvas.getContext("2d");
-      if (!sourceContext || !context) return cancelSample();
-      sourceContext.drawImage(image, 0, 0, 36, 24);
-      const pixels = sourceContext.getImageData(0, 0, 36, 24).data;
-      canvas.width = 540;
-      canvas.height = 358;
-      const dots: { x: number; y: number; dx: number; dy: number; color: string }[] = [];
-      for (let y = 0; y < 24; y++) {
-        for (let x = 0; x < 36; x++) {
-          const offset = (y * 36 + x) * 4;
-          const [r, g, b, alpha] = [pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]];
-          if (alpha < 16) continue;
-          const hash = (((x + 1) * 73856093) ^ ((y + 1) * 19349663)) >>> 0;
-          dots.push({
-            x: ((x + 0.5) / 36) * 540,
-            y: ((y + 0.5) / 24) * 358,
-            dx: (x < 18 ? -1 : 1) * ((hash % 1000) / 1000) * 540 * 0.18,
-            dy: ((((hash >>> 10) % 2000) / 1000) - 1) * 358 * 0.07,
-            color: `rgb(${r},${g},${b})`,
-          });
-        }
-      }
-      canvas.hidden = false;
-      const started = performance.now();
-      const draw = (now: number) => {
-        if (cancelled) return;
-        const elapsed = now - started;
-        if (elapsed >= 920) return cancelSample();
-        context.clearRect(0, 0, 540, 358);
-        const progress = 1 - (1 - Math.min(elapsed / 680, 1)) ** 3;
-        context.globalAlpha = 1 - Math.max(0, (elapsed - 420) / 500);
-        const radius = ((1.4 + 1.2 * progress) * 540) / frameWindow.clientWidth;
-        for (const dot of dots) {
-          context.fillStyle = dot.color;
-          context.beginPath();
-          context.arc(dot.x + dot.dx * (1 - progress), dot.y + dot.dy * (1 - progress), radius, 0, Math.PI * 2);
-          context.fill();
-        }
-        frame = requestAnimationFrame(draw);
-      };
-      frame = requestAnimationFrame(draw);
-    } catch {
-      cancelSample();
-    }
-  };
-  if (!cancelled) {
-    if (image.complete) void start();
-    else image.addEventListener("load", () => void start(), { once: true });
-    image.addEventListener("error", cancelSample, { once: true });
-  }
-}
-
-/* ---------- Calibration layer parallax (fine pointers, at most 4px) ---------- */
-
-const decor = inspector?.querySelector<HTMLElement>(".inspector-decor");
-let parallaxFrame = 0;
-const resetParallax = () => {
-  cancelAnimationFrame(parallaxFrame);
-  if (!decor) return;
-  decor.style.setProperty("--inspector-x", "0");
-  decor.style.setProperty("--inspector-y", "0");
-};
-if (inspector && decor) {
-  inspector.addEventListener("pointermove", (event) => {
-    if (!finePointer.matches || reducedMotion.matches || event.pointerType !== "mouse") return;
-    const rect = inspector.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    const y = ((event.clientY - rect.top) / rect.height) * 2 - 1;
-    cancelAnimationFrame(parallaxFrame);
-    parallaxFrame = requestAnimationFrame(() => {
-      decor.style.setProperty("--inspector-x", Math.max(-1, Math.min(1, x)).toFixed(3));
-      decor.style.setProperty("--inspector-y", Math.max(-1, Math.min(1, y)).toFixed(3));
-    });
-  });
-  inspector.addEventListener("pointerleave", resetParallax);
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) resetParallax();
-  });
-  reducedMotion.addEventListener("change", () => {
-    if (reducedMotion.matches) resetParallax();
-  });
-  window.addEventListener("pagehide", resetParallax);
-}
 
 /* ---------- Mobile navigation drawer ---------- */
 
@@ -167,29 +27,6 @@ if (navigation) {
   const desktop = window.matchMedia("(width > 1024px)");
   desktop.addEventListener("change", (event) => {
     if (event.matches) navigation.open = false;
-  });
-  navigation.addEventListener("toggle", () => {
-    if (navigation.open) cancelSample();
-  });
-}
-
-/* ---------- Flow highlight, once, when a quarter of the steps is visible ---------- */
-
-const steps = document.querySelector<HTMLElement>(".steps");
-if (steps) {
-  if ("IntersectionObserver" in window) {
-    const observer = new IntersectionObserver(
-      (entries, current) => {
-        if (!entries.some((entry) => entry.intersectionRatio >= 0.25)) return;
-        current.disconnect();
-        if (!reducedMotion.matches) steps.classList.add("is-lit");
-      },
-      { threshold: [0.25] },
-    );
-    observer.observe(steps);
-  }
-  reducedMotion.addEventListener("change", () => {
-    if (reducedMotion.matches) steps.classList.remove("is-lit");
   });
 }
 
@@ -234,7 +71,6 @@ document.addEventListener("click", (event) => {
   if (!link) return;
   const target = document.getElementById(link.hash.slice(1));
   if (!target) return;
-  cancelSample();
   if (navigation) navigation.open = false;
   target.focus({ preventScroll: true });
 });

@@ -9,10 +9,10 @@
 }
 
 html {
-  --site-header-height: 72px;
+  --site-header-height: 68px;
   --header-offset: var(--site-header-height);
-  --content-max: 1280px;
-  --gutter: 80px;
+  --content-max: 1220px;
+  --gutter: 72px;
   --signal: #0e7c86;
   -webkit-text-size-adjust: 100%;
   scroll-padding-block-start: calc(var(--header-offset) + 12px);
@@ -21,7 +21,7 @@ html {
 
 :root {
   --gradient-accent: var(--accent);
-  --shadow-panel: 0 18px 48px color-mix(in srgb, #0a1021 16%, transparent);
+  --shadow-panel: 0 8px 24px color-mix(in srgb, #0a1021 10%, transparent);
   --glow-accent: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
@@ -44,8 +44,8 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-family, Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif);
-  font-size: 16px;
-  line-height: 1.6;
+  font-size: 15px;
+  line-height: 1.65;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -135,9 +135,9 @@ a {
   justify-content: center;
   gap: 0.45em;
   min-height: 44px;
-  padding: 10px 22px;
+  padding: 10px 20px;
   border: 1px solid transparent;
-  border-radius: 12px;
+  border-radius: 10px;
   font: inherit;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -149,12 +149,18 @@ a {
     transform 180ms ease;
 }
 
-.button-primary {
+.button-primary,
+a.button-primary:link,
+a.button-primary:visited,
+a.button-primary:hover,
+a.button-primary:active,
+a.button-primary:focus {
   background: var(--accent);
   color: var(--on-accent);
 }
 
-.button-primary:hover {
+.button-primary:hover,
+a.button-primary:hover {
   background: var(--accent-strong);
 }
 
@@ -174,18 +180,8 @@ a {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .button {
-    transition:
-      background-color 180ms ease,
-      border-color 180ms ease,
-      color 180ms ease,
-      transform 180ms ease,
-      box-shadow 180ms ease;
-  }
-
   .button:hover {
     transform: translateY(-1px);
-    box-shadow: var(--shadow-panel);
   }
 }
 
@@ -246,7 +242,9 @@ a {
 
 .site-header.is-scrolled {
   border-bottom-color: var(--divider);
-  background: color-mix(in srgb, var(--bg) 90%, var(--bg-deep));
+  background: color-mix(in srgb, var(--bg) 84%, transparent);
+  -webkit-backdrop-filter: blur(12px) saturate(115%);
+  backdrop-filter: blur(12px) saturate(115%);
 }
 
 .header-inner {
@@ -259,72 +257,29 @@ a {
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex: none;
   min-height: 44px;
-  font-size: 19px;
+  font-size: 18.5px;
   font-weight: 600;
   letter-spacing: -0.02em;
 }
 
 .brand-mark {
-  position: relative;
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
 }
 
 .brand-mark img {
-  width: 34px;
-  height: 34px;
-  transition: filter 200ms ease;
-}
-
-.brand-mark::before,
-.brand-mark::after {
-  content: "";
-  position: absolute;
-  width: 9px;
-  height: 9px;
-  border: 1px solid var(--accent);
-  opacity: 0.5;
-  transition:
-    opacity 200ms ease,
-    inset 200ms ease;
-}
-
-.brand-mark::before {
-  inset: -2px auto auto -2px;
-  border-inline-end: 0;
-  border-block-end: 0;
-}
-
-.brand-mark::after {
-  inset: auto -2px -2px auto;
-  border-inline-start: 0;
-  border-block-start: 0;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .brand:hover .brand-mark img {
-    filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent) 60%, transparent));
-  }
-
-  .brand:hover .brand-mark::before {
-    inset: -4px auto auto -4px;
-    opacity: 1;
-  }
-
-  .brand:hover .brand-mark::after {
-    inset: auto -4px -4px auto;
-    opacity: 1;
-  }
+  width: 32px;
+  height: 32px;
 }
 
 .desktop-nav {
   display: flex;
-  gap: 4px;
+  gap: 2px;
   margin-inline: auto;
 }
 
@@ -332,24 +287,24 @@ a {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  padding-inline: 14px;
-  border-radius: 10px;
+  padding-inline: 13px;
+  border-radius: 8px;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 13.5px;
   transition:
     background-color 160ms ease,
     color 160ms ease;
 }
 
 .desktop-nav a:hover {
-  background: var(--panel-alt);
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
   color: var(--fg);
 }
 
 .desktop-nav a[aria-current="location"] {
-  background: var(--surface-strong);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
   color: var(--fg);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .appearance {
@@ -379,6 +334,14 @@ a {
 
 .header-cta {
   flex: none;
+  padding-inline: 16px;
+  font-size: 13.5px;
+}
+
+.header-cta .external-mark {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
 }
 
 .mobile-navigation {
@@ -471,7 +434,7 @@ a {
     padding-block: 10px;
   }
 
-  .appearance {
+  .site-header .appearance {
     order: 6;
     flex-basis: 100%;
     justify-content: space-between;
@@ -479,7 +442,7 @@ a {
     border-block-start: 1px solid var(--divider);
   }
 
-  .appearance select {
+  .site-header .appearance select {
     flex: 1 1 auto;
   }
 }
@@ -494,16 +457,17 @@ a {
 
 .footer-inner {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.5fr) repeat(3, minmax(0, 1fr));
   gap: 32px;
-  padding-block: 56px 40px;
+  padding-block: 52px 36px;
 }
 
 .footer-brand p {
-  max-width: 24rem;
-  margin-top: 14px;
+  max-width: 26rem;
+  margin-top: 12px;
   color: var(--muted);
   font-size: 14px;
+  line-height: 1.7;
 }
 
 .footer-group {
@@ -516,10 +480,8 @@ a {
 .footer-title {
   margin-bottom: 6px;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .footer-group a {
@@ -542,6 +504,15 @@ a {
   color: var(--muted);
 }
 
+.footer-group.appearance {
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.footer-group.appearance select {
+  width: 100%;
+}
+
 .footer-meta {
   border-top: 1px solid var(--divider);
 }
@@ -551,9 +522,9 @@ a {
   flex-wrap: wrap;
   gap: 8px 20px;
   justify-content: space-between;
-  padding-block: 16px 24px;
+  padding-block: 14px 22px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
 /* ---------- Motion, print and forced colours ---------- */
@@ -573,12 +544,6 @@ a {
 }
 
 @media (forced-colors: active) {
-  .brand-mark::before,
-  .brand-mark::after,
-  .inspector-decor {
-    display: none;
-  }
-
   .button,
   .link,
   .desktop-nav a {
@@ -609,8 +574,6 @@ a {
   .skip-link,
   .appearance,
   .mobile-navigation,
-  .inspector-decor,
-  .sample-points,
   .diagram-demo {
     display: none !important;
   }

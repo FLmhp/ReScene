@@ -32,22 +32,24 @@
 }
 
 .demo-intro h1 {
-  margin-block-start: 10px;
   font-size: clamp(28px, 3.2vw, 40px);
+  letter-spacing: -0.03em;
 }
 
 .demo-intro p:last-child {
+  max-width: 52rem;
   margin-block-start: 12px;
   color: var(--muted);
+  font-size: 15px;
+  line-height: 1.7;
 }
 
 .demo-stage {
   margin: clamp(20px, 3vw, 32px) 0 0;
   overflow: hidden;
   border: 1px solid var(--border-soft);
-  border-radius: 18px;
+  border-radius: 12px;
   background: var(--bg-deep);
-  box-shadow: var(--shadow-panel);
 }
 
 #demo-viewport {
