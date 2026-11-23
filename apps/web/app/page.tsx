@@ -3,11 +3,16 @@
 import { ResceneClient } from "@rescene/api-client";
 import { createWebUploader } from "@rescene/uploader/web";
 import dynamic from "next/dynamic";
-const Viewer = dynamic(() => import("@rescene/viewer").then((module) => module.Viewer), { ssr: false });
-import { Workbench, type KeyValueStore } from "@rescene/workbench";
-import { useState } from "react";
+import { Workbench, type KeyValueStore, type WorkbenchViewerProps } from "@rescene/workbench";
+import { useState, type ComponentType } from "react";
 
 import { API_BASE as API, WEB_BASE } from "./env";
+
+// next/dynamic resolves React through pnpm's hoisted @types/react, which can be the Taro
+// copy; assert the component contract so two React type sets never meet here.
+const Viewer = dynamic(() => import("@rescene/viewer").then((module) => module.Viewer), {
+  ssr: false,
+}) as unknown as ComponentType<WorkbenchViewerProps>;
 
 const tokenStore: KeyValueStore = {
   get: (key) => (typeof window === "undefined" ? null : window.localStorage.getItem(key)),
