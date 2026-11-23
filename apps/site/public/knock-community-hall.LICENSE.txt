@@ -1,0 +1,24 @@
+Knock Community Hall
+Author: SteveB (scbenoit, https://superspl.at/user?id=scbenoit)
+Scene: https://superspl.at/scene/0ff2e6dc
+Input: Knock Community Hall.sog (1,935,275 Gaussians)
+Input SHA-256: 8a09ee7e110b318aa88bf317c40f706488e5f659e70cf8f812cd5f7cb7f86e1d
+Original asset license: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+
+Modifications by ReScene contributors with @playcanvas/splat-transform 3.12.0:
+- Converted SOG to PLY with --filter-harmonics 0.
+- Cropped around the building with --filter-box=-19,-0.35,2,-3.2,8,15.65
+  and kept Gaussians with each scale axis below 1.2. 1,704,434 Gaussians remained.
+- Decimated to 300,000 Gaussians and converted to SPZ v3 (gzip).
+- Rendered /media/knock-community-hall-cropped.webp from the resulting SPZ.
+Output: knock-community-hall-5e4b4505.spz (4,982,770 bytes)
+Output SHA-256: 5e4b4505ea46fd54f9a7a9b4da55a960c7a1029f040decb66b15c75c47afba0a
+
+The original SOG includes this license notice:
+
+  Title: Knock Community Hall
+  Author: SteveB (https://superspl.at/user?id=scbenoit)
+  Source: https://superspl.at/scene/0ff2e6dc
+  License: CC Attribution (Creative Commons Attribution)
+  License URL: http://creativecommons.org/licenses/by/4.0/
+  Requirements: Author must be credited. Commercial use is allowed.

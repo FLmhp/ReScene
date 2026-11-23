@@ -55,9 +55,9 @@ rescene.xyz {
 		# The homepage and /demo/ both render the pinned Spark scene. WASM needs
 		# 'wasm-unsafe-eval'; Spark's worker is a blob and the only network fetch
 		# is the exact same-origin model URL. Nothing else is reachable.
-		Content-Security-Policy "default-src 'none'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src https://rescene.xyz/assets/knock-community-hall.spz; worker-src blob:; form-action 'none'"
+		Content-Security-Policy "default-src 'none'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src https://rescene.xyz/assets/knock-community-hall-5e4b4505.spz; worker-src blob:; form-action 'none'"
 	}
-	handle /assets/knock-community-hall.spz {
+	handle /assets/knock-community-hall-5e4b4505.spz {
 		header Cache-Control "public, max-age=31536000, immutable"
 		header Content-Type "application/octet-stream"
 		root * /var/www/rescene-site

@@ -75,6 +75,8 @@ RESCENE_SMTP_PASSWORD=<SMTP 授权码>
 
 官网只公开品牌素材和清洗后的演示账号截图；不得复制整个 `artifacts`、生产账号、私有分享链接或安装包。公网发布与工作台升级独立，见部署文档第 15 节。
 
+「从素材到场景」的 Web 截图用本地工作台、隔离 API fixture 和 Knock Community Hall 渲染图录制。Android Viewer、微信小程序项目截图取自历史验收，微信截图仅保留开发者工具内的模拟器画面。首屏模型的输入校验值与裁剪记录见 [模型署名文件](apps/site/public/knock-community-hall.LICENSE.txt)。替换模型时同步更新文件名的哈希、Vite 校验、部署验证脚本和 Caddy 的模型路径。
+
 ### 其他客户端
 
 品牌图形以 [共享 SVG 母版](packages/design-tokens/assets/rescene-mark.svg) 为准。改图时同步检查 Web 与桌面、Android 启动器、小程序、官网 favicon、分享卡片与文档。

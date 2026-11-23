@@ -71,7 +71,7 @@ COLMAP 和 Splatfacto 都是自带查看器与导出能力的成熟引擎；ReSc
 | Linux | Releases 中的 `ReScene_0.5.1_amd64.deb` 与 `ReScene_0.5.1_amd64.AppImage`；CI 构建，未记录安装实测 |
 | macOS | Releases 中的 `ReScene_0.5.1_universal.dmg`；CI 构建，未签名、未公证 |
 | Android | Releases 中的 `app-release.apk`；已用发布 keystore 签名，不通过应用商店分发 |
-| 微信小程序 | 仅源码与开发版构建，未发布到微信商店 |
+| 微信小程序 | 已上架体验版 |
 
 项目协作采用邀请制：邀请方签发一枚绑定受邀邮箱的一次性领取码，再自行转交给对方。ReScene 不发送邀请邮件。
 
@@ -137,7 +137,7 @@ pnpm --filter @rescene/site dev # 静态官网 http://127.0.0.1:4320
 
 - **VGGT-1B 权重** — [facebook/VGGT-1B](https://huggingface.co/facebook/VGGT-1B) 为 CC BY-NC 4.0（非商用）。运行 FAST 与 BALANCED 路线不代表获得这些权重的商用权利。
 - **Inter 字体** — SIL Open Font License 1.1，见 [Inter-LICENSE.txt](packages/design-tokens/assets/Inter-LICENSE.txt)。
-- **Knock Community Hall** — scbenoit 的[公开场景](https://superspl.at/scene/0ff2e6dc)，[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。官网首屏在点击后加载裁剪后的 SPZ，`/demo/` 可直接打开；署名与修改说明见 [knock-community-hall.LICENSE.txt](apps/site/public/assets/knock-community-hall.LICENSE.txt)。
+- **Knock Community Hall** — ReScene 将公开 SOG 场景裁剪并转换为 SPZ 演示产物。官网首屏点击后加载，`/demo/` 可直接打开。[署名与处理说明](apps/site/public/knock-community-hall.LICENSE.txt)
 - **ETH3D 数据** — 实验中所用数据受 ETH3D 数据集条款约束，见 <https://www.eth3d.net/>。
 - **plyfile** — [GPLv3](https://pypi.org/project/plyfile/)，Python 引擎的运行时依赖。
 

@@ -77,8 +77,8 @@ export function HeroViewer({ src, poster, stage }: HeroViewerProps) {
         showControls={false}
         autoRotate={autoRotate}
         autoRotateSeconds={45}
-        viewDirection={[0.93, 0.22, -0.29]}
-        viewDistance={1.25}
+        viewDirection={[0.88, 0.25, -0.41]}
+        viewDistance={1.43}
         onStatus={setStatus}
         loadErrorMessage="场景加载失败，请重试。"
       />

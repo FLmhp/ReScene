@@ -71,7 +71,7 @@ The step counts are per-scene Gaussian optimization steps, not retraining of VGG
 | Linux | `ReScene_0.5.1_amd64.deb` and `ReScene_0.5.1_amd64.AppImage` in Releases; built in CI, no install test recorded |
 | macOS | `ReScene_0.5.1_universal.dmg` in Releases; built in CI, not signed or notarized |
 | Android | `app-release.apk` in Releases; signed with the release keystore, not distributed through an app store |
-| WeChat mini program | Source and development builds only; not published to the WeChat store |
+| WeChat mini program | Trial version available in WeChat |
 
 Project collaboration is by invitation: the inviter issues a one-time claim code bound to an invited email address and forwards the code to that person by hand. ReScene does not send invitation emails.
 
@@ -137,7 +137,7 @@ The project's own source code and documentation are [MIT licensed](LICENSE), © 
 
 - **VGGT-1B weights** — [facebook/VGGT-1B](https://huggingface.co/facebook/VGGT-1B) is CC BY-NC 4.0 (non-commercial). Running the FAST and BALANCED routes does not grant commercial rights to those weights.
 - **Inter font** — SIL Open Font License 1.1, see [Inter-LICENSE.txt](packages/design-tokens/assets/Inter-LICENSE.txt).
-- **Knock Community Hall** — [public scene](https://superspl.at/scene/0ff2e6dc) by scbenoit, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The homepage loads the decimated SPZ inline after a click, and `/demo/` opens it directly; attribution and modification notes are in [knock-community-hall.LICENSE.txt](apps/site/public/assets/knock-community-hall.LICENSE.txt).
+- **Knock Community Hall** — ReScene's SPZ demo export comes from cropping and converting a public SOG scan. The homepage loads it on click and `/demo/` opens it directly. See the [attribution and processing notes](apps/site/public/knock-community-hall.LICENSE.txt).
 - **ETH3D data** — used in experiments under the ETH3D dataset terms at <https://www.eth3d.net/>.
 - **plyfile** — [GPLv3](https://pypi.org/project/plyfile/), a runtime dependency of the Python engine.
 

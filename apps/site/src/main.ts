@@ -160,13 +160,12 @@ if (routeTabs) {
 const lightbox = document.querySelector<HTMLDialogElement>("[data-lightbox]");
 const lightboxImage = lightbox?.querySelector<HTMLImageElement>("[data-lightbox-image]");
 if (lightbox && lightboxImage) {
-  let opener: HTMLElement | null = null;
   for (const trigger of document.querySelectorAll<HTMLAnchorElement>("[data-lightbox-trigger]")) {
     trigger.addEventListener("click", (event) => {
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       if (typeof lightbox.showModal !== "function") return;
       event.preventDefault();
-      opener = trigger;
+      trigger.focus({ preventScroll: true });
       const image = trigger.querySelector("img");
       lightboxImage.alt = image?.alt ?? "";
       lightboxImage.src = trigger.href;
@@ -179,9 +178,7 @@ if (lightbox && lightboxImage) {
     if (event.target === lightbox) lightbox.close();
   });
   lightbox.addEventListener("close", () => {
-    lightboxImage.removeAttribute("src");
-    opener?.focus();
-    opener = null;
+    if (!lightbox.open) lightboxImage.removeAttribute("src");
   });
 }
 

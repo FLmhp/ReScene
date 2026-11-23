@@ -67,10 +67,10 @@
         <figure class="inspector">
           <div class="inspector-toolbar">
             <span>场景预览</span>
-            <span>公开建筑模型</span>
+            <span>ReScene SPZ 演示产物</span>
           </div>
-          <div class="inspector-stage hero-stage" data-hero-stage data-model-src="%RESCENE_DEMO_MODEL%" data-model-poster="/media/knock-community-hall.webp">
-            <img class="inspector-poster hero-poster" src="/media/knock-community-hall.webp" width="1536" height="1024" loading="eager" fetchpriority="high" decoding="async" alt="Knock Community Hall 公开建筑模型的渲染预览">
+          <div class="inspector-stage hero-stage" data-hero-stage data-model-src="%RESCENE_DEMO_MODEL%" data-model-poster="/media/knock-community-hall-cropped.webp">
+            <img class="inspector-poster hero-poster" src="/media/knock-community-hall-cropped.webp" width="1536" height="1024" loading="eager" fetchpriority="high" decoding="async" alt="裁剪后的 Knock Community Hall SPZ 场景渲染预览">
             <a class="hero-load" data-hero-load href="/demo/">
               <span>查看三维场景</span>
               <small>约 5 MB</small>
@@ -78,7 +78,7 @@
             <div class="hero-app" data-hero-app></div>
           </div>
           <figcaption class="inspector-meta">
-            <p class="inspector-credit">Knock Community Hall · scbenoit · CC BY 4.0 · <a class="link link-external" href="https://superspl.at/scene/0ff2e6dc">原始场景<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a> · <a class="link link-external" href="https://creativecommons.org/licenses/by/4.0/">许可证<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a></p>
+            <p class="inspector-credit">Knock Community Hall · <a class="link" href="/knock-community-hall.LICENSE.txt">素材许可</a></p>
             <a class="button button-secondary inspector-open" href="/demo/">打开三维演示</a>
           </figcaption>
         </figure>
@@ -132,16 +132,26 @@
             <p>打开 Viewer，检查并导出场景。</p>
           </li>
         </ol>
-        <figure class="workflow-evidence" data-reveal>
-          <a class="workflow-shot" href="/media/mobile-drawer.webp" data-lightbox-trigger aria-label="放大手机工作台截图">
-            <img src="/media/mobile-drawer.webp" width="488" height="1055" loading="lazy" decoding="async" alt="手机工作台打开项目导航抽屉的截图">
-            <span class="workflow-shot-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/></svg></span>
-          </a>
-          <figcaption>
-            <h3>手机工作台</h3>
-            <p>手机上也可以查看项目和任务进度。</p>
-          </figcaption>
-        </figure>
+        <ul class="workflow-evidence" aria-label="移动端工作台截图" data-reveal>
+          <li>
+            <a class="workflow-shot" href="/media/workflow-web.webp" data-lightbox-trigger aria-label="放大手机网页版截图">
+              <span class="workflow-shot-label">手机网页版</span>
+              <img src="/media/workflow-web.webp" width="390" height="840" loading="lazy" decoding="async" alt="手机网页版的素材上传区与 Knock Community Hall 预览图">
+            </a>
+          </li>
+          <li>
+            <a class="workflow-shot" href="/media/workflow-android.webp" data-lightbox-trigger aria-label="放大 Android 截图">
+              <span class="workflow-shot-label">Android</span>
+              <img src="/media/workflow-android.webp" width="540" height="1200" loading="lazy" decoding="async" alt="Android Viewer 中已完成的三维重建预览">
+            </a>
+          </li>
+          <li>
+            <a class="workflow-shot" href="/media/workflow-wechat.webp" data-lightbox-trigger aria-label="放大微信小程序截图">
+              <span class="workflow-shot-label">微信小程序</span>
+              <img src="/media/workflow-wechat.webp" width="324" height="698" loading="lazy" decoding="async" alt="微信小程序项目中的素材选择与重建路线">
+            </a>
+          </li>
+        </ul>
       </div>
     </section>
     <section id="technology" class="section" tabindex="-1" aria-labelledby="technology-title">
@@ -215,9 +225,9 @@
             </div>
           </div>
           <figure class="architecture-frame">
-            <div class="architecture-frame-head"><span class="diagram-tag">架构示意</span></div>
+            <span class="architecture-scroll-hint" aria-hidden="true">横向滑动查看完整架构</span>
             <div class="architecture-scroll" tabindex="0" role="group" aria-label="系统架构图，窄屏可横向滚动">
-              <svg class="architecture-diagram" viewBox="0 0 880 380" role="img" aria-labelledby="architecture-title architecture-desc" xmlns="http://www.w3.org/2000/svg">
+              <svg class="architecture-diagram" viewBox="0 0 960 352" role="img" aria-labelledby="architecture-title architecture-desc" xmlns="http://www.w3.org/2000/svg">
                 <title id="architecture-title">ReScene 系统架构与任务调度</title>
                 <desc id="architecture-desc">客户端经 HTTPS 调用 API；API 在 PostgreSQL 中保存项目、任务与租约，并签发 OSS 地址。GPU Worker 经 API 领取租约并上报心跳，从 OSS 读取素材并写入结果。</desc>
                 <defs>
@@ -227,75 +237,75 @@
                 </defs>
 
                 <g class="diagram-boxes">
-                  <rect x="20" y="96" width="200" height="88" rx="10"/>
-                  <rect x="300" y="96" width="200" height="88" rx="10"/>
-                  <rect x="640" y="40" width="220" height="88" rx="10"/>
-                  <rect x="300" y="232" width="200" height="88" rx="10"/>
-                  <rect x="640" y="232" width="220" height="88" rx="10"/>
+                  <rect x="18" y="24" width="204" height="92" rx="10"/>
+                  <rect x="378" y="24" width="204" height="92" rx="10"/>
+                  <rect x="738" y="24" width="204" height="92" rx="10"/>
+                  <rect x="378" y="212" width="204" height="92" rx="10"/>
+                  <rect x="738" y="212" width="204" height="92" rx="10"/>
                 </g>
 
                 <g class="diagram-lines" fill="none" stroke-width="1.5" marker-end="url(#diagram-arrow)">
-                  <path d="M220 140H300"/>
-                  <path d="M500 108H570V84H640"/>
-                  <path d="M400 184V232"/>
-                  <path d="M660 232V140H500" stroke-dasharray="4 5"/>
-                  <path d="M640 290H500"/>
-                  <path d="M120 184V276H300"/>
+                  <path d="M222 70H378"/>
+                  <path d="M582 70H738"/>
+                  <path d="M480 116V212"/>
+                  <path d="M840 212V164H540V116" stroke-dasharray="4 5"/>
+                  <path d="M738 258H582"/>
+                  <path d="M120 116V258H378"/>
                 </g>
                 <g class="diagram-flow" fill="none" aria-hidden="true">
-                  <path pathLength="100" d="M220 140H300"/>
-                  <path pathLength="100" d="M500 108H570V84H640"/>
-                  <path pathLength="100" d="M400 184V232"/>
-                  <path pathLength="100" d="M660 232V140H500"/>
-                  <path pathLength="100" d="M640 290H500"/>
-                  <path pathLength="100" d="M120 184V276H300"/>
+                  <path pathLength="100" d="M222 70H378"/>
+                  <path pathLength="100" d="M582 70H738"/>
+                  <path pathLength="100" d="M480 116V212"/>
+                  <path pathLength="100" d="M840 212V164H540V116"/>
+                  <path pathLength="100" d="M738 258H582"/>
+                  <path pathLength="100" d="M120 116V258H378"/>
                 </g>
 
                 <g class="diagram-edge-labels" aria-hidden="true">
-                  <text x="260" y="132">HTTPS · 任务</text>
-                  <text x="585" y="100">项目 · 任务</text>
-                  <text x="412" y="212">签发地址</text>
-                  <text x="590" y="156">领取租约 · 心跳</text>
-                  <text x="570" y="282">读素材 · 写结果</text>
-                  <text x="132" y="230">直传素材</text>
+                  <text x="300" y="60">HTTPS · 任务</text>
+                  <text x="660" y="60">项目 · 任务</text>
+                  <text x="467" y="168" text-anchor="end">签发地址</text>
+                  <text x="690" y="154">领取租约 · 心跳</text>
+                  <text x="660" y="248">读素材 · 写结果</text>
+                  <text x="249" y="248">直传素材</text>
                 </g>
 
                 <g class="diagram-text">
-                  <text class="diagram-title" x="40" y="124">Web Client</text>
-                  <text class="diagram-caption" x="40" y="148">Web · 桌面 · Android</text>
-                  <text class="diagram-caption" x="40" y="164">微信小程序</text>
+                  <text class="diagram-title" x="38" y="54">客户端</text>
+                  <text class="diagram-caption" x="38" y="78">Web · 桌面 · Android</text>
+                  <text class="diagram-caption" x="38" y="96">微信小程序</text>
 
-                  <text class="diagram-title" x="320" y="124">API Server</text>
-                  <text class="diagram-caption" x="320" y="148">鉴权 · 项目 · 任务</text>
-                  <text class="diagram-caption" x="320" y="164">签发上传与分享地址</text>
+                  <text class="diagram-title" x="398" y="54">API Server</text>
+                  <text class="diagram-caption" x="398" y="78">鉴权 · 项目 · 任务</text>
+                  <text class="diagram-caption" x="398" y="96">签发上传与分享地址</text>
 
-                  <text class="diagram-title" x="660" y="70">PostgreSQL</text>
-                  <text class="diagram-caption" x="660" y="94">项目 · 任务 · 租约</text>
-                  <text class="diagram-caption" x="660" y="110">Worker 状态与心跳</text>
+                  <text class="diagram-title" x="758" y="54">PostgreSQL</text>
+                  <text class="diagram-caption" x="758" y="78">项目 · 任务 · 租约</text>
+                  <text class="diagram-caption" x="758" y="96">Worker 状态与心跳</text>
 
-                  <text class="diagram-title" x="320" y="262">Private OSS</text>
-                  <text class="diagram-caption" x="320" y="286">素材 · 结果 · 下载</text>
-                  <text class="diagram-caption" x="320" y="302">仅通过签名地址读取</text>
+                  <text class="diagram-title" x="398" y="242">Private OSS</text>
+                  <text class="diagram-caption" x="398" y="266">素材 · 结果 · 下载</text>
+                  <text class="diagram-caption" x="398" y="284">仅通过签名地址读取</text>
 
-                  <text class="diagram-title" x="660" y="262">GPU Worker</text>
-                  <text class="diagram-caption" x="660" y="286">VGGT · COLMAP</text>
-                  <text class="diagram-caption" x="660" y="302">3DGS 场景优化</text>
+                  <text class="diagram-title" x="758" y="242">GPU Worker</text>
+                  <text class="diagram-caption" x="758" y="266">VGGT · COLMAP</text>
+                  <text class="diagram-caption" x="758" y="284">3DGS 场景优化</text>
                 </g>
 
                 <g class="diagram-endpoints" aria-hidden="true">
-                  <circle cx="300" cy="140" r="4"/>
-                  <circle cx="640" cy="84" r="4"/>
-                  <circle cx="400" cy="232" r="4"/>
-                  <circle cx="500" cy="140" r="4"/>
-                  <circle cx="500" cy="290" r="4"/>
-                  <circle cx="300" cy="276" r="4"/>
+                  <circle cx="378" cy="70" r="4"/>
+                  <circle cx="738" cy="70" r="4"/>
+                  <circle cx="480" cy="212" r="4"/>
+                  <circle cx="540" cy="116" r="4"/>
+                  <circle cx="582" cy="258" r="4"/>
+                  <circle cx="378" cy="258" r="4"/>
                 </g>
 
                 <g class="diagram-legend" aria-hidden="true">
-                  <line x1="20" y1="350" x2="56" y2="350"/>
-                  <text x="66" y="354">请求与数据</text>
-                  <line x1="180" y1="350" x2="216" y2="350" stroke-dasharray="4 5"/>
-                  <text x="226" y="354">租约与心跳</text>
+                  <line x1="18" y1="330" x2="54" y2="330"/>
+                  <text x="64" y="334">请求与数据</text>
+                  <line x1="168" y1="330" x2="204" y2="330" stroke-dasharray="4 5"/>
+                  <text x="214" y="334">租约与心跳</text>
                 </g>
               </svg>
             </div>
@@ -336,7 +346,7 @@
           <div class="platform-row"><dt>Web</dt><dd><a class="link" href="https://app.rescene.xyz/">打开在线工作台</a></dd></div>
           <div class="platform-row"><dt>Windows / Linux / macOS</dt><dd><a class="link link-external" href="https://github.com/FLmhp/ReScene/releases">查看发行包<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a></dd></div>
           <div class="platform-row"><dt>Android</dt><dd><a class="link link-external" href="https://github.com/FLmhp/ReScene/releases">查看 APK 发行状态<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a></dd></div>
-          <div class="platform-row"><dt>微信小程序</dt><dd>开发版维护中，尚未上架</dd></div>
+          <div class="platform-row"><dt>微信小程序</dt><dd>已上架体验版</dd></div>
         </dl>
         <p class="version-note">源码版本 · <span class="tabular">%RESCENE_VERSION%</span></p>
         <div class="faq-section" data-reveal>
@@ -390,7 +400,6 @@
       <div class="container">
         <span>© 2026 ReScene contributors</span>
         <span>源码版本 <span class="tabular">%RESCENE_VERSION%</span></span>
-        <span>Knock Community Hall 样例由 scbenoit 以 CC BY 4.0 发布</span>
       </div>
     </div>
   </footer>
