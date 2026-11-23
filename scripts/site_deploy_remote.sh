@@ -57,13 +57,24 @@ flock -n 9 || { echo 'Another site deployment holds the lock' >&2; exit 1; }
 # Verify Caddy mounts as observed: destination/source and read-only, without dumping config or secrets.
 docker inspect caddy | python3 -c 'import json,sys; m=json.load(sys.stdin)[0]["Mounts"]; required={("/root/docker/caddy/conf","/etc/caddy"),("/var/www","/var/www")}; found={(x["Source"],x["Destination"]) for x in m if not x["RW"]}; sys.exit(not required.issubset(found))' || { echo 'Required Caddy read-only mounts differ' >&2; exit 1; }
 # Verify both authoritative and public DNS, including absence of IPv6.
+dns_answers() {
+  local resolver=$1 name=$2 type=$3 response
+  # dig can report a timed-out address before a successful answer from the next address.
+  if ! response=$(dig +time=5 +tries=1 +noall +comments +answer "@$resolver" "$name" "$type") ||
+     ! grep -q '^;; ->>HEADER<<- .*status: NOERROR,' <<< "$response"; then
+    echo "DNS query failed at $resolver for $name $type" >&2
+    return 1
+  fi
+  awk '$1 !~ /^;/ && $3 == "IN" && NF >= 5 { print $5 }' <<< "$response"
+}
+
 for resolver in dns21.hichina.com 8.8.8.8; do
-  a=$(dig +time=5 +tries=1 +short "@$resolver" rescene.xyz A | sort)
-  cname=$(dig +time=5 +tries=1 +short "@$resolver" www.rescene.xyz CNAME)
+  a=$(dns_answers "$resolver" rescene.xyz A | sort)
+  cname=$(dns_answers "$resolver" www.rescene.xyz CNAME)
   cname=${cname%.}
-  aaaa=$(dig +time=5 +tries=1 +short "@$resolver" rescene.xyz AAAA)
-  www_aaaa_answer=$(dig +time=5 +tries=1 +short "@$resolver" www.rescene.xyz AAAA)
-  www_a_answer=$(dig +time=5 +tries=1 +short "@$resolver" www.rescene.xyz A)
+  aaaa=$(dns_answers "$resolver" rescene.xyz AAAA)
+  www_aaaa_answer=$(dns_answers "$resolver" www.rescene.xyz AAAA)
+  www_a_answer=$(dns_answers "$resolver" www.rescene.xyz A)
   www_aaaa=$(printf '%s\n' "$www_aaaa_answer" | grep ':' || :)
   www_a=$(printf '%s\n' "$www_a_answer" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort || :)
   [[ $a == 107.151.246.42 && $cname == rescene.xyz && -z $aaaa && -z $www_aaaa && ( -z $www_a || $www_a == 107.151.246.42 ) && ( $resolver != 8.8.8.8 || $www_a == 107.151.246.42 ) ]] || { echo "DNS mismatch at $resolver" >&2; exit 1; }
