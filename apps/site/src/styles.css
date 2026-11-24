@@ -738,8 +738,11 @@ a.hero-load:hover {
 .workflow-frame-link {
   position: absolute;
   inset: 18px;
-  display: grid;
-  place-items: center;
+  /* Flex resolves the image's percentage height against this definite box;
+     a grid item fell back to the intrinsic size and slipped over the caption. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
   opacity: 0;
   visibility: hidden;
   cursor: zoom-in;
