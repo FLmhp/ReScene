@@ -9,8 +9,12 @@ import { useState, type ComponentType } from "react";
 import { API_BASE as API, WEB_BASE } from "./env";
 
 // next/dynamic resolves React through pnpm's hoisted @types/react, which can be the Taro
-// copy; assert the component contract so two React type sets never meet here.
-const Viewer = dynamic(() => import("@rescene/viewer").then((module) => module.Viewer), {
+// copy. Erase the viewer's React identity at this boundary and restore the app's own
+// component contract afterwards, so two React type sets never meet inside next/dynamic.
+const loadViewer = () =>
+  import("@rescene/viewer").then((module) => module.Viewer as unknown as never);
+
+const Viewer = dynamic(loadViewer, {
   ssr: false,
 }) as unknown as ComponentType<WorkbenchViewerProps>;
 
