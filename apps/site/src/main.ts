@@ -4,6 +4,35 @@ export {};
 
 initSiteTheme();
 
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+const finePointer = window.matchMedia("(hover: hover) and (pointer: fine)");
+
+const hero = document.querySelector<HTMLElement>("[data-hero]");
+if (hero && finePointer.matches) {
+  let glowFrame = 0;
+  let glowX = 0;
+  let glowY = 0;
+  // Coalesce pointer moves into one style write per frame.
+  hero.addEventListener("pointermove", (event) => {
+    if (reducedMotion.matches) return;
+    const box = hero.getBoundingClientRect();
+    glowX = event.clientX - box.left;
+    glowY = event.clientY - box.top;
+    if (glowFrame) return;
+    glowFrame = requestAnimationFrame(() => {
+      glowFrame = 0;
+      hero.style.setProperty("--hero-x", `${glowX}px`);
+      hero.style.setProperty("--hero-y", `${glowY}px`);
+      hero.classList.add("is-pointer-active");
+    });
+  });
+  hero.addEventListener("pointerleave", () => {
+    if (glowFrame) cancelAnimationFrame(glowFrame);
+    glowFrame = 0;
+    hero.classList.remove("is-pointer-active");
+  });
+}
+
 const heroStage = document.querySelector<HTMLElement>("[data-hero-stage]");
 const heroLoad = heroStage?.querySelector<HTMLAnchorElement>("[data-hero-load]");
 if (heroStage && heroLoad) {
@@ -14,7 +43,7 @@ if (heroStage && heroLoad) {
     if (!src || loading) return;
     event.preventDefault();
     loading = true;
-    const label = heroLoad.querySelector("span");
+    const label = heroLoad.querySelector<HTMLElement>("[data-hero-load-label]");
     const original = label?.textContent ?? "";
     if (label) label.textContent = "正在加载场景…";
     heroLoad.setAttribute("aria-busy", "true");
@@ -31,7 +60,6 @@ if (heroStage && heroLoad) {
   });
 }
 
-const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 const header = document.querySelector<HTMLElement>(".site-header");
 const navigation = document.querySelector<HTMLDetailsElement>("#mobile-navigation");
 
@@ -66,6 +94,40 @@ const sections = sectionIds
 const navLinks = document.querySelectorAll<HTMLAnchorElement>(
   ".desktop-nav a[href^='#'], .mobile-navigation a[href^='#']",
 );
+const desktopNav = document.querySelector<HTMLElement>(".desktop-nav");
+const navHighlight = document.querySelector<HTMLElement>("[data-nav-highlight]");
+const desktopLinks = Array.from(desktopNav?.querySelectorAll<HTMLAnchorElement>("a[href^='#']") ?? []);
+
+/** Move the shared pill under a desktop link; hides it when nothing is active. */
+const highlightLink = (link: HTMLAnchorElement | null) => {
+  if (!desktopNav || !navHighlight) return;
+  // `offsetParent` is null while the desktop nav is display:none below 1024px.
+  if (!link || !desktopNav.offsetParent) {
+    navHighlight.classList.remove("is-visible");
+    return;
+  }
+  const navBox = desktopNav.getBoundingClientRect();
+  const linkBox = link.getBoundingClientRect();
+  desktopNav.style.setProperty("--nav-x", `${linkBox.left - navBox.left}px`);
+  desktopNav.style.setProperty("--nav-width", `${linkBox.width}px`);
+  navHighlight.classList.add("is-visible");
+};
+const syncNavHighlight = (link?: HTMLAnchorElement) => {
+  highlightLink(link ?? desktopLinks.find((item) => item.getAttribute("aria-current") === "location") ?? null);
+};
+
+if (desktopNav) {
+  desktopNav.addEventListener("pointerover", (event) => {
+    const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href^='#']") : null;
+    if (link && desktopNav.contains(link)) highlightLink(link);
+  });
+  desktopNav.addEventListener("pointerleave", () => syncNavHighlight());
+  desktopNav.addEventListener("focusin", (event) => {
+    const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href^='#']") : null;
+    if (link) highlightLink(link);
+  });
+  desktopNav.addEventListener("focusout", () => syncNavHighlight());
+}
 const backToTop = document.querySelector<HTMLButtonElement>("[data-back-to-top]");
 let navFrame = 0;
 const updateNavigation = () => {
@@ -77,7 +139,7 @@ const updateNavigation = () => {
   if (!header) return;
   const headerHeight = header.offsetHeight;
   document.documentElement.style.setProperty("--header-offset", `${headerHeight}px`);
-  header.classList.toggle("is-scrolled", window.scrollY > 16);
+  header.classList.toggle("is-scrolled", window.scrollY > 80);
   let current = "";
   for (const section of sections) {
     if (section.getBoundingClientRect().top <= headerHeight + 24) current = section.id;
@@ -87,6 +149,7 @@ const updateNavigation = () => {
     if (link.getAttribute("href") === `#${current}`) link.setAttribute("aria-current", "location");
     else link.removeAttribute("aria-current");
   }
+  syncNavHighlight();
 };
 const scheduleNavigation = () => {
   if (!navFrame) navFrame = requestAnimationFrame(updateNavigation);
@@ -97,6 +160,8 @@ window.addEventListener("hashchange", scheduleNavigation);
 window.addEventListener("pageshow", scheduleNavigation);
 if (header) new ResizeObserver(scheduleNavigation).observe(header);
 scheduleNavigation();
+// Web-font metrics change link widths; re-measure once they finish loading.
+document.fonts?.ready.then(scheduleNavigation);
 document.addEventListener("click", (event) => {
   if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
   const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href^='#']") : null;
@@ -104,6 +169,7 @@ document.addEventListener("click", (event) => {
   const target = document.getElementById(link.hash.slice(1));
   if (!target) return;
   if (navigation) navigation.open = false;
+  if (desktopNav?.contains(link)) syncNavHighlight(link);
   target.focus({ preventScroll: true });
 });
 
@@ -118,41 +184,120 @@ if (backToTop) {
   });
 }
 
-/* ---------- Route tabs ---------- */
+/* ---------- Workflow narrative ---------- */
 
-const routeTabs = document.querySelector<HTMLElement>("[data-route-tabs]");
-if (routeTabs) {
-  const tabs = Array.from(routeTabs.querySelectorAll<HTMLButtonElement>("[data-route-tab]"));
-  const panels = Array.from(routeTabs.querySelectorAll<HTMLElement>("[data-route-panel]"));
-  for (const panel of panels) panel.setAttribute("role", "tabpanel");
-  const activate = (name: string, focusTab = false) => {
-    for (const tab of tabs) {
-      const selected = tab.dataset.routeTab === name;
-      tab.setAttribute("aria-selected", String(selected));
-      tab.tabIndex = selected ? 0 : -1;
-      if (selected && focusTab) tab.focus();
-    }
-    for (const panel of panels) {
-      const selected = panel.dataset.routePanel === name;
-      panel.classList.toggle("is-active", selected);
-      panel.hidden = !selected;
-    }
+const workflow = document.querySelector<HTMLElement>("[data-workflow]");
+if (workflow) {
+  const steps = Array.from(workflow.querySelectorAll<HTMLElement>("[data-workflow-step]"));
+  const triggers = steps
+    .map((step) => step.querySelector<HTMLButtonElement>(".step-trigger"))
+    .filter((trigger): trigger is HTMLButtonElement => trigger !== null);
+  const frameLinks = Array.from(workflow.querySelectorAll<HTMLAnchorElement>("[data-workflow-link]"));
+  const stepList = workflow.querySelector<HTMLElement>(".steps");
+  const caption = workflow.querySelector<HTMLElement>("[data-workflow-caption]");
+  const captions: Record<string, string> = {
+    upload: "手机网页版 · 素材上传",
+    submit: "微信小程序 · 选择重建路线",
+    result: "Android · 查看重建结果",
   };
-  for (const [index, tab] of tabs.entries()) {
-    tab.addEventListener("click", () => activate(tab.dataset.routeTab ?? "balanced"));
-    tab.addEventListener("keydown", (event) => {
-      const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
-      if (!keys.includes(event.key)) return;
-      event.preventDefault();
-      let next = index;
-      if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
-      else if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
-      else if (event.key === "Home") next = 0;
-      else if (event.key === "End") next = tabs.length - 1;
-      activate(tabs[next].dataset.routeTab ?? "balanced", true);
+  let activeWorkflow = "";
+  let workflowLockedUntil = 0;
+  let workflowFrame = 0;
+
+  const activateWorkflow = (name: string) => {
+    if (!name || name === activeWorkflow) return;
+    activeWorkflow = name;
+    for (const step of steps) {
+      const selected = step.dataset.workflowStep === name;
+      step.classList.toggle("is-active", selected);
+      const trigger = step.querySelector<HTMLButtonElement>(".step-trigger");
+      if (!trigger) continue;
+      if (selected) trigger.setAttribute("aria-current", "step");
+      else trigger.removeAttribute("aria-current");
+    }
+    for (const link of frameLinks) {
+      const selected = link.dataset.workflowLink === name;
+      link.classList.toggle("is-active", selected);
+      // Hidden panels are neither clickable nor reachable by keyboard or screen readers.
+      if (selected) {
+        link.removeAttribute("inert");
+        link.removeAttribute("aria-hidden");
+      } else {
+        link.setAttribute("inert", "");
+        link.setAttribute("aria-hidden", "true");
+      }
+    }
+    if (caption) caption.textContent = captions[name] ?? "";
+  };
+
+  const updateWorkflow = () => {
+    workflowFrame = 0;
+    if (performance.now() < workflowLockedUntil || !stepList || !steps.length) return;
+    const box = stepList.getBoundingClientRect();
+    const anchor = innerHeight * 0.42;
+    // 0 at the first step reaching the anchor, 1 once the last step passes it.
+    const progress = Math.min(1, Math.max(0, (anchor - box.top) / Math.max(1, box.height)));
+    stepList.style.setProperty("--workflow-progress", progress.toFixed(3));
+    // Below 900px the panel is hidden and each step carries its own screenshot.
+    if (window.matchMedia("(max-width: 900px)").matches) return;
+    let nearest = steps[0];
+    let nearestDistance = Infinity;
+    for (const step of steps) {
+      const rect = step.getBoundingClientRect();
+      const distance = Math.abs(rect.top + rect.height / 2 - anchor);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = step;
+      }
+    }
+    if (nearest.dataset.workflowStep) activateWorkflow(nearest.dataset.workflowStep);
+  };
+  const scheduleWorkflow = () => {
+    if (!workflowFrame) workflowFrame = requestAnimationFrame(updateWorkflow);
+  };
+
+  for (const trigger of triggers) {
+    trigger.addEventListener("click", () => {
+      const step = trigger.closest<HTMLElement>("[data-workflow-step]");
+      const name = step?.dataset.workflowStep;
+      if (!name) return;
+      activateWorkflow(name);
+      // The smooth scroll fires frames; keep the chosen step active until it lands.
+      workflowLockedUntil = performance.now() + 1200;
+      step.scrollIntoView({ block: "center", behavior: reducedMotion.matches ? "auto" : "smooth" });
     });
   }
-  activate("balanced");
+
+  activateWorkflow("upload");
+  window.addEventListener("scroll", scheduleWorkflow, { passive: true });
+  window.addEventListener("resize", scheduleWorkflow);
+  document.fonts?.ready.then(scheduleWorkflow);
+  updateWorkflow();
+}
+
+/* ---------- Route comparison ---------- */
+
+const routeCompare = document.querySelector<HTMLElement>("[data-route-compare]");
+if (routeCompare) {
+  const routeButtons = Array.from(routeCompare.querySelectorAll<HTMLButtonElement>("[data-route]"));
+  const routeCells = Array.from(routeCompare.querySelectorAll<HTMLElement>("[data-route-cell]"));
+  const routeNote = routeCompare.querySelector<HTMLElement>("[data-route-note]");
+  const activateRoute = (name: string) => {
+    let note = "";
+    for (const button of routeButtons) {
+      const selected = button.dataset.route === name;
+      button.setAttribute("aria-pressed", String(selected));
+      if (selected) note = button.dataset.note ?? "";
+    }
+    for (const cell of routeCells) cell.classList.toggle("is-active", cell.dataset.routeCell === name);
+    if (routeNote && routeNote.textContent !== note) routeNote.textContent = note;
+  };
+  for (const button of routeButtons) {
+    button.addEventListener("click", () => {
+      if (button.dataset.route) activateRoute(button.dataset.route);
+    });
+  }
+  activateRoute("balanced");
 }
 
 /* ---------- Screenshot lightbox ---------- */
@@ -177,9 +322,6 @@ if (lightbox && lightboxImage) {
   lightbox.addEventListener("click", (event) => {
     if (event.target === lightbox) lightbox.close();
   });
-  lightbox.addEventListener("close", () => {
-    if (!lightbox.open) lightboxImage.removeAttribute("src");
-  });
 }
 
 /* ---------- Reveal ---------- */
@@ -198,6 +340,70 @@ if (revealTargets.length) {
     }, { rootMargin: "0px 0px -8% 0px", threshold: 0.05 });
     for (const target of revealTargets) observer.observe(target);
   }
+}
+
+/* ---------- Pointer glow ---------- */
+
+if (finePointer.matches) {
+  for (const target of document.querySelectorAll<HTMLElement>("[data-glow]")) {
+    let frame = 0;
+    let x = 0;
+    let y = 0;
+    target.addEventListener("pointermove", (event) => {
+      if (reducedMotion.matches) return;
+      const box = target.getBoundingClientRect();
+      x = event.clientX - box.left;
+      y = event.clientY - box.top;
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        target.style.setProperty("--mouse-x", `${x}px`);
+        target.style.setProperty("--mouse-y", `${y}px`);
+      });
+    });
+    target.addEventListener("pointerleave", () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+    });
+  }
+}
+
+/* ---------- Architecture node explorer ---------- */
+
+const architectureDiagram = document.querySelector<SVGElement>(".architecture-diagram");
+const architectureButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-architecture-node]"));
+const architectureCaption = document.querySelector<HTMLElement>("[data-architecture-caption]");
+const architectureNodes: Record<string, string> = {
+  client: "客户端经 HTTPS 提交任务并查询进度；素材通过 API 签发的地址直传私有 OSS。",
+  api: "API Server 负责鉴权、项目与任务、租约调度，并签发上传、下载和分享地址。",
+  postgres: "PostgreSQL 保存项目、任务、租约和 Worker 心跳；GPU Worker 不直接连接数据库。",
+  oss: "私有 OSS 保存素材与交付文件；客户端直传，Worker 读写，均使用限时签名地址。",
+  gpu: "GPU Worker 通过 API 领取租约并上报心跳，从 OSS 读取素材并写入重建结果。",
+};
+let selectedArchitectureNode = "";
+const setArchitectureNode = (name: string) => {
+  // Clicking the active node clears the selection.
+  const next = name === selectedArchitectureNode ? "" : name;
+  selectedArchitectureNode = next;
+  architectureDiagram?.classList.toggle("has-selection", next !== "");
+  for (const button of architectureButtons) {
+    button.setAttribute("aria-pressed", String(button.dataset.architectureNode === next));
+  }
+  for (const rect of document.querySelectorAll<SVGRectElement>(".diagram-boxes rect[data-node]")) {
+    rect.classList.toggle("is-selected", rect.dataset.node === next);
+  }
+  for (const path of document.querySelectorAll<SVGPathElement>(".diagram-lines path[data-connects]")) {
+    path.classList.toggle("is-lit", next !== "" && (path.dataset.connects ?? "").split(" ").includes(next));
+  }
+  for (const label of document.querySelectorAll<SVGTextElement>(".diagram-edge-labels text[data-connects]")) {
+    label.classList.toggle("is-muted", next !== "" && !(label.dataset.connects ?? "").split(" ").includes(next));
+  }
+  if (architectureCaption) {
+    architectureCaption.textContent = next ? architectureNodes[next] ?? "" : "选择节点查看连接关系与职责。";
+  }
+};
+for (const button of architectureButtons) {
+  button.addEventListener("click", () => setArchitectureNode(button.dataset.architectureNode ?? ""));
 }
 
 /* ---------- Architecture flow demo ---------- */
@@ -228,6 +434,8 @@ if (demo && demoButton && demoStatus && diagram && flow && endpointGroup) {
   };
   demoButton.addEventListener("click", () => {
     diagram.scrollIntoView({ block: "nearest", inline: "nearest" });
+    // Keep only one highlight system active at a time.
+    setArchitectureNode("");
     if (reducedMotion.matches) {
       const next = !staticOn;
       reset();

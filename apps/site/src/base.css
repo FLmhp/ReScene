@@ -23,6 +23,19 @@ html {
   --gradient-accent: var(--accent);
   --shadow-panel: 0 8px 24px color-mix(in srgb, #0a1021 10%, transparent);
   --glow-accent: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+
+  /* One motion scale for every state change on the site. */
+  --motion-instant: 100ms;
+  --motion-fast: 160ms;
+  --motion-normal: 240ms;
+  --motion-slow: 400ms;
+  --motion-scene: 600ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-enter: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --hover-lift: -2px;
+  --press-scale: 0.97;
+  --reveal-distance: 12px;
 }
 
 :root[data-site-theme="light"] {
@@ -120,11 +133,22 @@ a {
   background: var(--panel);
   color: var(--fg);
   transform: translateY(-160%);
-  transition: transform 160ms ease;
+  transition: transform var(--motion-fast) var(--ease-standard);
 }
 
 .skip-link:focus {
   transform: translateY(0);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* ---------- Buttons ---------- */
@@ -143,10 +167,10 @@ a {
   letter-spacing: -0.01em;
   cursor: pointer;
   transition:
-    background-color 180ms ease,
-    border-color 180ms ease,
-    color 180ms ease,
-    transform 180ms ease;
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
 }
 
 .button-primary,
@@ -176,12 +200,23 @@ a.button-primary:hover {
 }
 
 .button:active {
-  transform: scale(0.98);
+  transform: scale(var(--press-scale));
 }
 
 @media (hover: hover) and (pointer: fine) {
   .button:hover {
-    transform: translateY(-1px);
+    transform: translateY(var(--hover-lift));
+  }
+}
+
+.button-arrow {
+  display: inline-block;
+  transition: transform var(--motion-fast) var(--ease-enter);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .button:hover .button-arrow {
+    transform: translateX(3px);
   }
 }
 
@@ -193,14 +228,14 @@ a.button-primary:hover {
   gap: 0.35em;
   color: var(--fg);
   font-weight: 500;
-  transition: color 160ms ease;
+  transition: color var(--motion-fast) var(--ease-standard);
 }
 
 .link::after {
   content: "→";
   color: var(--accent);
   font-weight: 600;
-  transition: transform 160ms ease;
+  transition: transform var(--motion-fast) var(--ease-standard);
 }
 
 .link-external::after {
@@ -210,7 +245,7 @@ a.button-primary:hover {
 .link-external svg {
   flex: none;
   color: var(--accent);
-  transition: transform 160ms ease;
+  transition: transform var(--motion-fast) var(--ease-standard);
 }
 
 .link:hover {
@@ -234,17 +269,19 @@ a.button-primary:hover {
   inset-block-start: 0;
   z-index: 20;
   border-bottom: 1px solid transparent;
-  background: var(--bg);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(110%);
+  backdrop-filter: blur(10px) saturate(110%);
   transition:
-    background-color 200ms ease,
-    border-color 200ms ease;
+    background-color var(--motion-normal) var(--ease-standard),
+    border-color var(--motion-normal) var(--ease-standard);
 }
 
 .site-header.is-scrolled {
   border-bottom-color: var(--divider);
-  background: color-mix(in srgb, var(--bg) 84%, transparent);
-  -webkit-backdrop-filter: blur(12px) saturate(115%);
-  backdrop-filter: blur(12px) saturate(115%);
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(115%);
+  backdrop-filter: blur(14px) saturate(115%);
 }
 
 .header-inner {
@@ -278,12 +315,34 @@ a.button-primary:hover {
 }
 
 .desktop-nav {
+  position: relative;
   display: flex;
   gap: 2px;
   margin-inline: auto;
 }
 
+.nav-highlight {
+  position: absolute;
+  inset-block: 7px;
+  left: 0;
+  width: var(--nav-width, 0px);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(var(--nav-x, 0px));
+  transition:
+    transform var(--motion-normal) var(--ease-standard),
+    width var(--motion-normal) var(--ease-standard),
+    opacity var(--motion-fast) var(--ease-standard);
+}
+
+.nav-highlight.is-visible {
+  opacity: 1;
+}
+
 .desktop-nav a {
+  position: relative;
   display: inline-flex;
   align-items: center;
   min-height: 44px;
@@ -291,18 +350,14 @@ a.button-primary:hover {
   border-radius: 8px;
   color: var(--muted);
   font-size: 13.5px;
-  transition:
-    background-color 160ms ease,
-    color 160ms ease;
+  transition: color var(--motion-fast) var(--ease-standard);
 }
 
 .desktop-nav a:hover {
-  background: color-mix(in srgb, var(--fg) 4%, transparent);
   color: var(--fg);
 }
 
 .desktop-nav a[aria-current="location"] {
-  background: color-mix(in srgb, var(--fg) 6%, transparent);
   color: var(--fg);
   font-weight: 500;
 }
@@ -320,26 +375,36 @@ a.button-primary:hover {
   color: var(--muted);
   cursor: pointer;
   transition:
-    background-color 180ms ease,
-    border-color 180ms ease,
-    color 180ms ease,
-    transform 180ms ease;
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
 }
 
 .theme-toggle[hidden] {
   display: none;
 }
 
+.theme-toggle [data-icon] {
+  grid-area: 1 / 1;
+  transition:
+    opacity var(--motion-normal) var(--ease-standard),
+    transform var(--motion-normal) var(--ease-enter);
+}
+
 .theme-toggle [data-icon="sun"] {
-  display: none;
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.8);
 }
 
 :root[data-site-theme="dark"] .theme-toggle [data-icon="sun"] {
-  display: block;
+  opacity: 1;
+  transform: none;
 }
 
 :root[data-site-theme="dark"] .theme-toggle [data-icon="moon"] {
-  display: none;
+  opacity: 0;
+  transform: rotate(90deg) scale(0.8);
 }
 
 .theme-toggle:hover {
@@ -362,6 +427,13 @@ a.button-primary:hover {
   font-size: 13px;
   font-weight: 500;
   line-height: 1;
+  transition: transform var(--motion-fast) var(--ease-enter);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .header-cta:hover .external-mark {
+    transform: translate(2px, -2px);
+  }
 }
 
 .mobile-navigation {
@@ -519,7 +591,7 @@ body,
   gap: 0.35em;
   min-height: 44px;
   color: var(--fg);
-  transition: color 160ms ease;
+  transition: color var(--motion-fast) var(--ease-standard);
 }
 
 .footer-group a:hover {
@@ -560,6 +632,20 @@ body,
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;
+  }
+
+  .button,
+  .button:hover,
+  .button:active,
+  .theme-toggle:active {
+    transform: none;
+  }
+
+  .button-arrow,
+  .header-cta .external-mark,
+  .link::after {
+    transition: none;
+    transform: none !important;
   }
 }
 

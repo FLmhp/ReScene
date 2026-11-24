@@ -23,6 +23,8 @@ export type ViewerProps = {
   size?: number;
   poster?: string;
   onStatus?: (status: ViewerStatus, detail?: string) => void;
+  /** Byte progress while the scene artifact downloads; `total` is 0 when unknown. */
+  onProgress?: (loaded: number, total: number) => void;
   onRetry?: () => void;
   /** Enable arrow-key orbit, +/− zoom and Home reset while the viewport has focus. */
   keyboardControls?: boolean;
@@ -50,6 +52,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
   src,
   poster,
   onStatus,
+  onProgress,
   onRetry,
   keyboardControls = false,
   loadErrorMessage,
@@ -71,6 +74,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
   const hintId = useId();
   const statusCallback = useRef(onStatus);
   statusCallback.current = onStatus;
+  const progressCallback = useRef(onProgress);
+  progressCallback.current = onProgress;
   const failureMessage = useRef(loadErrorMessage);
   failureMessage.current = loadErrorMessage;
   const autoRotateRef = useRef(autoRotate);
@@ -138,7 +143,13 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
     renderer.setSize(width, height);
     element.appendChild(renderer.domElement);
     scene.add(new SparkRenderer({ renderer }));
-    const splats = new SplatMesh({ url: src });
+    const splats = new SplatMesh({
+      url: src,
+      onProgress: (event) => {
+        if (!active) return;
+        progressCallback.current?.(event.loaded, event.lengthComputable ? event.total : 0);
+      },
+    });
     splats.quaternion.set(1, 0, 0, 0);
     scene.add(splats);
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -151,6 +162,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
     let settleUntil = 0;
     let lastSettleRender = 0;
     let visible = true;
+    let pageVisible = !document.hidden;
     let loopRunning = false;
     let idlePausedUntil = 0;
     const pauseAutoRotate = () => {
@@ -200,7 +212,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
 
     const render = () => {
       const now = performance.now();
-      controls.autoRotate = Boolean(autoRotateRef.current) && visible && now >= idlePausedUntil;
+      controls.autoRotate = Boolean(autoRotateRef.current) && visible && pageVisible && now >= idlePausedUntil;
       controls.autoRotateSpeed = 60 / Math.max(10, autoRotateSecondsRef.current);
       controls.update();
       if (now < settleUntil && now - lastSettleRender >= 100) {
@@ -225,21 +237,30 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
       loopRunning = false;
       renderer.setAnimationLoop(null);
     };
+    // One gate for both off-screen and background tabs: never render for nothing.
+    const syncPlayback = () => {
+      if (visible && pageVisible) {
+        needsRender = true;
+        startLoop();
+      } else {
+        stopLoop();
+      }
+    };
+    const onPageVisibilityChange = () => {
+      pageVisible = !document.hidden;
+      syncPlayback();
+    };
+    document.addEventListener("visibilitychange", onPageVisibilityChange);
 
     let visibilityObserver: IntersectionObserver | undefined;
     if (typeof IntersectionObserver === "undefined") {
-      startLoop();
+      syncPlayback();
     } else {
       visibilityObserver = new IntersectionObserver((entries) => {
         const entry = entries[0];
         if (!entry) return;
         visible = entry.isIntersecting;
-        if (visible) {
-          needsRender = true;
-          startLoop();
-        } else {
-          stopLoop();
-        }
+        syncPlayback();
       }, { threshold: 0.01 });
       visibilityObserver.observe(element);
     }
@@ -247,6 +268,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
     return () => {
       active = false;
       visibilityObserver?.disconnect();
+      document.removeEventListener("visibilitychange", onPageVisibilityChange);
       resizeObserver.disconnect();
       stopLoop();
       controls.removeEventListener("start", pauseAutoRotate);

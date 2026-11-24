@@ -33,6 +33,7 @@
         <span class="brand-word">ReScene</span>
       </a>
       <nav class="desktop-nav" aria-label="主导航">
+        <span class="nav-highlight" data-nav-highlight aria-hidden="true"></span>
         <a href="#results">成果</a><a href="#workflow">流程</a><a href="#technology">技术</a><a href="#capabilities">协作</a>
       </nav>
       <button class="theme-toggle" type="button" data-theme-toggle hidden aria-label="切换主题">
@@ -51,7 +52,7 @@
     </div>
   </header>
   <main id="main" tabindex="-1">
-    <section class="hero" aria-labelledby="hero-title">
+    <section class="hero" data-hero aria-labelledby="hero-title">
       <div class="hero-inner container">
         <div class="hero-copy">
           <h1 id="hero-title" lang="en">Reconstruct Reality in 3D.</h1>
@@ -60,7 +61,7 @@
             <li>VGGT</li><li>COLMAP</li><li>SPZ</li><li>PLY</li>
           </ul>
           <div class="actions">
-            <a class="button button-primary" href="https://app.rescene.xyz/">开始重建</a>
+            <a class="button button-primary" href="https://app.rescene.xyz/">开始重建<span class="button-arrow" aria-hidden="true">→</span></a>
             <a class="button button-secondary" href="#results">查看重建结果</a>
           </div>
         </div>
@@ -72,8 +73,8 @@
           <div class="inspector-stage hero-stage" data-hero-stage data-model-src="%RESCENE_DEMO_MODEL%" data-model-poster="/media/knock-community-hall-cropped.webp">
             <img class="inspector-poster hero-poster" src="/media/knock-community-hall-cropped.webp" width="1536" height="1024" loading="eager" fetchpriority="high" decoding="async" alt="裁剪后的 Knock Community Hall SPZ 场景渲染预览">
             <a class="hero-load" data-hero-load href="/demo/">
-              <span>查看三维场景</span>
-              <small>约 5 MB</small>
+              <span data-hero-load-label>查看三维场景</span>
+              <small data-hero-load-detail>约 5 MB</small>
             </a>
             <div class="hero-app" data-hero-app></div>
           </div>
@@ -115,43 +116,65 @@
           <h2 id="workflow-title">从素材到场景</h2>
           <p>上传素材后，在工作台跟踪任务状态和运行日志。</p>
         </div>
-        <ol class="steps">
-          <li class="step">
-            <span class="step-index" aria-hidden="true">01</span>
-            <h3>上传素材</h3>
-            <p>选择同一场景的照片或视频。</p>
-          </li>
-          <li class="step">
-            <span class="step-index" aria-hidden="true">02</span>
-            <h3>提交重建</h3>
-            <p>选择重建路线，提交 GPU 任务。</p>
-          </li>
-          <li class="step">
-            <span class="step-index" aria-hidden="true">03</span>
-            <h3>查看结果</h3>
-            <p>打开 Viewer，检查并导出场景。</p>
-          </li>
-        </ol>
-        <ul class="workflow-evidence" aria-label="移动端工作台截图" data-reveal>
-          <li>
-            <a class="workflow-shot" href="/media/workflow-web.webp" data-lightbox-trigger aria-label="放大手机网页版截图">
-              <span class="workflow-shot-label">手机网页版</span>
-              <img src="/media/workflow-web.webp" width="390" height="840" loading="lazy" decoding="async" alt="手机网页版的素材上传区与 Knock Community Hall 预览图">
-            </a>
-          </li>
-          <li>
-            <a class="workflow-shot" href="/media/workflow-android.webp" data-lightbox-trigger aria-label="放大 Android 截图">
-              <span class="workflow-shot-label">Android</span>
-              <img src="/media/workflow-android.webp" width="540" height="1200" loading="lazy" decoding="async" alt="Android Viewer 中已完成的三维重建预览">
-            </a>
-          </li>
-          <li>
-            <a class="workflow-shot" href="/media/workflow-wechat.webp" data-lightbox-trigger aria-label="放大微信小程序截图">
-              <span class="workflow-shot-label">微信小程序</span>
-              <img src="/media/workflow-wechat.webp" width="324" height="698" loading="lazy" decoding="async" alt="微信小程序项目中的素材选择与重建路线">
-            </a>
-          </li>
-        </ul>
+        <div class="workflow-layout" data-workflow>
+          <ol class="steps" aria-label="重建流程">
+            <li class="step is-active" data-workflow-step="upload">
+              <button class="step-trigger" type="button" aria-controls="workflow-panel" aria-current="step">
+                <span class="step-index" aria-hidden="true">01</span>
+                <span class="step-title">上传素材</span>
+                <span class="step-text">选择同一场景的照片或视频。</span>
+              </button>
+              <figure class="step-shot">
+                <a class="workflow-shot interactive-card" data-glow href="/media/workflow-web.webp" data-lightbox-trigger aria-label="放大手机网页版截图">
+                  <span class="workflow-shot-label">手机网页版</span>
+                  <img src="/media/workflow-web.webp" width="390" height="840" loading="lazy" decoding="async" alt="手机网页版的素材上传区与 Knock Community Hall 预览图">
+                </a>
+              </figure>
+            </li>
+            <li class="step" data-workflow-step="submit">
+              <button class="step-trigger" type="button" aria-controls="workflow-panel">
+                <span class="step-index" aria-hidden="true">02</span>
+                <span class="step-title">提交重建</span>
+                <span class="step-text">选择重建路线，提交 GPU 任务。</span>
+              </button>
+              <figure class="step-shot">
+                <a class="workflow-shot interactive-card" data-glow href="/media/workflow-wechat.webp" data-lightbox-trigger aria-label="放大微信小程序截图">
+                  <span class="workflow-shot-label">微信小程序</span>
+                  <img src="/media/workflow-wechat.webp" width="324" height="698" loading="lazy" decoding="async" alt="微信小程序项目中的素材选择与重建路线">
+                </a>
+              </figure>
+            </li>
+            <li class="step" data-workflow-step="result">
+              <button class="step-trigger" type="button" aria-controls="workflow-panel">
+                <span class="step-index" aria-hidden="true">03</span>
+                <span class="step-title">查看结果</span>
+                <span class="step-text">打开 Viewer，检查并导出场景。</span>
+              </button>
+              <figure class="step-shot">
+                <a class="workflow-shot interactive-card" data-glow href="/media/workflow-android.webp" data-lightbox-trigger aria-label="放大 Android 截图">
+                  <span class="workflow-shot-label">Android</span>
+                  <img src="/media/workflow-android.webp" width="540" height="1200" loading="lazy" decoding="async" alt="Android Viewer 中已完成的三维重建预览">
+                </a>
+              </figure>
+            </li>
+          </ol>
+          <div class="workflow-viewer" id="workflow-panel" data-workflow-panel>
+            <figure class="workflow-frame">
+              <div class="workflow-frame-media">
+                <a class="workflow-frame-link is-active" data-workflow-link="upload" href="/media/workflow-web.webp" data-lightbox-trigger aria-label="放大手机网页版截图">
+                  <img data-workflow-image="upload" src="/media/workflow-web.webp" width="390" height="840" loading="lazy" decoding="async" alt="手机网页版的素材上传区与 Knock Community Hall 预览图">
+                </a>
+                <a class="workflow-frame-link" data-workflow-link="submit" href="/media/workflow-wechat.webp" data-lightbox-trigger aria-label="放大微信小程序截图">
+                  <img data-workflow-image="submit" src="/media/workflow-wechat.webp" width="324" height="698" loading="lazy" decoding="async" alt="微信小程序项目中的素材选择与重建路线">
+                </a>
+                <a class="workflow-frame-link" data-workflow-link="result" href="/media/workflow-android.webp" data-lightbox-trigger aria-label="放大 Android 截图">
+                  <img data-workflow-image="result" src="/media/workflow-android.webp" width="540" height="1200" loading="lazy" decoding="async" alt="Android Viewer 中已完成的三维重建预览">
+                </a>
+              </div>
+              <figcaption data-workflow-caption aria-live="polite">手机网页版 · 素材上传</figcaption>
+            </figure>
+          </div>
+        </div>
       </div>
     </section>
     <section id="technology" class="section" tabindex="-1" aria-labelledby="technology-title">
@@ -160,57 +183,59 @@
           <h2 id="technology-title">三条重建路线</h2>
           <p>根据素材规模与交付精度选择配置。</p>
         </div>
-        <div class="route-tabs" data-route-tabs>
-          <div class="route-tablist" role="tablist" aria-label="选择重建路线">
-            <button class="route-tab" type="button" role="tab" id="route-tab-fast" aria-controls="route-panel-fast" aria-selected="false" tabindex="-1" data-route-tab="fast">FAST</button>
-            <button class="route-tab" type="button" role="tab" id="route-tab-balanced" aria-controls="route-panel-balanced" aria-selected="true" tabindex="0" data-route-tab="balanced">BALANCED<span class="route-tab-flag">默认</span></button>
-            <button class="route-tab" type="button" role="tab" id="route-tab-quality" aria-controls="route-panel-quality" aria-selected="false" tabindex="-1" data-route-tab="quality">QUALITY</button>
+        <div class="route-compare" data-route-compare>
+          <div class="route-table-scroll" tabindex="0" role="region" aria-label="三条重建路线参数对比">
+            <table class="route-table">
+              <caption class="visually-hidden">三条重建路线的参数对比</caption>
+              <thead>
+                <tr>
+                  <th scope="col">参数</th>
+                  <th scope="col">
+                    <button class="route-choice" type="button" data-route="fast" aria-pressed="false" data-note="跳过 Bundle Adjustment，优先完成快速重建。">
+                      <span class="route-choice-tier">快速预览</span>
+                      <span class="route-choice-name">FAST</span>
+                      <span class="route-choice-steps">7,000<small>步</small></span>
+                    </button>
+                  </th>
+                  <th scope="col">
+                    <button class="route-choice" type="button" data-route="balanced" aria-pressed="true" data-note="在 VGGT 结果上执行 Bundle Adjustment，不做稠密重建。">
+                      <span class="route-choice-tier">均衡重建 · 默认</span>
+                      <span class="route-choice-name">BALANCED</span>
+                      <span class="route-choice-steps">20,000<small>步</small></span>
+                    </button>
+                  </th>
+                  <th scope="col">
+                    <button class="route-choice" type="button" data-route="quality" aria-pressed="false" data-note="COLMAP 全流程，包含稠密重建，适合更大规模素材。">
+                      <span class="route-choice-tier">精细重建</span>
+                      <span class="route-choice-name">QUALITY</span>
+                      <span class="route-choice-steps">20,000<small>步</small></span>
+                    </button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr data-reveal>
+                  <th scope="row">算法</th>
+                  <td data-route-cell="fast">VGGT</td>
+                  <td data-route-cell="balanced">VGGT + BA</td>
+                  <td data-route-cell="quality">COLMAP SfM · BA · MVS</td>
+                </tr>
+                <tr data-reveal>
+                  <th scope="row">最大输入帧数</th>
+                  <td data-route-cell="fast">80</td>
+                  <td data-route-cell="balanced">80</td>
+                  <td data-route-cell="quality">250</td>
+                </tr>
+                <tr data-reveal>
+                  <th scope="row">稠密重建</th>
+                  <td data-route-cell="fast">不启用</td>
+                  <td data-route-cell="balanced">不启用</td>
+                  <td data-route-cell="quality">COLMAP MVS</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-          <article class="route-panel" id="route-panel-fast" aria-labelledby="route-tab-fast" data-route-panel="fast">
-            <div class="route-panel-head">
-              <div>
-                <p class="route-tier">快速预览</p>
-                <h3>FAST</h3>
-              </div>
-              <p class="route-metric"><strong>7,000</strong><span>场景优化步数</span></p>
-            </div>
-            <dl class="route-facts">
-              <div><dt>算法</dt><dd>VGGT</dd></div>
-              <div><dt>输入</dt><dd>最多 80 帧</dd></div>
-              <div><dt>稠密重建</dt><dd>不启用</dd></div>
-            </dl>
-            <p class="route-note">跳过 Bundle Adjustment，优先完成快速重建。</p>
-          </article>
-          <article class="route-panel is-active" id="route-panel-balanced" aria-labelledby="route-tab-balanced" data-route-panel="balanced">
-            <div class="route-panel-head">
-              <div>
-                <p class="route-tier">均衡重建</p>
-                <h3>BALANCED</h3>
-              </div>
-              <p class="route-metric"><strong>20,000</strong><span>场景优化步数</span></p>
-            </div>
-            <dl class="route-facts">
-              <div><dt>算法</dt><dd>VGGT + BA</dd></div>
-              <div><dt>输入</dt><dd>最多 80 帧</dd></div>
-              <div><dt>稠密重建</dt><dd>不启用</dd></div>
-            </dl>
-            <p class="route-note">在 VGGT 结果上执行 Bundle Adjustment，不做稠密重建。</p>
-          </article>
-          <article class="route-panel" id="route-panel-quality" aria-labelledby="route-tab-quality" data-route-panel="quality">
-            <div class="route-panel-head">
-              <div>
-                <p class="route-tier">精细重建</p>
-                <h3>QUALITY</h3>
-              </div>
-              <p class="route-metric"><strong>20,000</strong><span>场景优化步数</span></p>
-            </div>
-            <dl class="route-facts">
-              <div><dt>算法</dt><dd>COLMAP SfM / BA / MVS</dd></div>
-              <div><dt>输入</dt><dd>最多 250 帧</dd></div>
-              <div><dt>稠密重建</dt><dd>COLMAP MVS</dd></div>
-            </dl>
-            <p class="route-note">COLMAP 全流程，包含稠密重建，适合更大规模素材。</p>
-          </article>
+          <p class="route-note" data-route-note aria-live="polite">在 VGGT 结果上执行 Bundle Adjustment，不做稠密重建。</p>
         </div>
         <p class="route-footnote">步数是场景优化步数，不是重新训练 VGGT。</p>
         <div class="architecture" data-reveal>
@@ -237,20 +262,20 @@
                 </defs>
 
                 <g class="diagram-boxes">
-                  <rect x="18" y="24" width="204" height="92" rx="10"/>
-                  <rect x="378" y="24" width="204" height="92" rx="10"/>
-                  <rect x="738" y="24" width="204" height="92" rx="10"/>
-                  <rect x="378" y="212" width="204" height="92" rx="10"/>
-                  <rect x="738" y="212" width="204" height="92" rx="10"/>
+                  <rect data-node="client" x="18" y="24" width="204" height="92" rx="10"/>
+                  <rect data-node="api" x="378" y="24" width="204" height="92" rx="10"/>
+                  <rect data-node="postgres" x="738" y="24" width="204" height="92" rx="10"/>
+                  <rect data-node="oss" x="378" y="212" width="204" height="92" rx="10"/>
+                  <rect data-node="gpu" x="738" y="212" width="204" height="92" rx="10"/>
                 </g>
 
                 <g class="diagram-lines" fill="none" stroke-width="1.5" marker-end="url(#diagram-arrow)">
-                  <path d="M222 70H378"/>
-                  <path d="M582 70H738"/>
-                  <path d="M480 116V212"/>
-                  <path d="M840 212V164H540V116" stroke-dasharray="4 5"/>
-                  <path d="M738 258H582"/>
-                  <path d="M120 116V258H378"/>
+                  <path data-connects="client api" d="M222 70H378"/>
+                  <path data-connects="api postgres" d="M582 70H738"/>
+                  <path data-connects="api oss" d="M480 116V212"/>
+                  <path data-connects="gpu api" d="M840 212V164H540V116" stroke-dasharray="4 5"/>
+                  <path data-connects="gpu oss" d="M738 258H582"/>
+                  <path data-connects="client oss" d="M120 116V258H378"/>
                 </g>
                 <g class="diagram-flow" fill="none" aria-hidden="true">
                   <path pathLength="100" d="M222 70H378"/>
@@ -262,12 +287,12 @@
                 </g>
 
                 <g class="diagram-edge-labels" aria-hidden="true">
-                  <text x="300" y="60">HTTPS · 任务</text>
-                  <text x="660" y="60">项目 · 任务</text>
-                  <text x="467" y="168" text-anchor="end">签发地址</text>
-                  <text x="690" y="154">领取租约 · 心跳</text>
-                  <text x="660" y="248">读素材 · 写结果</text>
-                  <text x="249" y="248">直传素材</text>
+                  <text data-connects="client api" x="300" y="60">HTTPS · 任务</text>
+                  <text data-connects="api postgres" x="660" y="60">项目 · 任务</text>
+                  <text data-connects="api oss" x="467" y="168" text-anchor="end">签发地址</text>
+                  <text data-connects="gpu api" x="690" y="154">领取租约 · 心跳</text>
+                  <text data-connects="gpu oss" x="660" y="248">读素材 · 写结果</text>
+                  <text data-connects="client oss" x="249" y="248">直传素材</text>
                 </g>
 
                 <g class="diagram-text">
@@ -310,6 +335,14 @@
               </svg>
             </div>
           </figure>
+          <div class="architecture-nodes" role="group" aria-label="查看架构节点">
+            <button type="button" class="architecture-node interactive-card" data-glow data-architecture-node="client" aria-pressed="false">客户端</button>
+            <button type="button" class="architecture-node interactive-card" data-glow data-architecture-node="api" aria-pressed="false">API Server</button>
+            <button type="button" class="architecture-node interactive-card" data-glow data-architecture-node="postgres" aria-pressed="false">PostgreSQL</button>
+            <button type="button" class="architecture-node interactive-card" data-glow data-architecture-node="oss" aria-pressed="false">私有 OSS</button>
+            <button type="button" class="architecture-node interactive-card" data-glow data-architecture-node="gpu" aria-pressed="false">GPU Worker</button>
+          </div>
+          <p class="architecture-caption" data-architecture-caption aria-live="polite">选择节点查看连接关系与职责。</p>
           <details class="architecture-details">
             <summary>查看架构说明</summary>
             <p>客户端经 HTTPS 提交任务并查询进度；PostgreSQL 保存项目、任务与租约状态。GPU Worker 只通过 API 领取租约并上报心跳，不直接连接数据库。素材与交付文件保存在私有 OSS，读取一律使用 API 签发的限时签名地址，分享可按权限撤销。</p>
@@ -329,8 +362,10 @@
             <article><h3>任务记录</h3><p>查看任务阶段、运行日志和失败原因。</p></article>
             <article><h3>文件管理</h3><p>下载重建文件，管理场景分享链接。</p></article>
           </div>
-          <figure>
-            <img src="/media/admin-console.webp" width="1600" height="1125" loading="lazy" decoding="async" alt="ReScene 工作台中的管理控制台">
+          <figure data-reveal="media">
+            <a class="capabilities-shot" href="/media/admin-console.webp" data-lightbox-trigger aria-label="放大管理控制台截图">
+              <img src="/media/admin-console.webp" width="1600" height="1125" loading="lazy" decoding="async" alt="ReScene 工作台中的管理控制台">
+            </a>
             <figcaption>工作台 · 管理控制台</figcaption>
           </figure>
         </div>
@@ -349,7 +384,7 @@
           <div class="platform-row"><dt>微信小程序</dt><dd>已上架体验版</dd></div>
         </dl>
         <p class="version-note">源码版本 · <span class="tabular">%RESCENE_VERSION%</span></p>
-        <div class="faq-section" data-reveal>
+        <div class="faq-section" data-reveal="fade">
           <div class="faq-intro">
             <h3>常见问题</h3>
           </div>
@@ -360,7 +395,7 @@
             <details><summary>如何下载重建结果？</summary><p>任务完成后打开场景，在交付区域下载 SPZ 或 PLY 文件。</p></details>
           </div>
         </div>
-        <div class="boundaries" data-reveal>
+        <div class="boundaries" data-reveal="fade">
           <div id="privacy" tabindex="-1">
             <h3>数据与隐私</h3>
             <p>输入素材与交付文件存储于私有 OSS。分享链接可由项目成员按权限撤销。</p>

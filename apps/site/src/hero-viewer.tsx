@@ -3,15 +3,37 @@ import "@rescene/viewer/viewer.css";
 import { createElement, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
+const megabytes = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1);
+
 /** Renders into the poster's place; called only from the click boundary in `main.ts`. */
 export function mountHeroViewer(stage: HTMLElement): void {
   const src = stage.dataset.modelSrc;
   const app = stage.querySelector<HTMLElement>("[data-hero-app]");
   if (!src || !app) return;
+
+  const load = stage.querySelector<HTMLElement>("[data-hero-load]");
+  const label = stage.querySelector<HTMLElement>("[data-hero-load-label]");
+  const detail = stage.querySelector<HTMLElement>("[data-hero-load-detail]");
+  let shownPercent = -1;
+
+  // Byte counts come from the real artifact download, never a timer.
+  const onProgress = (loaded: number, total: number) => {
+    if (!load) return;
+    load.style.setProperty("--hero-progress", total > 0 ? Math.min(1, loaded / total).toFixed(3) : "0");
+    if (total <= 0) return;
+    const percent = Math.min(100, Math.floor((loaded / total) * 100));
+    if (percent !== shownPercent) {
+      shownPercent = percent;
+      if (label) label.textContent = `正在加载场景… ${percent}%`;
+    }
+    if (detail) detail.textContent = `${megabytes(loaded)} / ${megabytes(total)} MB`;
+  };
+
   createRoot(app).render(createElement(HeroViewer, {
     src,
     poster: stage.dataset.modelPoster ?? "",
     stage,
+    onProgress,
   }));
 }
 
@@ -19,10 +41,11 @@ type HeroViewerProps = {
   src: string;
   poster: string;
   stage: HTMLElement;
+  onProgress: (loaded: number, total: number) => void;
 };
 
 /** Loaded only after the visitor asks for the scene; the static poster remains the fallback. */
-export function HeroViewer({ src, poster, stage }: HeroViewerProps) {
+export function HeroViewer({ src, poster, stage, onProgress }: HeroViewerProps) {
   const viewer = useRef<ViewerHandle>(null);
   const [status, setStatus] = useState<ViewerStatus | "">("");
   const [reducedMotion, setReducedMotion] = useState(
@@ -32,15 +55,11 @@ export function HeroViewer({ src, poster, stage }: HeroViewerProps) {
   const [fullscreen, setFullscreen] = useState(false);
 
   useEffect(() => {
-    stage.classList.add("is-live");
-    return () => {
-      stage.classList.remove("is-live", "is-ready", "is-error");
-    };
-  }, [stage]);
-
-  useEffect(() => {
     stage.classList.toggle("is-ready", status === "ready");
     stage.classList.toggle("is-error", status === "error");
+    if (status === "ready" || status === "error") {
+      stage.querySelector<HTMLElement>("[data-hero-load]")?.removeAttribute("aria-busy");
+    }
   }, [stage, status]);
 
   useEffect(() => {
@@ -80,6 +99,7 @@ export function HeroViewer({ src, poster, stage }: HeroViewerProps) {
         viewDirection={[0.88, 0.25, -0.41]}
         viewDistance={1.43}
         onStatus={setStatus}
+        onProgress={onProgress}
         loadErrorMessage="场景加载失败，请重试。"
       />
       <div className="hero-toolbar" role="group" aria-label="场景控制" hidden={status !== "ready"}>
