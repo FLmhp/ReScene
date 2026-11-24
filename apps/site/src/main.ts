@@ -87,7 +87,7 @@ if (navigation) {
 
 /* ---------- Header state and scrollspy share one frame ---------- */
 
-const sectionIds = ["results", "workflow", "technology", "capabilities", "delivery"];
+const sectionIds = ["workflow", "results", "technology", "capabilities", "delivery"];
 const sections = sectionIds
   .map((id) => document.getElementById(id))
   .filter((section): section is HTMLElement => section !== null);
@@ -202,6 +202,7 @@ if (workflow) {
   };
   let activeWorkflow = "";
   let workflowLockedUntil = 0;
+  let workflowPinned = false;
   let workflowFrame = 0;
 
   const activateWorkflow = (name: string) => {
@@ -232,7 +233,7 @@ if (workflow) {
 
   const updateWorkflow = () => {
     workflowFrame = 0;
-    if (performance.now() < workflowLockedUntil || !stepList || !steps.length) return;
+    if (!stepList || !steps.length) return;
     const box = stepList.getBoundingClientRect();
     const anchor = innerHeight * 0.42;
     // 0 at the first step reaching the anchor, 1 once the last step passes it.
@@ -240,6 +241,9 @@ if (workflow) {
     stepList.style.setProperty("--workflow-progress", progress.toFixed(3));
     // Below 900px the panel is hidden and each step carries its own screenshot.
     if (window.matchMedia("(max-width: 900px)").matches) return;
+    // Keep a clicked step active until the visitor scrolls again; late font or
+    // resize recalculations must not undo the choice.
+    if (workflowPinned || performance.now() < workflowLockedUntil) return;
     let nearest = steps[0];
     let nearestDistance = Infinity;
     for (const step of steps) {
@@ -262,14 +266,29 @@ if (workflow) {
       const name = step?.dataset.workflowStep;
       if (!name) return;
       activateWorkflow(name);
+      workflowPinned = true;
       // The smooth scroll fires frames; keep the chosen step active until it lands.
       workflowLockedUntil = performance.now() + 1200;
-      step.scrollIntoView({ block: "center", behavior: reducedMotion.matches ? "auto" : "smooth" });
+      const triggerBox = trigger.getBoundingClientRect();
+      const safeTop = (header?.offsetHeight ?? 0) + 24;
+      const safeBottom = innerHeight - 24;
+      // Only scroll when the trigger is not already fully visible. Centring it on
+      // desktop used to pull the section heading under the sticky header, and on
+      // mobile the step is taller than the viewport, so align its title instead.
+      if (triggerBox.top < safeTop || triggerBox.bottom > safeBottom) {
+        window.scrollTo({
+          top: Math.max(0, window.scrollY + triggerBox.top - safeTop),
+          behavior: reducedMotion.matches ? "auto" : "smooth",
+        });
+      }
     });
   }
 
   activateWorkflow("upload");
-  window.addEventListener("scroll", scheduleWorkflow, { passive: true });
+  window.addEventListener("scroll", () => {
+    if (performance.now() >= workflowLockedUntil) workflowPinned = false;
+    scheduleWorkflow();
+  }, { passive: true });
   window.addEventListener("resize", scheduleWorkflow);
   document.fonts?.ready.then(scheduleWorkflow);
   updateWorkflow();

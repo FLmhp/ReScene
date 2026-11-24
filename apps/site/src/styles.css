@@ -545,13 +545,33 @@ a.hero-load:hover {
 }
 
 .result-card {
-  padding: 24px;
+  overflow: hidden;
+  padding: 0;
   border: 1px solid var(--border-soft);
   border-radius: 12px;
   background: var(--panel);
-  transition:
-    background-color var(--motion-normal) var(--ease-standard),
-    border-color var(--motion-normal) var(--ease-standard);
+}
+
+.result-media {
+  aspect-ratio: 8 / 5;
+  border-block-end: 1px solid var(--divider);
+  background: var(--bg-deep);
+}
+
+.result-media a {
+  display: block;
+  height: 100%;
+  cursor: zoom-in;
+}
+
+.result-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.result-copy {
+  padding: 20px 22px 24px;
 }
 
 .result-icon {
@@ -567,7 +587,7 @@ a.hero-load:hover {
 }
 
 .result-card h3 {
-  margin-block-start: 18px;
+  margin-block-start: 12px;
   font-size: 18px;
   letter-spacing: -0.01em;
 }
@@ -598,6 +618,7 @@ a.hero-load:hover {
 .steps::after {
   content: "";
   position: absolute;
+  z-index: 0;
   inset-block: 0;
   left: 23px;
   width: 1px;
@@ -615,6 +636,7 @@ a.hero-load:hover {
 
 .step {
   position: relative;
+  z-index: 1;
 }
 
 .step + .step {
@@ -708,13 +730,16 @@ a.hero-load:hover {
 .workflow-frame-media {
   position: relative;
   height: min(64vh, 560px);
-  background: #0b0d12;
+  background:
+    radial-gradient(120% 90% at 50% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%),
+    var(--bg-deep);
 }
 
 .workflow-frame-link {
   position: absolute;
-  inset: 0;
-  display: block;
+  inset: 18px;
+  display: grid;
+  place-items: center;
   opacity: 0;
   visibility: hidden;
   cursor: zoom-in;
@@ -729,8 +754,11 @@ a.hero-load:hover {
 }
 
 .workflow-frame-link img {
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   height: 100%;
+  border-radius: 8px;
+  box-shadow: 0 18px 36px color-mix(in srgb, #071018 24%, transparent);
   object-fit: contain;
 }
 
@@ -763,7 +791,7 @@ a.hero-load:hover {
   height: auto;
   aspect-ratio: 13 / 28;
   object-fit: contain;
-  background: #0b0d12;
+  background: var(--bg-deep);
 }
 
 .workflow-shot:focus-visible {

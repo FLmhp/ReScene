@@ -35,7 +35,8 @@ function sitePalette(): Plugin {
     name: "rescene-site-palette",
     enforce: "pre",
     transform(code, id) {
-      if (!id.endsWith(".css") || !code.includes(PALETTE_TOKEN)) return null;
+      const file = id.split("?")[0];
+      if (!file.endsWith(".css") || !code.includes(PALETTE_TOKEN)) return null;
       return { code: code.replaceAll(PALETTE_TOKEN, generated), map: null };
     },
   };
