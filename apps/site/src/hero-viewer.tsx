@@ -58,7 +58,11 @@ export function HeroViewer({ src, poster, stage, onProgress }: HeroViewerProps) 
     stage.classList.toggle("is-ready", status === "ready");
     stage.classList.toggle("is-error", status === "error");
     if (status === "ready" || status === "error") {
-      stage.querySelector<HTMLElement>("[data-hero-load]")?.removeAttribute("aria-busy");
+      const load = stage.querySelector<HTMLElement>("[data-hero-load]");
+      load?.removeAttribute("aria-busy");
+      // The pill fades out; take it out of the tab order and the accessibility tree
+      // too, so keyboard focus never lands on an invisible link.
+      if (load) load.inert = true;
     }
   }, [stage, status]);
 
