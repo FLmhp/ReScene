@@ -81,7 +81,11 @@ jobs:
 
   deploy:
     needs: [source-manifest, release-manifest]
-    if: vars.RELEASE_DEPLOY == 'true' && needs.release-manifest.result == 'success'
+    if: |
+      !cancelled() &&
+      vars.RELEASE_DEPLOY == 'true' &&
+      needs.source-manifest.result == 'success' &&
+      needs.release-manifest.result == 'success'
     runs-on: ubuntu-latest
     environment: release
     timeout-minutes: 45

@@ -14,9 +14,9 @@
   },
   "dependencies": {
     "@sparkjsdev/spark": "2.4.0",
-    "@types/three": "0.180.0",
+    "@types/three": "0.187.0",
     "react": "19.2.0",
-    "three": "0.180.0"
+    "three": "0.187.0"
   },
   "devDependencies": {
     "@types/react": "19.2.2",

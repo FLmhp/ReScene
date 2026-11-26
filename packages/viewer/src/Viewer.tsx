@@ -279,6 +279,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
       splats.dispose();
       spark.dispose();
       renderer.dispose();
+      // This canvas owns its context and will never be reused.
+      renderer.forceContextLoss();
       renderer.domElement.remove();
       delete element.dataset.rendered;
     };

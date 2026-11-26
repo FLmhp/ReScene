@@ -216,7 +216,7 @@ node scripts/bump-version.mjs <新版本号>
 
 [release.yml](.github/workflows/release.yml) 由 `v*` tag 触发，或在 `workflow_dispatch` 中手工指定尚未公开发行的 tag。`recreate=true` 只允许明确确认存在的同名草稿，不能替换公开 Release。发布环境需配置 HTTPS 的 `RELEASE_API_URL` 和 `RELEASE_WEB_URL`，桌面 API origin 还须符合 CSP。工作流生成 Windows x64 NSIS、Linux x64 deb/AppImage、macOS universal dmg，以及源清单和发布清单；Android APK 仅在 `RELEASE_ANDROID_SIGNING=true` 且签名材料齐全时生成。
 
-只有安装器构建和发布清单成功且 `RELEASE_DEPLOY=true` 时，`deploy` job 才在独立暂存目录按准确的源码提交重建镜像；不清理共享缓存，也不修改运行配置。核对生产数据库迁移版本和候选一致后留存 `pg_dump` 快照，依次切换并验证 `api`、`web`，最后探测公网并写入 `deploy-log.json`。它需要 secrets `DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS` 和 variables `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_PORT`。部署失败不自动回滚（数据库迁移不随镜像回退），`github-release` 会因此不发布；只想发安装包时把 `RELEASE_DEPLOY` 改为 `false` 重跑，`release-log.json` 会把部署记为未执行而不是成功。
+只有安装器构建和发布清单成功且 `RELEASE_DEPLOY=true` 时，`deploy` job 才在独立暂存目录按准确的源码提交重建镜像；不清理共享缓存，也不修改运行配置。核对生产数据库迁移版本和候选一致后留存 `pg_dump` 快照，依次切换并验证 `api`、`web`，最后探测公网并写入 `deploy-log.json`。它需要 secrets `DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS` 和 variables `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_PORT`。部署失败不自动回滚（数据库迁移不随镜像回退），`github-release` 会因此不发布；允许仅生成安装包草稿的版本须显式设置 `RELEASE_DEPLOY=false`；`release-log.json` 会记录未部署。`v0.6.0` 不允许跳过生产部署或签名 Android 包。
 
 工作流只创建草稿，安装与生产验收通过后由运维手动公开；附加资产除安装包外还有 `source-manifest.json`、`release-manifest.json` 和 `release-log.json`（产物哈希、镜像摘要、迁移版本、备份路径与探针结果，以及本次运行的 URL）。GitHub 只在该次运行结束后才提供日志，所以发布时无法把自身日志打包成资产；日志通过运行 URL 查看，`deploy-log.json` 另存为本次运行的 artifacts。工作流没有生成独立的 `SHA256SUMS`，请按发布清单中的哈希核对实际下载文件。最终资产集合以成功的运行和 Release 为准，不把构建计划当成已发布证据。
 
