@@ -426,6 +426,36 @@ describe("collaboration surfaces", () => {
     expect(call?.[1]?.method).toBe("POST");
   });
 
+  it("opens a job notification for the already selected project", async () => {
+    const job = {
+      id: "j1", project_id: "p1", profile: "balanced", status: "SUCCEEDED", progress: 1, attempt: 1,
+      cancel_requested: false, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", reconstruction_id: null,
+    };
+    stubFetch(routeTable({
+      "/v1/projects/p1": { ...projectDetail("owner"), jobs: [job] },
+      "/v1/notifications": [{ ...notification(false), job_id: "j1" }],
+      "POST /v1/notifications/read": { updated: 1 },
+    }));
+    renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Kitchen" }));
+    await screen.findByRole("heading", { name: "Kitchen" });
+    await userEvent.click(await screen.findByRole("button", { name: "通知（1）" }));
+    await userEvent.click(await screen.findByRole("button", { name: /重建已完成/ }));
+    expect(await screen.findByRole("heading", { name: "任务详情" })).toBeTruthy();
+  });
+
+  it("keeps targetless announcements on the notification page", async () => {
+    stubFetch(routeTable({
+      "/v1/notifications": [{ ...notification(false), kind: "announcement", title: "系统公告", project_id: null }],
+      "POST /v1/notifications/read": { updated: 1 },
+    }));
+    renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "通知（1）" }));
+    await userEvent.click(await screen.findByRole("button", { name: /系统公告/ }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/v1/notifications/read") && init?.method === "POST")).toBe(true));
+    expect(screen.getByRole("heading", { name: "通知" })).toBeTruthy();
+  });
+
   it("deletes an asset after confirmation", async () => {
     stubFetch(routeTable({ "/v1/assets/a1": { status: 204 } }));
     vi.spyOn(window, "confirm").mockReturnValue(true);

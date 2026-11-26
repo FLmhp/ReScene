@@ -15,12 +15,13 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from rescene_api import main
-from rescene_api.auth import hash_password, issue_token, verify_password
+from rescene_api.auth import hash_email_code, hash_password, issue_token, verify_password
 from rescene_api.config import settings
 from rescene_api.models import (
     Asset,
     AssetCleanup,
     AuditLog,
+    EmailAuthCode,
     JobStage,
     Notification,
     Project,
@@ -122,6 +123,48 @@ def test_postgres_reapers_fence_late_heartbeat(postgres_sessions):
         assert job.status == "QUEUED" and job.attempt == 1 and job.leased_by is None and job.lease_expires_at is None
         assert job.resume_artifact_key == "checkpoint/test-bundle"
         assert job.progress == 0.0 and job.current_stage is None and job.error_code is None
+
+
+@pytest.mark.parametrize("correct", [True, False], ids=["code_redemption", "code_attempts"])
+def test_postgres_concurrent_email_code(postgres_sessions, monkeypatch, correct):
+    with postgres_sessions.begin() as db:
+        owner = User(email="concurrent-code@example.com", password_hash=hash_password("correct-horse"))
+        db.add(owner)
+        db.flush()
+        code = EmailAuthCode(
+            user_id=owner.id,
+            purpose="login",
+            code_hash=hash_email_code(owner.id, "login", "123456"),
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        )
+        db.add(code)
+        db.flush()
+        code_id = code.id
+
+    barrier = Barrier(2)
+
+    def synchronized_hash(user_id, purpose, value):
+        barrier.wait(timeout=10)
+        return hash_email_code(user_id, purpose, value)
+
+    monkeypatch.setattr(main, "hash_email_code", synchronized_hash)
+    payload = {"email": "concurrent-code@example.com", "code": "123456" if correct else "000000"}
+    with TestClient(main.app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(client.post, "/v1/auth/email-code/login", json=payload) for _ in range(2)]
+        responses = [future.result(timeout=15) for future in futures]
+        assert sorted(response.status_code for response in responses) == ([200, 401] if correct else [401, 401])
+        for response in responses:
+            if response.status_code == 200:
+                headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
+                assert client.get("/v1/auth/me", headers=headers).status_code == 200
+            else:
+                assert response.headers["x-error-code"] == "auth.invalid_code"
+
+    with postgres_sessions() as db:
+        stored = db.get(EmailAuthCode, code_id)
+        assert stored.attempts == (1 if correct else 2)
+        assert (stored.consumed_at is not None) == correct
+        assert len(db.scalars(select(AuditLog).where(AuditLog.action == "auth.email_code_login")).all()) == int(correct)
 
 
 def test_postgres_concurrent_password_rotations_stay_monotonic(postgres_sessions):

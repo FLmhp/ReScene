@@ -3,6 +3,7 @@ import hashlib
 import json
 import shutil
 import tarfile
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 from threading import Event
@@ -15,6 +16,7 @@ from PIL import Image
 
 from rescene_worker.main import (
     Api,
+    CheckpointTransferError,
     IncompleteCheckpoint,
     InvalidInput,
     JobCancelled,
@@ -22,6 +24,7 @@ from rescene_worker.main import (
     archive_stage,
     artifacts,
     download_inputs,
+    execute,
     execute_attempt,
     is_resumed_stage,
     monitor_job,
@@ -444,6 +447,80 @@ def test_execute_attempt_restarts_corrupt_checkpoint_when_lease_allows(tmp_path,
     assert not (job_dir / "output.resume.tar.gz").exists()
 
 
+@pytest.mark.parametrize("error_number", [errno.ECONNRESET, errno.ENOSPC])
+def test_checkpoint_download_error_retries_without_losing_key(tmp_path, monkeypatch, error_number):
+    bucket = _bucket_with_checkpoint(tmp_path, VALID_CHECKPOINT_MANIFEST)
+    copy_checkpoint = bucket.get_object_to_file.side_effect
+    error = OSError(error_number, "download interrupted")
+    downloads = []
+
+    def download(key, destination):
+        downloads.append(key)
+        if len(downloads) == 1:
+            Path(destination).write_bytes(b"partial checkpoint")
+            raise error
+        copy_checkpoint(key, destination)
+
+    bucket.get_object_to_file.side_effect = download
+    monkeypatch.setattr("rescene_worker.main.oss2.Bucket", Mock(return_value=bucket))
+    monkeypatch.setattr("rescene_worker.main.download_inputs", Mock(return_value=tmp_path / "input.mp4"))
+    engine = Mock(return_value=SimpleNamespace(returncode=0))
+    monkeypatch.setattr("rescene_worker.main.subprocess.Popen", engine)
+    monkeypatch.setattr("rescene_worker.main.LogShipper", Mock())
+    monitor = Mock()
+    monkeypatch.setattr("rescene_worker.main.monitor_job", monitor)
+    monkeypatch.setattr("rescene_worker.main.artifacts", Mock(return_value=[{"kind": "spz"}]))
+    api = Mock()
+    monkeypatch.setattr("rescene_worker.main.Api", Mock(return_value=api))
+
+    @contextmanager
+    def lease(_api, _endpoint):
+        yield (Event(), Event())
+
+    monkeypatch.setattr("rescene_worker.main.lease_watch", lease)
+    config = SimpleNamespace(work_root=tmp_path.resolve())
+    job = {
+        "job_id": "first",
+        "profile": "fast",
+        "attempt": 1,
+        "assets": [],
+        "output_prefix": "job/",
+        "resume_artifact_key": CHECKPOINT_KEY,
+        "oss": {"endpoint": "oss.example", "bucket": "fixture"},
+    }
+    execute(config, job, lock_fd=7)
+    engine.assert_not_called()
+    api.post.assert_called_once_with(
+        "/v1/worker/jobs/first/fail",
+        {"error_code": "INFRASTRUCTURE_ERROR", "error_message": "INFRASTRUCTURE_ERROR", "retryable": True},
+    )
+    assert job["resume_artifact_key"] == CHECKPOINT_KEY
+    assert not (tmp_path / "first" / "attempt-1").exists()
+
+    execute(config, {**job, "attempt": 2}, lock_fd=7)
+    assert downloads == [CHECKPOINT_KEY, CHECKPOINT_KEY]
+    engine.assert_called_once()
+    assert monitor.call_args.args[2]["resume_artifact_key"] == CHECKPOINT_KEY
+    api.post.assert_called_with(
+        "/v1/worker/jobs/first/complete", {"artifacts": [{"kind": "spz"}], "quality_score": None}
+    )
+
+
+def test_checkpoint_transfer_error_preserves_cause_and_cleans_partial_file(tmp_path):
+    bucket = Mock()
+    error = OSError(errno.ECONNRESET, "connection reset")
+
+    def download(_key, destination):
+        Path(destination).write_bytes(b"partial")
+        raise error
+
+    bucket.get_object_to_file.side_effect = download
+    with pytest.raises(CheckpointTransferError) as failure:
+        restore_archive(bucket, CHECKPOINT_KEY, tmp_path / "output")
+    assert failure.value.__cause__ is error
+    assert not (tmp_path / "output.resume.tar.gz").exists()
+
+
 def test_execute_attempt_does_not_complete_after_upload_lease_loss(tmp_path, monkeypatch):
     events = (Event(), Event())
     bucket = Mock()
@@ -490,7 +567,7 @@ def _checkpoint_run(tmp_path):
     (output / "stages").mkdir(parents=True)
     for name in ("preprocess", "geometry", "training", "export"):
         (output / "stages" / f"{name}.json").write_text('{"status":"success"}', encoding="utf-8")
-    (output / "config.json").write_text("{}", encoding="utf-8")
+    (output / "config.json").write_text('{"gsplat_steps": 2}', encoding="utf-8")
     (output / "input_manifest.json").write_text('{"frames": []}', encoding="utf-8")
     (output / "photometric_selection.json").write_text("{}", encoding="utf-8")
     (output / "sparse" / "0").mkdir(parents=True)
@@ -502,13 +579,16 @@ def _checkpoint_run(tmp_path):
     (output / "dense" / "fused.ply").write_bytes(b"fused cloud")
     (output / "dense" / "meshed-poisson.ply").write_bytes(b"mesh")
     (output / "gsplat").mkdir()
-    (output / "gsplat" / "run.json").write_text("{}", encoding="utf-8")
-    for name in ("photometric_split.json", "geometry_frames.json", "scene.spz"):
+    (output / "gsplat" / "run.json").write_text('{"ply_step": 1, "eval_step": 1}', encoding="utf-8")
+    (output / "gsplat" / "ply").mkdir()
+    (output / "gsplat" / "ply" / "point_cloud_1.ply").write_bytes(b"ply fixture")
+    for name in ("photometric_split.json", "geometry_frames.json", "metrics.json", "report.md"):
         (output / name).write_bytes(b"{}")
+    (output / "scene.spz").write_bytes(b"spz fixture")
     return output
 
 
-@pytest.mark.parametrize("stage", ["geometry", "training", "export"])
+@pytest.mark.parametrize("stage", ["geometry", "training"])
 def test_checkpoint_keeps_only_resume_dense_files(tmp_path, monkeypatch, stage):
     output = _checkpoint_run(tmp_path)
     stored = tmp_path / "stored.tar.gz"
@@ -520,6 +600,82 @@ def test_checkpoint_keeps_only_resume_dense_files(tmp_path, monkeypatch, stage):
         names = set(archive.getnames())
     assert {"dense/fused.ply", "dense/meshed-poisson.ply"} <= names
     assert not [name for name in names if name.startswith(("dense/stereo", "dense/images", "dense/sparse"))]
+
+
+def test_checkpoint_rejects_unknown_stage_before_creating_archive(tmp_path):
+    with pytest.raises(ValueError, match="Unsupported checkpoint stage"):
+        archive_stage(Mock(), tmp_path / "output", "job/", "export")
+    assert not (tmp_path / "output-export.tar.gz").exists()
+
+
+def test_successful_export_skips_checkpoint_but_preserves_deliverables(tmp_path, monkeypatch):
+    output = _checkpoint_run(tmp_path)
+    uploads = {}
+
+    def upload(_bucket, key, path, **_kwargs):
+        uploads[key] = Path(path).read_bytes()
+
+    monkeypatch.setattr("oss2.resumable_upload", upload)
+    bucket = Mock()
+    api = Mock()
+    process = Mock()
+    process.poll.side_effect = [None, 0]
+    cancelled = Mock()
+    cancelled.is_set.return_value = False
+    lost = Event()
+    monitor_job(api, "/attempt", {"output_prefix": "job/"}, process, output, bucket, (cancelled, lost))
+    published = artifacts(output, bucket, "job/", lambda: None)
+
+    stage_payloads = [call.args[1] for call in api.post.call_args_list]
+    assert [payload["stage"] for payload in stage_payloads] == ["preprocess", "geometry", "training", "export"]
+    assert stage_payloads[-2]["resume_artifact_key"] == "job/checkpoints/training.tar.gz"
+    assert stage_payloads[-1]["status"] == "success"
+    assert stage_payloads[-1]["resume_artifact_key"] is None
+    assert cancelled.wait.call_count == 1
+    assert set(uploads) == {
+        "job/checkpoints/preprocess.tar.gz",
+        "job/checkpoints/geometry.tar.gz",
+        "job/checkpoints/training.tar.gz",
+        "job/artifacts/spz/scene.spz",
+        "job/artifacts/metrics/metrics.json",
+        "job/artifacts/report/report.md",
+        "job/artifacts/ply/point_cloud_1.ply",
+        "job/artifacts/dense/fused.ply",
+        "job/artifacts/mesh/meshed-poisson.ply",
+    }
+    assert {item["kind"] for item in published} == {"spz", "metrics", "report", "ply", "dense", "mesh", "manifest"}
+    manifest_bytes = (output / "manifest.json").read_bytes()
+    bucket.put_object_from_file.assert_called_once()
+
+    # Reconstruct the old export archive with the original members and compression.
+    legacy = tmp_path / "output-export.tar.gz"
+    names = (
+        "config.json",
+        "images",
+        "input_manifest.json",
+        "photometric_selection.json",
+        "sparse",
+        "dense/fused.ply",
+        "dense/meshed-poisson.ply",
+        "gsplat",
+        "photometric_split.json",
+        "geometry_frames.json",
+        "scene.spz",
+        "metrics.json",
+        "report.md",
+    )
+    with tarfile.open(legacy, "w:gz", compresslevel=1) as archive:
+        for name in sorted(names):
+            path = output / name
+            if path.exists():
+                archive.add(path, arcname=name)
+        for name in ("preprocess", "geometry", "training", "export"):
+            archive.add(output / "stages" / f"{name}.json", arcname=f"stages/{name}.json")
+    legacy_uploads = {**uploads, "job/checkpoints/export.tar.gz": legacy.read_bytes()}
+    new_total = sum(map(len, uploads.values())) + len(manifest_bytes)
+    old_total = sum(map(len, legacy_uploads.values())) + len(manifest_bytes)
+    assert set(legacy_uploads) - set(uploads) == {"job/checkpoints/export.tar.gz"}
+    assert old_total - new_total == len(legacy_uploads["job/checkpoints/export.tar.gz"]) > 0
 
 
 def test_restored_checkpoint_includes_dense_resume_inputs(tmp_path, monkeypatch):
@@ -584,6 +740,29 @@ def _write_checkpoint_archive(path, members, *, symlink=False):
             member = tarfile.TarInfo(name)
             member.size = len(payload)
             archive.addfile(member, BytesIO(payload))
+
+
+def test_restore_legacy_export_checkpoint(tmp_path):
+    source = tmp_path / "legacy.tar.gz"
+    _write_checkpoint_archive(
+        source,
+        [
+            ("photometric_selection.json", b"{}"),
+            ("photometric_split.json", b"{}"),
+            ("geometry_frames.json", b"{}"),
+            ("input_manifest.json", VALID_CHECKPOINT_MANIFEST),
+            ("images/view.jpg", b"checkpoint image"),
+            ("stages/export.json", b'{"status":"success"}'),
+            ("scene.spz", b"legacy scene"),
+        ],
+    )
+    bucket = Mock()
+    bucket.get_object_to_file.side_effect = lambda _key, destination: shutil.copyfile(source, destination)
+    key = "job/checkpoints/export.tar.gz"
+    restore_archive(bucket, key, tmp_path / "restored")
+    assert (tmp_path / "restored" / "scene.spz").read_bytes() == b"legacy scene"
+    assert is_resumed_stage({"resume_artifact_key": key}, "training")
+    assert is_resumed_stage({"resume_artifact_key": key}, "export")
 
 
 @pytest.mark.parametrize("damage", ["crc", "truncated", "unsafe"])

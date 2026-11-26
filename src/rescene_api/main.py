@@ -406,17 +406,30 @@ def consume_email_code(db: Session, user: User, purpose: str, code: str) -> None
         .order_by(EmailAuthCode.created_at.desc(), EmailAuthCode.id.desc())
         .limit(1)
     )
-    if record is None or utc(record.expires_at) <= now():
+    current_time = now()
+    if record is None or utc(record.expires_at) <= current_time:
         fail(status.HTTP_401_UNAUTHORIZED, "Verification code is invalid or expired", "auth.invalid_code")
     if record.attempts >= config.email_code_max_attempts:
         fail(status.HTTP_429_TOO_MANY_REQUESTS, "Too many code attempts", "auth.rate_limited")
     matched = hmac.compare_digest(record.code_hash, hash_email_code(user.id, purpose, code))
-    record.attempts += 1
+    values = {"attempts": EmailAuthCode.attempts + 1}
+    if matched:
+        values["consumed_at"] = current_time
+    result = db.execute(
+        update(EmailAuthCode)
+        .where(
+            EmailAuthCode.id == record.id,
+            EmailAuthCode.consumed_at.is_(None),
+            EmailAuthCode.attempts < config.email_code_max_attempts,
+            EmailAuthCode.expires_at > current_time,
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
     if not matched:
         db.commit()
+    if not matched or result.rowcount != 1:
         fail(status.HTTP_401_UNAUTHORIZED, "Verification code is invalid or expired", "auth.invalid_code")
-    record.consumed_at = now()
-    db.flush()
 
 
 @app.post("/v1/auth/email-code", status_code=status.HTTP_202_ACCEPTED)
@@ -1918,8 +1931,19 @@ def queued_asset_ids(db: Session, job_id: str) -> list[str]:
 
 def asset_referenced(db: Session, asset: Asset) -> bool:
     """A job input cannot be deleted: its bytes are what the worker reads."""
-    job_ids = db.scalars(select(ReconstructionJob.id).where(ReconstructionJob.project_id == asset.project_id)).all()
-    return any(asset.id in queued_asset_ids(db, job_id) for job_id in job_ids)
+    messages = db.scalars(
+        select(JobStage.message)
+        .join(ReconstructionJob, ReconstructionJob.id == JobStage.job_id)
+        .where(ReconstructionJob.project_id == asset.project_id, JobStage.stage == "queued")
+    )
+    for message in messages:
+        try:
+            asset_ids = json.loads(message or "[]")
+        except (TypeError, ValueError):
+            return True
+        if not isinstance(asset_ids, list) or asset.id in asset_ids:
+            return True
+    return False
 
 
 STALE_UPLOAD_BATCH = 20

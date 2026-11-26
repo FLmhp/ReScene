@@ -46,6 +46,8 @@ const queue = createNativeQueue({
     writeQueue(owner, entries);
   },
   isCurrent: isQueueOwnerCurrent,
+}, {
+  onDropped: (entry) => { if (entry.managed) removeManagedMedia(entry.uri); },
 });
 
 export const enqueue = queue.enqueue;

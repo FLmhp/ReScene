@@ -185,6 +185,10 @@ class UnsafeCheckpoint(RuntimeError):
     """An archive contains a member that could escape the job directory."""
 
 
+class CheckpointTransferError(RuntimeError):
+    """A checkpoint download failed without proving the archive is corrupt."""
+
+
 # Disk, permission, and quota failures are local infrastructure problems; retrying
 # the same archive cannot fix them, so they never trigger a clean restart.
 _UNCLEAN_OS_ERRORS = {errno.ENOSPC, errno.EDQUOT, errno.EACCES, errno.EPERM, errno.EROFS}
@@ -202,7 +206,12 @@ def is_corrupt_checkpoint(error: BaseException) -> bool:
 def restore_archive(bucket: oss2.Bucket, key: str, job_dir: Path) -> None:
     archive = job_dir.parent / f"{job_dir.name}.resume.tar.gz"
     try:
-        bucket.get_object_to_file(key, str(archive))
+        try:
+            bucket.get_object_to_file(key, str(archive))
+        except OSError as error:
+            if error.errno in _UNCLEAN_OS_ERRORS:
+                raise
+            raise CheckpointTransferError(f"Checkpoint download failed: {key}") from error
         with tarfile.open(archive, "r:gz") as source:
             root = job_dir.resolve()
             for member in source.getmembers():
@@ -250,8 +259,9 @@ def archive_stage(
         "preprocess": ("images", "input_manifest.json", "photometric_selection.json"),
         "geometry": ("sparse", "degradation.json", *DENSE_CHECKPOINT_FILES),
         "training": ("gsplat", "photometric_split.json", "geometry_frames.json"),
-        "export": ("scene.spz", "metrics.json", "report.md"),
     }
+    if stage not in stage_files:
+        raise ValueError(f"Unsupported checkpoint stage: {stage}")
     included = {"config.json", "benchmark.json", "environment.json"}
     completed = []
     for name, paths in stage_files.items():
@@ -401,9 +411,9 @@ def monitor_job(
                 continue
             resume_key = None
             status = state.get("status")
-            if status == "success" and (stage != "export" or finished):
+            if status == "success" and stage != "export":
                 resume_key = archive_stage(bucket, job_dir, job["output_prefix"], stage)
-            elif status == "success" and stage == "export":
+            elif status == "success" and stage == "export" and not finished:
                 continue
             elif status == "failed" and stage == "training" and degradation_for_stage(job_dir, stage) is not None:
                 # Persist the degradation decision even though training failed: the
