@@ -34,9 +34,12 @@ class NoRedirect(HTTPRedirectHandler):
 OPENER = build_opener(NoRedirect())
 
 
-def fetch(url):
+def fetch(url, *, byte_range=None):
     """Fetch a URL without following redirects, using normal TLS verification."""
-    request = Request(url, headers={"User-Agent": "ReScene-site-deploy-verifier/1.0"})
+    headers = {"User-Agent": "ReScene-site-deploy-verifier/1.0"}
+    if byte_range is not None:
+        headers["Range"] = byte_range
+    request = Request(url, headers=headers)
     try:
         response = OPENER.open(request, timeout=TIMEOUT_SECONDS)
     except HTTPError as error:
@@ -97,8 +100,8 @@ class SiteHTML(HTMLParser):
             self.heading.append(data)
 
 
-def check_response(url, expected_status, content_types=None):
-    status, headers, body = fetch(url)
+def check_response(url, expected_status, content_types=None, *, byte_range=None):
+    status, headers, body = fetch(url, byte_range=byte_range)
     require(status == expected_status, f"{url}: expected {expected_status}, got {status}")
     if content_types:
         content_type = headers.get_content_type().lower()
@@ -166,6 +169,11 @@ def check_demo():
         hashlib.sha256(model_body).hexdigest() == DEMO_MODEL_SHA256,
         "Demo model SHA-256 differs from the pinned digest",
     )
+    range_headers, first_byte = check_response(
+        SITE + DEMO_MODEL_PATH, 206, {"application/octet-stream"}, byte_range="bytes=0-0"
+    )
+    require(range_headers.get("Content-Range") == f"bytes 0-0/{DEMO_MODEL_BYTES}", "Unexpected demo model range")
+    require(first_byte == model_body[:1], "Demo model range must return exactly the first byte")
 
 
 def check_site():

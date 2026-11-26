@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { Viewer } from "@rescene/viewer";
 import "@rescene/viewer/viewer.css";
+import { DEMO_VIEW_DIRECTION, DEMO_VIEW_DISTANCE } from "./demo-camera";
 import { initSiteTheme } from "./theme";
 
 initSiteTheme();
@@ -16,10 +17,10 @@ if (!viewport || !modelSrc) {
   createRoot(viewport).render(
     createElement(Viewer, {
       src: modelSrc,
-      poster: "/media/knock-community-hall-cropped.webp",
+      poster: viewport.dataset.modelPoster,
       keyboardControls: true,
-      viewDirection: [0.88, 0.25, -0.41],
-      viewDistance: 1.43,
+      viewDirection: DEMO_VIEW_DIRECTION,
+      viewDistance: DEMO_VIEW_DISTANCE,
       loadErrorMessage: "公开建筑模型加载失败，请重试",
     }),
   );
