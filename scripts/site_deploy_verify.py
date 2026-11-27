@@ -19,9 +19,9 @@ BASELINE_URLS = (
 SITE = "https://rescene.xyz"
 TIMEOUT_SECONDS = 20
 HOME_HEADING = "Reconstruct Reality in 3D."
-DEMO_MODEL_PATH = "/assets/knock-community-hall-5e4b4505.spz"
-DEMO_MODEL_BYTES = 4_982_770
-DEMO_MODEL_SHA256 = "5e4b4505ea46fd54f9a7a9b4da55a960c7a1029f040decb66b15c75c47afba0a"
+DEMO_MODEL_PATH = "/assets/flat-roof-534001e8.spz"
+DEMO_MODEL_BYTES = 4_751_956
+DEMO_MODEL_SHA256 = "534001e84c50927b618a7c07c4fa4b31de4833e94ccdb676112ade5dc838937c"
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -199,12 +199,12 @@ def check_site():
         ("/favicon.svg", "image/svg+xml"),
         ("/social-card.png", "image/png"),
         ("/social-card.svg", "image/svg+xml"),
-        ("/knock-community-hall.LICENSE.txt", "text/plain"),
+        ("/flat-roof.LICENSE.txt", "text/plain"),
         ("/media/admin-console.webp", "image/webp"),
         ("/media/workflow-web.webp", "image/webp"),
         ("/media/workflow-android.webp", "image/webp"),
         ("/media/workflow-wechat.webp", "image/webp"),
-        ("/media/knock-community-hall-cropped.webp", "image/webp"),
+        ("/media/flat-roof-render.webp", "image/webp"),
         ("/media/viewer-reconstruction.webp", "image/webp"),
         ("/robots.txt", "text/plain"),
         ("/sitemap.xml", "application/xml"),

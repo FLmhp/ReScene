@@ -5,9 +5,9 @@ import { defineConfig, type Plugin } from "vite";
 import { paletteCssVariables, resolvePalette, type Palette } from "../../packages/design-tokens/src/index";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
-const DEMO_MODEL_BYTES = 4_982_770;
-const DEMO_MODEL_SHA256 = "5e4b4505ea46fd54f9a7a9b4da55a960c7a1029f040decb66b15c75c47afba0a";
-const DEMO_MODEL_PATH = `/assets/knock-community-hall-${DEMO_MODEL_SHA256.slice(0, 8)}.spz`;
+const DEMO_MODEL_BYTES = 4_751_956;
+const DEMO_MODEL_SHA256 = "534001e84c50927b618a7c07c4fa4b31de4833e94ccdb676112ade5dc838937c";
+const DEMO_MODEL_PATH = `/assets/flat-roof-${DEMO_MODEL_SHA256.slice(0, 8)}.spz`;
 
 /**
  * The workspace package ships TypeScript sources and is externalised from the
