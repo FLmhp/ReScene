@@ -7,7 +7,13 @@ import pytest
 from PIL import Image
 
 from rescene.pipeline import _ensure_downsampled_images
-from rescene.preprocess import InvalidInputManifest, classify_input, preprocess_input, relocate_selected_images
+from rescene.preprocess import (
+    InvalidInputManifest,
+    _coverage_limit,
+    classify_input,
+    preprocess_input,
+    relocate_selected_images,
+)
 
 
 def _pattern(path: Path, offset: int = 0, size: tuple[int, int] = (32, 24)) -> None:
@@ -172,6 +178,25 @@ def test_global_duplicates_and_coverage_selection_are_deterministic(tmp_path: Pa
     assert [frame["index"] for frame in first["frames"] if frame["selected"]] == [
         frame["index"] for frame in second["frames"] if frame["selected"]
     ]
+
+
+def test_coverage_sparse_ids_and_equal_scores_use_index_tiebreak(tmp_path: Path) -> None:
+    candidates = [2, 9, 4, 12, 7]
+    records: list[dict[str, object]] = [{} for _ in range(13)]
+    for index in candidates:
+        path = tmp_path / f"{index}.png"
+        _pattern(path, offset=42)
+        records[index] = {"normalized": path, "blur_score": 10.0, "source_id": f"source-{index}"}
+
+    selected = _coverage_limit(records, candidates, 4)
+
+    # Baseline b7a1a7b: endpoints, midpoint, then the lower-index tied frame.
+    assert {records[index]["source_id"] for index in selected} == {
+        "source-2",
+        "source-4",
+        "source-7",
+        "source-9",
+    }
 
 
 def test_severely_exposed_frame_is_marked_and_skipped(tmp_path: Path) -> None:

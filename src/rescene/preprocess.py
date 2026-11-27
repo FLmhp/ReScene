@@ -175,17 +175,33 @@ def _coverage_limit(records: list[dict[str, object]], candidates: list[int], lim
     blur_values = np.log1p([float(records[index]["blur_score"]) for index in candidates])
     blur_scale = float(blur_values.max()) or 1.0
     positions = {index: position / (len(candidates) - 1) for position, index in enumerate(candidates)}
+    blur_scores = {index: float(np.log1p(float(records[index]["blur_score"]))) for index in candidates}
+    remaining = [index for index in candidates if index not in selected]
+    descriptor_distances = {
+        index: min(float(np.linalg.norm(descriptors[index] - descriptors[chosen])) for chosen in selected)
+        for index in remaining
+    }
+    position_distances = {
+        index: min(abs(positions[index] - positions[chosen]) for chosen in selected) for index in remaining
+    }
     while len(selected) < limit:
         best = max(
-            (index for index in candidates if index not in selected),
+            remaining,
             key=lambda index: (
-                0.7 * min(float(np.linalg.norm(descriptors[index] - descriptors[chosen])) for chosen in selected) / 2.0
-                + 0.2 * min(abs(positions[index] - positions[chosen]) for chosen in selected)
-                + 0.1 * float(np.log1p(float(records[index]["blur_score"]))) / blur_scale,
+                0.7 * descriptor_distances[index] / 2.0
+                + 0.2 * position_distances[index]
+                + 0.1 * blur_scores[index] / blur_scale,
                 -index,
             ),
         )
         selected.append(best)
+        remaining = [index for index in remaining if index != best]
+        if len(selected) < limit:
+            for index in remaining:
+                descriptor_distances[index] = min(
+                    descriptor_distances[index], float(np.linalg.norm(descriptors[index] - descriptors[best]))
+                )
+                position_distances[index] = min(position_distances[index], abs(positions[index] - positions[best]))
     return set(selected)
 
 

@@ -1,0 +1,29 @@
+Derived scene: flat-roof (independent commercial building)
+
+Source dataset
+  Drone Building Scans, https://github.com/Matt1Up/drone-building-scans-dataset
+  Author: Matthew Guertin, 2026. Licensed CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+  Images: https://huggingface.co/datasets/Matt1up/drone-building-scans, revision
+  fde325fbd1d3636ffcf5d48aedc24cdbfc9a630f, flat-roof/images (951 frames published).
+  This scene was reconstructed by ReScene from 500 frames selected from that set;
+  8 of them were held out of training and used only for geometry estimation.
+
+Derivation with @playcanvas/splat-transform 3.12.0
+  1. ReScene point_cloud_19999.ply
+       -B -1.25,-1.0,-0.12,1.35,0.60,0.26  (crop to the building and its ground)
+       -H 0                                 (drop spherical harmonics)
+       -r 90,0,0                            (vertical axis for the web viewer)
+       -d 300000                            (decimate)
+     -> intermediate PLY
+  2. intermediate PLY --spz-version 3 -> flat-roof-534001e8.spz
+
+Output
+  Path: /assets/flat-roof-534001e8.spz
+  Bytes: 4,751,956
+  Gaussians: 300,000, SH band 0
+  SHA-256: 534001e84c50927b618a7c07c4fa4b31de4833e94ccdb676112ade5dc838937c
+  Poster: /media/flat-roof-render.webp, rendered from this SPZ in the site viewer.
+
+The scene is cropped to the building, roof and nearby ground. No signage is added and
+no original capture coordinates are claimed. This derivative remains licensed CC BY 4.0;
+attribution above is required when redistributing it.

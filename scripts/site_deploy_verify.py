@@ -19,9 +19,9 @@ BASELINE_URLS = (
 SITE = "https://rescene.xyz"
 TIMEOUT_SECONDS = 20
 HOME_HEADING = "Reconstruct Reality in 3D."
-DEMO_MODEL_PATH = "/assets/knock-community-hall-5e4b4505.spz"
-DEMO_MODEL_BYTES = 4_982_770
-DEMO_MODEL_SHA256 = "5e4b4505ea46fd54f9a7a9b4da55a960c7a1029f040decb66b15c75c47afba0a"
+DEMO_MODEL_PATH = "/assets/flat-roof-534001e8.spz"
+DEMO_MODEL_BYTES = 4_751_956
+DEMO_MODEL_SHA256 = "534001e84c50927b618a7c07c4fa4b31de4833e94ccdb676112ade5dc838937c"
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -34,9 +34,12 @@ class NoRedirect(HTTPRedirectHandler):
 OPENER = build_opener(NoRedirect())
 
 
-def fetch(url):
+def fetch(url, *, byte_range=None):
     """Fetch a URL without following redirects, using normal TLS verification."""
-    request = Request(url, headers={"User-Agent": "ReScene-site-deploy-verifier/1.0"})
+    headers = {"User-Agent": "ReScene-site-deploy-verifier/1.0"}
+    if byte_range is not None:
+        headers["Range"] = byte_range
+    request = Request(url, headers=headers)
     try:
         response = OPENER.open(request, timeout=TIMEOUT_SECONDS)
     except HTTPError as error:
@@ -97,8 +100,8 @@ class SiteHTML(HTMLParser):
             self.heading.append(data)
 
 
-def check_response(url, expected_status, content_types=None):
-    status, headers, body = fetch(url)
+def check_response(url, expected_status, content_types=None, *, byte_range=None):
+    status, headers, body = fetch(url, byte_range=byte_range)
     require(status == expected_status, f"{url}: expected {expected_status}, got {status}")
     if content_types:
         content_type = headers.get_content_type().lower()
@@ -166,6 +169,11 @@ def check_demo():
         hashlib.sha256(model_body).hexdigest() == DEMO_MODEL_SHA256,
         "Demo model SHA-256 differs from the pinned digest",
     )
+    range_headers, first_byte = check_response(
+        SITE + DEMO_MODEL_PATH, 206, {"application/octet-stream"}, byte_range="bytes=0-0"
+    )
+    require(range_headers.get("Content-Range") == f"bytes 0-0/{DEMO_MODEL_BYTES}", "Unexpected demo model range")
+    require(first_byte == model_body[:1], "Demo model range must return exactly the first byte")
 
 
 def check_site():
@@ -191,12 +199,12 @@ def check_site():
         ("/favicon.svg", "image/svg+xml"),
         ("/social-card.png", "image/png"),
         ("/social-card.svg", "image/svg+xml"),
-        ("/knock-community-hall.LICENSE.txt", "text/plain"),
+        ("/flat-roof.LICENSE.txt", "text/plain"),
         ("/media/admin-console.webp", "image/webp"),
         ("/media/workflow-web.webp", "image/webp"),
         ("/media/workflow-android.webp", "image/webp"),
         ("/media/workflow-wechat.webp", "image/webp"),
-        ("/media/knock-community-hall-cropped.webp", "image/webp"),
+        ("/media/flat-roof-render.webp", "image/webp"),
         ("/media/viewer-reconstruction.webp", "image/webp"),
         ("/robots.txt", "text/plain"),
         ("/sitemap.xml", "application/xml"),

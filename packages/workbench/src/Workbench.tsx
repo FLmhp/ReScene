@@ -1120,6 +1120,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                       <li key={item.id}>
                         <button type="button" onClick={() => runAction(async () => {
                           await client.markNotificationsRead([item.id]);
+                          if (item.project_id || item.job_id) setRootPage("projects");
                           if (item.project_id) selectProject(item.project_id);
                           if (item.job_id) { selectJob(item.job_id); setPane("tasks"); setPage("job"); }
                           await loadNotifications();

@@ -192,7 +192,7 @@ def wait_healthy(remote: Remote, service: str) -> str:
             f"'{{{{if .State.Health}}}}{{{{.State.Health.Status}}}}{{{{else}}}}{{{{.State.Status}}}}{{{{end}}}}' "
             f"rescene-{service} 2>/dev/null || echo missing\n",
         )
-        if last in {"healthy", "running"}:
+        if last == "healthy":
             return last
         time.sleep(3)
     raise DeployError(f"rescene-{service} was {last} after {HEALTH_TIMEOUT}s")
@@ -216,7 +216,7 @@ BUILD = {
 }
 
 
-def build_image(remote: Remote, service: str, version: str) -> str:
+def build_image(remote: Remote, service: str, version: str, stage: str) -> str:
     """Build one service image and read back its digest.
 
     The build log interleaves base-image digests with the layers, so the image
@@ -224,7 +224,7 @@ def build_image(remote: Remote, service: str, version: str) -> str:
     """
     remote.run(
         f"build-{service}",
-        fill("cd /root/rescene-stage-@@VERSION@@\n", VERSION=version) + fill(BUILD[service], VERSION=version) + "\n",
+        f"cd {shlex.quote(stage)}\n" + fill(BUILD[service], VERSION=version) + "\n",
         1800,
     )
     digest = remote.run(
@@ -238,8 +238,7 @@ def build_image(remote: Remote, service: str, version: str) -> str:
 
 def deploy(recorder: Recorder, root: Path, args: argparse.Namespace, key: str, known_hosts: str) -> None:
     remote = Remote(recorder, key, known_hosts)
-    stage = f"/root/rescene-stage-{args.version}"
-    tokens = {"VERSION": args.version, "TAG": args.tag, "REPO": args.repo, "STAGE": stage}
+    tokens = {"VERSION": args.version, "COMMIT": args.commit, "REPO": args.repo}
 
     recorder.summary["dbRevision"] = migration_head(root)
 
@@ -258,13 +257,16 @@ echo "avail_bytes=$avail"
     )
     print(out)
 
+    stage = remote.run("allocate-stage", f"mktemp -d /root/rescene-stage-{args.version}-XXXXXXXX\n").strip()
+    if not re.fullmatch(rf"/root/rescene-stage-{re.escape(args.version)}-[A-Za-z0-9]{{8}}", stage):
+        raise DeployError(f"allocate-stage: unexpected path {stage!r}")
+    tokens["STAGE"] = stage
     remote.run(
         "stage-source",
         fill(
             """
-rm -rf "@@STAGE@@"; mkdir -p "@@STAGE@@"
 curl -fsSL --retry 3 --retry-delay 5 --max-time 600 \
-  "https://codeload.github.com/@@REPO@@/tar.gz/refs/tags/@@TAG@@" \
+  "https://codeload.github.com/@@REPO@@/tar.gz/@@COMMIT@@" \
   | tar -xz -C "@@STAGE@@" --strip-components=1
 test -f "@@STAGE@@/VERSION"
 grep -qx '@@VERSION@@' "@@STAGE@@/VERSION" || { echo 'Staged VERSION is not @@VERSION@@' >&2; exit 3; }
@@ -273,12 +275,22 @@ echo "staged $(cat "@@STAGE@@/VERSION")"
             **tokens,
         ),
     )
+    remote.run(
+        "check-config",
+        fill(
+            """
+cmp -s "@@STAGE@@/infra/compose.yaml" "@@INFRA@@/compose.yaml" || { echo 'Compose configuration drift' >&2; exit 3; }
+@@COMPOSE@@ config --quiet
+""",
+            INFRA=INFRA,
+            COMPOSE=COMPOSE,
+            **tokens,
+        ),
+    )
 
-    remote.run("docker-prune", "docker builder prune -f\n")
-
-    api_id = build_image(remote, "api", args.version)
+    api_id = build_image(remote, "api", args.version, stage)
     recorder.summary["images"] = {"api": api_id}
-    web_id = build_image(remote, "web", args.version)
+    web_id = build_image(remote, "web", args.version, stage)
     recorder.summary["images"] = {"api": api_id, "web": web_id}
 
     backup = remote.run(
@@ -287,9 +299,11 @@ echo "staged $(cat "@@STAGE@@/VERSION")"
             """
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 backup="/root/rescene-backup-@@VERSION@@-$stamp"
-install -d -m 750 "$backup"
-cp -a "@@INFRA@@/.env" "$backup/env"
-cp -a "@@INFRA@@/compose.yaml" "$backup/compose.yaml"
+umask 077
+mkdir -m 700 "$backup"
+cp "@@INFRA@@/.env" "$backup/env"
+chmod 600 "$backup/env"
+cp "@@INFRA@@/compose.yaml" "$backup/compose.yaml"
 { docker inspect --format '{{.Name}} {{.Image}}' rescene-api rescene-web rescene-db; } > "$backup/before-images.txt"
 install -d -m 750 -o root -g 65532 "@@INFRA@@/backups"
 dump="@@INFRA@@/backups/rescene-pre-deploy-@@VERSION@@-$stamp.dump"
@@ -325,6 +339,19 @@ printf 'backup=%s\\ndump=%s\\ndump_sha256=%s\\n' "$backup" "$dump" "$(sha256sum 
     if missing:
         raise DeployError(f"backup: the snapshot was not recorded ({', '.join(missing)})")
 
+    revision = remote.read(
+        "db-revision",
+        fill(
+            """
+@@COMPOSE@@ exec -T db psql -U rescene -tAc 'select version_num from alembic_version'
+""",
+            COMPOSE=COMPOSE,
+        ),
+    ).strip()
+    if revision != recorder.summary["dbRevision"]:
+        recorder.step("db-revision", False, f"expected {recorder.summary['dbRevision']}, found {revision}")
+        raise DeployError("db-revision: alembic_version does not match the source head")
+
     for service in ("api", "web"):
         remote.run(
             f"up-{service}",
@@ -339,19 +366,6 @@ docker tag "rescene-{service}:@@VERSION@@" "rescene-{service}:latest"
             600,
         )
         wait_healthy(remote, service)
-
-    revision = remote.read(
-        "db-revision",
-        fill(
-            """
-@@COMPOSE@@ exec -T db psql -U rescene -tAc 'select version_num from alembic_version'
-""",
-            COMPOSE=COMPOSE,
-        ),
-    ).strip()
-    if revision != recorder.summary["dbRevision"]:
-        recorder.step("db-revision", False, f"expected {recorder.summary['dbRevision']}, found {revision}")
-        raise DeployError("db-revision: alembic_version does not match the source head")
 
     probes = [
         probe("api-ready", "GET", f"{API_URL}/health/ready", 200, None),
@@ -374,6 +388,38 @@ docker tag "rescene-{service}:@@VERSION@@" "rescene-{service}:latest"
     remote.run("disk-after", "df -h /\n")
 
 
+def validate_checkout(root: Path, args: argparse.Namespace) -> None:
+    """Reject ambiguous release identities before contacting the host."""
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", args.version) or args.tag != f"v{args.version}":
+        raise DeployError("tag must match a numeric VERSION")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo):
+        raise DeployError("invalid repository name")
+    if not re.fullmatch(r"[0-9a-f]{40}", args.commit):
+        raise DeployError("commit must be a full lowercase SHA-1")
+    try:
+
+        def git(*arguments: str) -> str:
+            return subprocess.run(
+                ["git", "-C", str(root), *arguments],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+
+        if Path(git("rev-parse", "--show-toplevel")).resolve() != root:
+            raise DeployError("root must be the checkout root")
+        if git("rev-parse", "HEAD") != args.commit:
+            raise DeployError("commit does not match checkout HEAD")
+        if git(
+            "status", "--porcelain", "--untracked-files=all", "--", "VERSION", "src/rescene_api/migrations/versions"
+        ):
+            raise DeployError("VERSION or migrations differ from the checkout")
+        if (root / "VERSION").read_text(encoding="utf-8").strip() != args.version:
+            raise DeployError("VERSION does not match release version")
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise DeployError(f"cannot verify checkout: {error}") from error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", required=True, help="release tag, for example v0.5.1")
@@ -384,7 +430,7 @@ def main() -> int:
         default="",
         help="checkout that supplies VERSION and the migrations of the deployed tag",
     )
-    parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA", ""))
+    parser.add_argument("--commit", required=True, help="full checkout commit to deploy")
     parser.add_argument("--run-url", default="")
     parser.add_argument("--log", default="deploy-log.json")
     args = parser.parse_args()
@@ -394,8 +440,10 @@ def main() -> int:
     )
 
     root = Path(args.root).resolve() if args.root else Path(__file__).resolve().parent.parent
-    if (root / "VERSION").read_text(encoding="utf-8").strip() != args.version:
-        print(f"VERSION is not {args.version}", file=sys.stderr)
+    try:
+        validate_checkout(root, args)
+    except DeployError as error:
+        print(f"Invalid release: {error}", file=sys.stderr)
         return 2
 
     required = ["DEPLOY_KEY_FILE", "DEPLOY_KNOWN_HOSTS_FILE", "DEPLOY_HOST"]

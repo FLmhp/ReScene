@@ -142,7 +142,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
     renderer.setPixelRatio(Math.min(devicePixelRatio, width < 900 ? 1 : 1.5));
     renderer.setSize(width, height);
     element.appendChild(renderer.domElement);
-    scene.add(new SparkRenderer({ renderer }));
+    const spark = new SparkRenderer({ renderer });
+    scene.add(spark);
     const splats = new SplatMesh({
       url: src,
       onProgress: (event) => {
@@ -276,7 +277,10 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
       cameraRef.current = null;
       controls.dispose();
       splats.dispose();
+      spark.dispose();
       renderer.dispose();
+      // This canvas owns its context and will never be reused.
+      renderer.forceContextLoss();
       renderer.domElement.remove();
       delete element.dataset.rendered;
     };

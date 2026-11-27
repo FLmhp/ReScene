@@ -19,7 +19,9 @@ SOURCE = Path(os.environ.get("RESCENE_EXPERIMENT_SOURCE", ROOT))
 DATA = Path("/root/autodl-tmp/rescene")
 SHARED = Path("/root/autodl-fs")
 RUNS = Path(os.environ.get("RESCENE_DELIVERY_ROOT", DATA / "delivery-v4"))
-GPU_BOUNDS = {"fast": 2400, "balanced": 5400, "quality": 9000}
+# A quality trial on 250 1600px views measured 5,446s of geometry alone (4,724s of it
+# MVS patch-match), so dense large-scene trials need well over the old 9,000s ceiling.
+GPU_BOUNDS = {"fast": 2400, "balanced": 5400, "quality": 25_000}
 STALL_BOUNDS = {"fast": 900, "balanced": 1800, "quality": 3600}
 GPU_STALL_STAGES = {"training"}
 STALL_SECONDS = 600

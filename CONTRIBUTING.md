@@ -75,7 +75,7 @@ RESCENE_SMTP_PASSWORD=<SMTP 授权码>
 
 官网只公开品牌素材和清洗后的演示账号截图；不得复制整个 `artifacts`、生产账号、私有分享链接或安装包。公网发布与工作台升级独立，见部署文档第 15 节。
 
-「从素材到场景」的 Web 截图用本地工作台、隔离 API fixture 和 Knock Community Hall 渲染图录制。Android Viewer、微信小程序项目截图取自历史验收，微信截图仅保留开发者工具内的模拟器画面。首屏模型的输入校验值与裁剪记录见 [模型署名文件](apps/site/public/knock-community-hall.LICENSE.txt)。替换模型时同步更新文件名的哈希、Vite 校验、部署验证脚本和 Caddy 的模型路径。
+「从素材到场景」的 Web 截图用本地工作台、隔离 API fixture 和 Knock Community Hall 渲染图录制。Android Viewer、微信小程序项目截图取自历史验收，微信截图仅保留开发者工具内的模拟器画面。首屏模型的输入校验值与裁剪记录见 [模型署名文件](apps/site/public/knock-community-hall.LICENSE.txt)。模型文件不进入源码：构建从 `https://rescene.xyz` 获取固定路径，开发服务器首次请求才加载；离线时可将 `RESCENE_SITE_DEMO_MODEL_FILE` 设为模型的绝对路径。两种来源使用相同的字节数和 SHA-256 校验。替换模型时先发布经审核的内容寻址文件，再同步更新 Vite、部署验证脚本和 Caddy 的模型路径。
 
 ### 其他客户端
 
@@ -148,7 +148,7 @@ node scripts/check-commits.mjs --range HEAD~1..HEAD
 pnpm quality
 ```
 
-它依次执行版本一致性检查、Ruff 格式与 lint、API 请求 schema 的 mypy、pytest、所有 workspace 的 typecheck 和 test；不包含原生 Rust 检查、各端构建或镜像构建。也可分别运行：
+它依次执行版本一致性检查、Ruff 格式与 lint、API 请求 schema 的 mypy、pytest、所有 workspace 的 typecheck 和 test，以及 `pnpm check:theme-init` 和 `pnpm test:tokens`；不包含原生 Rust 检查、各端构建或镜像构建。也可分别运行：
 
 ```bash
 pnpm check:versions
@@ -214,11 +214,11 @@ node scripts/bump-version.mjs <新版本号>
 
 发布前确认源 commit、检查结果、迁移与回滚方案；tag 必须为 `v` 加 `VERSION`，并指向已审阅的发布 commit。已发布 tag 不可移动或复用；修复应提交新 commit、使用新版本和新 tag。源身份、发布产物与部署身份应分别记录：commit/tag 和 `source-manifest.json` 说明源码；`release-manifest.json` 记录源清单及各产物的大小和 SHA-256；部署记录还需记录实际镜像或安装包摘要、配置、数据库迁移状态和环境。源清单仅包含脚本白名单选中的源码树、文件类型及根文件，不包含所有仓库文件，也不是完整源码快照；其哈希不等同于线上运行状态或代码签名。
 
-[release.yml](.github/workflows/release.yml) 一次运行完成构建、部署和发布：`v*` tag 触发，或在 `workflow_dispatch` 中填入 `tag` 重放已发布的 tag（`recreate=true` 时先删除同名 Release 再发布）。发布环境需配置 HTTPS 的 `RELEASE_API_URL` 和 `RELEASE_WEB_URL`，桌面 API origin 还须符合 CSP。工作流生成 Windows x64 NSIS、Linux x64 deb/AppImage、macOS universal dmg，以及源清单和发布清单；Android APK 仅在 `RELEASE_ANDROID_SIGNING=true` 且签名材料齐全时生成。
+[release.yml](.github/workflows/release.yml) 由 `v*` tag 触发，或在 `workflow_dispatch` 中手工指定尚未公开发行的 tag。`recreate=true` 只允许明确确认存在的同名草稿，不能替换公开 Release。发布环境需配置 HTTPS 的 `RELEASE_API_URL` 和 `RELEASE_WEB_URL`，桌面 API origin 还须符合 CSP。工作流生成 Windows x64 NSIS、Linux x64 deb/AppImage、macOS universal dmg，以及源清单和发布清单；Android APK 仅在 `RELEASE_ANDROID_SIGNING=true` 且签名材料齐全时生成。
 
-`RELEASE_DEPLOY=true` 时，`deploy` job 在生产主机上重建并切换 `api`、`web` 镜像：先在 `/opt/rescene/infra/backups/` 留下 `pg_dump` 快照，再逐个服务等待健康，最后探测公网入口并把结果写入 `deploy-log.json`。它需要 secrets `DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS` 和 variables `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_PORT`。部署失败不自动回滚（数据库迁移不随镜像回退），`github-release` 会因此不发布；只想发安装包时把 `RELEASE_DEPLOY` 改为 `false` 重跑，`release-log.json` 会把部署记为未执行而不是成功。
+只有安装器构建和发布清单成功且 `RELEASE_DEPLOY=true` 时，`deploy` job 才在独立暂存目录按准确的源码提交重建镜像；不清理共享缓存，也不修改运行配置。核对生产数据库迁移版本和候选一致后留存 `pg_dump` 快照，依次切换并验证 `api`、`web`，最后探测公网并写入 `deploy-log.json`。它需要 secrets `DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS` 和 variables `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_PORT`。部署失败不自动回滚（数据库迁移不随镜像回退），`github-release` 会因此不发布；允许仅生成安装包草稿的版本须显式设置 `RELEASE_DEPLOY=false`；`release-log.json` 会记录未部署。`v0.6.0` 不允许跳过生产部署或签名 Android 包。
 
-Release 创建时即对外发布，不再经过草稿；附加资产除安装包外还有 `source-manifest.json`、`release-manifest.json` 和 `release-log.json`（产物哈希、镜像摘要、迁移版本、备份路径与探针结果，以及本次运行的 URL）。GitHub 只在该次运行结束后才提供日志，所以发布时无法把自身日志打包成资产；日志通过运行 URL 查看，`deploy-log.json` 另存为本次运行的 artifacts。工作流没有生成独立的 `SHA256SUMS`，请按发布清单中的哈希核对实际下载文件。最终资产集合以成功的运行和 Release 为准，不把构建计划当成已发布证据。
+工作流只创建草稿，安装与生产验收通过后由运维手动公开；附加资产除安装包外还有 `source-manifest.json`、`release-manifest.json` 和 `release-log.json`（产物哈希、镜像摘要、迁移版本、备份路径与探针结果，以及本次运行的 URL）。GitHub 只在该次运行结束后才提供日志，所以发布时无法把自身日志打包成资产；日志通过运行 URL 查看，`deploy-log.json` 另存为本次运行的 artifacts。工作流没有生成独立的 `SHA256SUMS`，请按发布清单中的哈希核对实际下载文件。最终资产集合以成功的运行和 Release 为准，不把构建计划当成已发布证据。
 
 Windows 签名为可选：证书和密码都未配置时产物未签名，只配置一项会失败；配置两项后工作流签名并验证。macOS 工作流生成未签名 dmg；只对来源及哈希已核实的单个文件按系统提示处理，不要全局关闭安全检查。Android 发布必须配置 keystore 和密码，工作流校验签名及包信息；不要把签名材料提交到仓库。小程序构建成功不等于已通过平台审核或发布。
 

@@ -267,7 +267,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function queueFixture() {
+function queueFixture(onDropped?: (entry: QueuedUpload) => void | Promise<void>) {
   const owner = { id: "a", generation: 1 };
   let current = owner;
   const data = new Map<string, string>();
@@ -279,9 +279,63 @@ function queueFixture() {
     read,
     write,
     isCurrent: (account) => current.id === account.id && current.generation === account.generation,
-  });
+  }, { onDropped });
   return { owner, queue, read, write, switchTo: (next: QueueOwner) => { current = next; } };
 }
+
+describe("native dropped upload cleanup", () => {
+  const duplicate = { status: 409, code: "asset.not_awaiting_upload" };
+
+  it("removes the entry before cleaning its managed copy", async () => {
+    const cleanup = vi.fn();
+    const { owner, queue } = queueFixture(async (entry) => {
+      expect(await queue.load(owner)).toEqual([]);
+      cleanup(entry);
+    });
+    const item = upload({ managed: true });
+    await queue.enqueue(owner, item);
+    await expect(queue.upload(owner, item.id, async () => { throw duplicate; })).resolves.toBe("dropped");
+    expect(cleanup).toHaveBeenCalledExactlyOnceWith(item);
+    expect(await queue.load(owner)).toEqual([]);
+  });
+
+  it("does not clean when removal cannot be saved", async () => {
+    const cleanup = vi.fn();
+    const { owner, queue, write } = queueFixture(cleanup);
+    const item = upload({ managed: true });
+    await queue.enqueue(owner, item);
+    write.mockRejectedValueOnce(new Error("storage full"));
+    await expect(queue.upload(owner, item.id, async () => { throw duplicate; })).rejects.toThrow("本地离线队列");
+    expect(await queue.load(owner)).toEqual([item]);
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+
+  it.each([{ status: 409, code: "asset.upload_size_mismatch" }, new Error("offline")])(
+    "keeps retryable failures and their copies: %s", async (failure) => {
+      const cleanup = vi.fn();
+      const { owner, queue } = queueFixture(cleanup);
+      const item = upload({ managed: true });
+      await queue.enqueue(owner, item);
+      await expect(queue.upload(owner, item.id, async () => { throw failure; })).rejects.toBe(failure);
+      expect(await queue.load(owner)).toEqual([item]);
+      expect(cleanup).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])("does not restore a dropped entry when cleanup fails (async: %s)", async (asynchronous) => {
+    const cleanup = vi.fn(() => {
+      if (asynchronous) return Promise.reject(new Error("cleanup failed"));
+      throw new Error("cleanup failed");
+    });
+    const { owner, queue } = queueFixture(cleanup);
+    const item = upload({ managed: true });
+    await queue.enqueue(owner, item);
+    await expect(queue.replay(owner, { createProject: vi.fn(), upload: async () => { throw duplicate; } }))
+      .resolves.toEqual({ created: 0, uploaded: 0, dropped: 1 });
+    expect(cleanup).toHaveBeenCalledExactlyOnceWith(item);
+    expect(await queue.load(owner)).toEqual([]);
+  });
+});
 
 describe("native queue concurrency", () => {
   it("serializes queued appends and keeps their order", async () => {

@@ -304,6 +304,33 @@ def test_resume_preserves_timings_and_evaluation_evidence(tmp_path, monkeypatch)
     assert stale["timings"]["preprocess"] == 3.0
 
 
+def test_resume_completed_training_exports_missing_scene_without_retraining(tmp_path, monkeypatch):
+    run = _completed_resume_run(tmp_path)
+    (run / "scene.spz").unlink()
+    (run / "stages" / "export.json").unlink()
+    ply = run / "gsplat" / "trained.ply"
+    ply.write_bytes(b"trained ply")
+    commands = []
+
+    def execute(command, log_path, *, cwd):
+        commands.append(command)
+        assert command[1:3] == ["-m", "rescene.spz_runner"]
+        assert command[3:] == [str(ply), str(run / "scene.spz")]
+        (run / "scene.spz").write_bytes(b"exported scene")
+
+    monkeypatch.setattr(pipeline, "run_command", execute)
+    monkeypatch.setattr(pipeline, "_find_ply", lambda _run: ply)
+    monkeypatch.setattr(pipeline, "_environment", lambda root: {})
+    monkeypatch.setattr(pipeline, "collect_metrics", lambda *args: {"total_seconds": 1.0})
+    monkeypatch.setattr(pipeline, "write_report", lambda *args: None)
+    pipeline.run_pipeline("balanced", tmp_path / "input", "resume", resume=True, output_dir=run)
+
+    assert len(commands) == 1
+    assert (run / "scene.spz").read_bytes() == b"exported scene"
+    assert json.loads((run / "stages" / "training.json").read_text(encoding="utf-8"))["status"] == "success"
+    assert json.loads((run / "stages" / "export.json").read_text(encoding="utf-8"))["status"] == "success"
+
+
 def test_resume_uses_recorded_training_oom_fallback(tmp_path, monkeypatch):
     run = tmp_path / "run"
     (run / "stages").mkdir(parents=True)

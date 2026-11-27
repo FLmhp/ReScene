@@ -304,6 +304,104 @@ class RecordingStore:
         self.deleted.append(key)
 
 
+def test_asset_delete_query_count_is_independent_of_history(monkeypatch) -> None:
+    store = RecordingStore()
+    monkeypatch.setattr(main, "storage", lambda: store)
+    with TestClient(app) as client:
+        registered = client.post(
+            "/v1/auth/register", json={"email": "history@example.com", "password": "correct-horse"}
+        )
+        headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+        asset_ids = []
+        for count in (0, 20):
+            project_id = client.post("/v1/projects", headers=headers, json={"name": f"History {count}"}).json()["id"]
+            with SessionLocal() as db:
+                asset = Asset(
+                    project_id=project_id,
+                    object_key=f"history/{count}",
+                    filename="frame.jpg",
+                    size=10,
+                    content_type="image/jpeg",
+                    status="READY",
+                )
+                db.add(asset)
+                for _ in range(count):
+                    job = ReconstructionJob(project_id=project_id, profile="fast", status="SUCCEEDED")
+                    db.add(job)
+                    db.flush()
+                    db.add(JobStage(job_id=job.id, stage="queued", status="QUEUED", message='["other"]'))
+                db.commit()
+                asset_ids.append(asset.id)
+
+        statements: list[str] = []
+
+        def record_select(_connection, _cursor, statement, _parameters, _context, _executemany):
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", record_select)
+        try:
+            counts = []
+            for asset_id in asset_ids:
+                statements.clear()
+                assert client.delete(f"/v1/assets/{asset_id}", headers=headers).status_code == 204
+                counts.append(len(statements))
+            assert counts[0] == counts[1]
+        finally:
+            event.remove(engine, "before_cursor_execute", record_select)
+        assert store.deleted == []
+
+
+@pytest.mark.parametrize("case", ["last_reference", "malformed", "non_list", "other_project"])
+def test_asset_delete_checks_queued_list_integrity(monkeypatch, case) -> None:
+    store = RecordingStore()
+    monkeypatch.setattr(main, "storage", lambda: store)
+    with TestClient(app) as client:
+        registered = client.post("/v1/auth/register", json={"email": "lists@example.com", "password": "correct-horse"})
+        headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+        project_id = client.post("/v1/projects", headers=headers, json={"name": "Inputs"}).json()["id"]
+        other_id = client.post("/v1/projects", headers=headers, json={"name": "Other"}).json()["id"]
+        with SessionLocal() as db:
+            asset = Asset(
+                project_id=project_id,
+                object_key="lists/frame",
+                filename="frame.jpg",
+                size=10,
+                content_type="image/jpeg",
+                status="READY",
+            )
+            db.add(asset)
+            db.flush()
+            asset_id = asset.id
+            for index in range(3):
+                job = ReconstructionJob(
+                    project_id=other_id if case == "other_project" else project_id,
+                    profile="fast",
+                    status="SUCCEEDED",
+                )
+                db.add(job)
+                db.flush()
+                message = json.dumps(["unrelated", asset_id]) if index == 2 else "[]"
+                if index == 2 and case == "malformed":
+                    message = "[broken"
+                elif index == 2 and case == "non_list":
+                    message = json.dumps({"assets": [asset_id]})
+                db.add(JobStage(job_id=job.id, stage="queued", status="QUEUED", message=message))
+            db.commit()
+        response = client.delete(f"/v1/assets/{asset_id}", headers=headers)
+        if case == "other_project":
+            assert response.status_code == 204
+        else:
+            assert response.status_code == 409
+            assert response.headers["x-error-code"] == "asset.in_use"
+        with SessionLocal() as db:
+            assert (db.get(Asset, asset_id) is None) == (case == "other_project")
+            assert bool(db.scalar(select(AssetCleanup).where(AssetCleanup.object_key == "lists/frame"))) == (
+                case == "other_project"
+            )
+        assert store.deleted == []
+
+
 def test_asset_delete_and_stale_upload_expiry(monkeypatch) -> None:
     store = RecordingStore()
     monkeypatch.setattr(main, "storage", lambda: store)
@@ -1820,6 +1918,43 @@ def test_password_reset_code_replaces_the_password_and_retires_sessions(monkeypa
         )
         with SessionLocal() as db:
             assert db.scalar(select(AuditLog.action).where(AuditLog.action == "auth.password_reset"))
+
+
+def test_password_reset_rolls_back_code_when_reset_fails(monkeypatch) -> None:
+    sent = captured_codes(monkeypatch)
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            db.add(User(email="rollback@example.com", password_hash=hash_password("correct-horse")))
+            db.commit()
+        assert (
+            client.post("/v1/auth/email-code", json={"email": "rollback@example.com", "purpose": "reset"}).status_code
+            == 202
+        )
+        code = sent[0][1]
+        original_audit = main.audit
+
+        def fail_reset_audit(*args, **kwargs):
+            if args[2] == "auth.password_reset":
+                raise RuntimeError("audit unavailable")
+            return original_audit(*args, **kwargs)
+
+        monkeypatch.setattr(main, "audit", fail_reset_audit)
+        with pytest.raises(RuntimeError, match="audit unavailable"):
+            client.post(
+                "/v1/auth/password-reset",
+                json={"email": "rollback@example.com", "code": code, "new_password": "new-correct-horse"},
+            )
+        with SessionLocal() as db:
+            record = db.scalar(select(EmailAuthCode).where(EmailAuthCode.purpose == "reset"))
+            assert record.consumed_at is None and record.attempts == 0
+        monkeypatch.setattr(main, "audit", original_audit)
+        assert (
+            client.post(
+                "/v1/auth/password-reset",
+                json={"email": "rollback@example.com", "code": code, "new_password": "new-correct-horse"},
+            ).status_code
+            == 200
+        )
 
 
 def test_unknown_address_gets_the_same_answer_without_mail(monkeypatch) -> None:

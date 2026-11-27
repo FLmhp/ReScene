@@ -1,9 +1,7 @@
 name: Release
 
-# One run builds every installer, deploys the release to production, and only
-# then publishes the GitHub release with its evidence. `workflow_dispatch` with
-# a `tag` input replays a published tag without moving it; `recreate` replaces
-# the existing release object so a replay has somewhere to attach its assets.
+# Build and hash all installers before deploying. The workflow creates only a
+# draft; operators publish it after verifying production and the installers.
 on:
   workflow_dispatch:
     inputs:
@@ -12,7 +10,7 @@ on:
         required: true
         type: string
       recreate:
-        description: "Delete the existing GitHub release before publishing"
+        description: "Replace the existing draft only; never replace a published release"
         type: boolean
         default: false
   push:
@@ -29,20 +27,51 @@ permissions:
 
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  RELEASE_REF: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
 jobs:
   source-manifest:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.identity.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ env.RELEASE_REF }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - run: node scripts/check-versions.mjs
+      - run: node scripts/release-notes.mjs > /dev/null
+      - name: Validate release identity and prerequisites
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECREATE: ${{ inputs.recreate }}
+          DEPLOY: ${{ vars.RELEASE_DEPLOY }}
+          SIGN_ANDROID: ${{ vars.RELEASE_ANDROID_SIGNING }}
+        run: |
+          if [[ "$RELEASE_TAG" != "v$(tr -d '\r\n' < VERSION)" ]]; then
+            echo 'Release tag does not match VERSION' >&2
+            exit 1
+          fi
+          if [[ "$RELEASE_TAG" == 'v0.6.0' && ( "$DEPLOY" != 'true' || "$SIGN_ANDROID" != 'true' ) ]]; then
+            echo 'v0.6.0 requires production deployment and a signed Android installer' >&2
+            exit 1
+          fi
+          if [[ "$RECREATE" == 'true' ]]; then
+            is_draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)
+            [[ "$is_draft" == 'true' ]] || { echo 'Only an existing draft may be recreated' >&2; exit 1; }
+          else
+            tags=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
+            if grep -Fxq -- "$RELEASE_TAG" <<< "$tags"; then
+              echo 'A release already exists for this tag' >&2
+              exit 1
+            fi
+          fi
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - run: node scripts/source-manifest.mjs > "$RUNNER_TEMP/source-manifest.json"
       - uses: actions/upload-artifact@v4
         with:
@@ -51,17 +80,19 @@ jobs:
           if-no-files-found: error
 
   deploy:
-    needs: [source-manifest]
+    needs: [source-manifest, release-manifest]
     if: |
+      !cancelled() &&
       vars.RELEASE_DEPLOY == 'true' &&
-      (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v'))
+      needs.source-manifest.result == 'success' &&
+      needs.release-manifest.result == 'success'
     runs-on: ubuntu-latest
     environment: release
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.source-manifest.outputs.commit }}
           persist-credentials: false
       # The tag supplies the source, VERSION and migrations being deployed; the
       # tooling comes from the commit that defines this workflow, so replaying a
@@ -100,6 +131,7 @@ jobs:
             --tag "$RELEASE_TAG" \
             --version "$(tr -d '\r\n' < VERSION)" \
             --repo "$GITHUB_REPOSITORY" \
+            --commit "$(git rev-parse HEAD)" \
             --log deploy-log.json
       # A failed deploy is the run that most needs its log published.
       - uses: actions/upload-artifact@v4
@@ -110,13 +142,13 @@ jobs:
           if-no-files-found: warn
 
   windows-nsis:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    needs: [source-manifest]
     runs-on: windows-latest
     environment: release
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.source-manifest.outputs.commit }}
           persist-credentials: false
       - name: Check tag against VERSION
         shell: pwsh
@@ -191,13 +223,13 @@ jobs:
           if-no-files-found: error
 
   linux-desktop:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    needs: [source-manifest]
     runs-on: ubuntu-22.04
     environment: release
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.source-manifest.outputs.commit }}
           persist-credentials: false
       - name: Check tag against VERSION
         run: |
@@ -242,13 +274,13 @@ jobs:
           if-no-files-found: error
 
   macos-desktop:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    needs: [source-manifest]
     runs-on: macos-latest
     environment: release
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.source-manifest.outputs.commit }}
           persist-credentials: false
       - name: Check tag against VERSION
         run: |
@@ -288,15 +320,14 @@ jobs:
           if-no-files-found: error
 
   android:
-    if: |
-      vars.RELEASE_ANDROID_SIGNING == 'true' &&
-      (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v'))
+    needs: [source-manifest]
+    if: vars.RELEASE_ANDROID_SIGNING == 'true'
     runs-on: ubuntu-latest
     environment: release
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.source-manifest.outputs.commit }}
           persist-credentials: false
       - name: Check tag against VERSION
         run: |
@@ -399,12 +430,18 @@ jobs:
 
   release-manifest:
     needs: [source-manifest, windows-nsis, linux-desktop, macos-desktop, android]
-    if: always() && !cancelled()
+    if: |
+      !cancelled() &&
+      needs.source-manifest.result == 'success' &&
+      needs.windows-nsis.result == 'success' &&
+      needs.linux-desktop.result == 'success' &&
+      needs.macos-desktop.result == 'success' &&
+      (needs.android.result == 'success' || (vars.RELEASE_ANDROID_SIGNING != 'true' && needs.android.result == 'skipped'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.source-manifest.outputs.commit }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -454,14 +491,12 @@ jobs:
           if-no-files-found: error
 
   github-release:
-    needs: [release-manifest, deploy]
-    # A skipped `deploy` means RELEASE_DEPLOY is off: publish the artifacts and
-    # say so in the log. A failed deploy blocks the release on purpose.
+    needs: [source-manifest, release-manifest, deploy]
+    # A failed or unexpectedly skipped deploy must not create a draft.
     if: |
-      always() &&
+      !cancelled() &&
       needs.release-manifest.result == 'success' &&
-      needs.deploy.result != 'failure' &&
-      needs.deploy.result != 'cancelled'
+      (needs.deploy.result == 'success' || (vars.RELEASE_DEPLOY == 'false' && needs.deploy.result == 'skipped'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -469,7 +504,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.source-manifest.outputs.commit }}
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -491,21 +526,6 @@ jobs:
           ls -l release-flat
       - name: Compose release notes from CHANGELOG.md
         run: node scripts/release-notes.mjs > "$RUNNER_TEMP/notes.md"
-      - name: Delete the previous release when replaying a tag
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ "${{ inputs.recreate }}" = "true" ]; then
-            gh release delete "$RELEASE_TAG" --yes || true
-          fi
-      - name: Publish the GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$RELEASE_TAG" \
-            --title "ReScene $(tr -d '\r\n' < VERSION)" \
-            --notes-file "$RUNNER_TEMP/notes.md" \
-            release-flat/*
       - name: Record the release log
         run: |
           node tooling/scripts/release-log.mjs \
@@ -515,17 +535,17 @@ jobs:
             --commit "$(git rev-parse HEAD)" \
             --deploy-result "${{ needs.deploy.result }}" \
             > "$RUNNER_TEMP/release-log.json"
-          cat "$RUNNER_TEMP/release-log.json"
-      # Workflow logs are public for a public repository, and GitHub only serves
-      # them once a run finishes, so the log points at the run instead of
-      # shipping a zip of itself: `release-log.json` carries the run URL, the
-      # artifact hashes and the deploy record.
-      - name: Upload the release log
+      - name: Create the GitHub release draft
         env:
           GH_TOKEN: ${{ github.token }}
+          RECREATE: ${{ inputs.recreate }}
         run: |
-          gh release upload "$RELEASE_TAG" \
-            "$RUNNER_TEMP/release-log.json" \
-            release-flat/release-manifest.json \
-            release-flat/source-manifest.json \
-            --clobber
+          if [[ "$RECREATE" == 'true' ]]; then
+            is_draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)
+            [[ "$is_draft" == 'true' ]] || { echo 'Only an existing draft may be recreated' >&2; exit 1; }
+            gh release delete "$RELEASE_TAG" --yes
+          fi
+          gh release create "$RELEASE_TAG" --verify-tag --draft \
+            --title "ReScene $(tr -d '\r\n' < VERSION)" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            "$RUNNER_TEMP/release-log.json" release-flat/*

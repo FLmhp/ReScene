@@ -218,7 +218,10 @@ class QueueStorageError extends Error {
   }
 }
 
-export type NativeQueueOptions = { idempotencyKey?: () => string };
+export type NativeQueueOptions = {
+  idempotencyKey?: () => string;
+  onDropped?: (entry: QueuedUpload) => void | Promise<void>;
+};
 
 export function createNativeQueue(storage: QueueStorage, options: NativeQueueOptions = {}) {
   const nextKey = options.idempotencyKey ?? newIdempotencyKey;
@@ -302,6 +305,10 @@ export function createNativeQueue(storage: QueueStorage, options: NativeQueueOpt
       const prepared = await withIdempotencyKey(owner, entry);
       const outcome = await finishEntry(prepared, handle);
       await remove(owner, id);
+      if (outcome === "dropped" && prepared.kind === "upload") {
+        try { await options.onDropped?.(prepared); }
+        catch { /* Queue removal already succeeded; cleanup is best effort. */ }
+      }
       return outcome;
     })().finally(() => { claimed.delete(key); });
     claimed.set(key, { generation: owner.generation, task });
