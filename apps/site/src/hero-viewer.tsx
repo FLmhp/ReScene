@@ -2,7 +2,7 @@ import { Viewer, type ViewerHandle, type ViewerStatus } from "@rescene/viewer";
 import "@rescene/viewer/viewer.css";
 import { createElement, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { DEMO_VIEW_DIRECTION, DEMO_VIEW_DISTANCE } from "./demo-camera";
+import { DEMO_VIEW } from "./demo-camera";
 
 const megabytes = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1);
 
@@ -101,8 +101,7 @@ export function HeroViewer({ src, poster, stage, onProgress }: HeroViewerProps) 
         showControls={false}
         autoRotate={autoRotate}
         autoRotateSeconds={45}
-        viewDirection={DEMO_VIEW_DIRECTION}
-        viewDistance={DEMO_VIEW_DISTANCE}
+        {...DEMO_VIEW}
         onStatus={setStatus}
         onProgress={onProgress}
         loadErrorMessage="场景加载失败，请重试。"

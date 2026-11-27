@@ -34,6 +34,8 @@ export type ViewerProps = {
   viewDirection?: [number, number, number];
   /** Initial camera distance as a multiple of the bounding-sphere radius. */
   viewDistance?: number;
+  /** Fit the initial view horizontally, reserving this fraction (0 to < 0.5) at each side. */
+  viewSidePadding?: number;
   /** Rotate the camera while the pointer is idle; interaction pauses it briefly. */
   autoRotate?: boolean;
   /** Seconds for one idle revolution. Defaults to 40. */
@@ -58,6 +60,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
   loadErrorMessage,
   viewDirection = DEFAULT_VIEW_DIRECTION,
   viewDistance = 2.2,
+  viewSidePadding,
   autoRotate = false,
   autoRotateSeconds = 40,
   showControls = true,
@@ -173,6 +176,15 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
     };
     controls.addEventListener("change", () => { needsRender = true; });
     controls.addEventListener("start", pauseAutoRotate);
+    const sideSlope = viewSidePadding === undefined
+      ? undefined
+      : Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * (1 - 2 * viewSidePadding);
+    // At the fit distance the padded side plane is tangent to the bounding sphere.
+    const distanceForAspect = (radius: number, aspect: number) => radius * (sideSlope === undefined
+      ? viewDistance
+      : Math.max(viewDistance, Math.hypot(1, 1 / (aspect * sideSlope))));
+    let homeRadius = 0;
+    let homeDistance = 0;
     let decoded = false;
     void splats.initialized.then(
       () => {
@@ -183,10 +195,12 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
           .applyMatrix4(splats.matrixWorld)
           .getBoundingSphere(new THREE.Sphere());
         if (Number.isFinite(sphere.radius) && sphere.radius > 0) {
+          homeRadius = sphere.radius;
+          homeDistance = distanceForAspect(homeRadius, camera.aspect);
           controls.target.copy(sphere.center);
           camera.position
             .copy(sphere.center)
-            .addScaledVector(new THREE.Vector3(viewX, viewY, viewZ).normalize(), viewDistance * sphere.radius);
+            .addScaledVector(new THREE.Vector3(viewX, viewY, viewZ).normalize(), homeDistance);
           camera.near = Math.max(0.001, sphere.radius / 500);
           camera.far = Math.max(100, 30 * sphere.radius);
           camera.updateProjectionMatrix();
@@ -202,7 +216,18 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
     const resize = () => {
       const nextWidth = Math.max(1, element.clientWidth);
       const nextHeight = Math.max(1, element.clientHeight);
-      camera.aspect = nextWidth / nextHeight;
+      const aspect = nextWidth / nextHeight;
+      if (sideSlope !== undefined && homeRadius > 0 && aspect !== camera.aspect) {
+        const nextDistance = distanceForAspect(homeRadius, aspect);
+        if (nextDistance !== homeDistance) {
+          const scale = nextDistance / homeDistance;
+          // Retain the current orbit, pan, and zoom relative to the new home framing.
+          camera.position.sub(controls.target).multiplyScalar(scale).add(controls.target);
+          controls.position0.sub(controls.target0).multiplyScalar(scale).add(controls.target0);
+          homeDistance = nextDistance;
+        }
+      }
+      camera.aspect = aspect;
       camera.updateProjectionMatrix();
       renderer.setPixelRatio(Math.min(devicePixelRatio, nextWidth < 900 ? 1 : 1.5));
       renderer.setSize(nextWidth, nextHeight);
@@ -284,7 +309,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
       renderer.domElement.remove();
       delete element.dataset.rendered;
     };
-  }, [src, attempt, viewDistance, viewX, viewY, viewZ]);
+  }, [src, attempt, viewDistance, viewSidePadding, viewX, viewY, viewZ]);
 
   useEffect(() => {
     const controls = controlsRef.current;
