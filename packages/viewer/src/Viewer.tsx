@@ -50,6 +50,19 @@ const EXPIRED = "场景地址可能已过期，或场景文件解析失败。请
 const ORBIT_STEP = THREE.MathUtils.degToRad(15);
 const ZOOM_STEP = 1.15;
 
+type ViewerWindow = Window & { ReactNativeWebView?: { postMessage(message: string): void } };
+
+/** Let native hosts hide their own chrome when the DOM Fullscreen API is unavailable. */
+function notifyNativeFullscreen(active: boolean): void {
+  const bridge = (window as ViewerWindow).ReactNativeWebView;
+  if (!bridge) return;
+  try {
+    bridge.postMessage(JSON.stringify({ type: "RESCENE_VIEWER_FULLSCREEN", active }));
+  } catch {
+    // The bridge is best-effort; the in-page expanded layout still applies.
+  }
+}
+
 export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
   src,
   poster,
@@ -73,6 +86,9 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
   const [status, setStatus] = useState(LOADING);
   const [failed, setFailed] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
   const [attempt, setAttempt] = useState(0);
   const hintId = useId();
   const statusCallback = useRef(onStatus);
@@ -87,19 +103,44 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
   autoRotateSecondsRef.current = autoRotateSeconds;
 
   useEffect(() => {
-    const sync = () => setFullscreen(document.fullscreenElement === shell.current);
+    let wasFullscreen = document.fullscreenElement === shell.current;
+    const sync = () => {
+      const active = document.fullscreenElement === shell.current;
+      setFullscreen(active);
+      if (active) setExpanded(false);
+      // A native exit (Escape/back) must also restore host chrome.
+      if (wasFullscreen && !active) notifyNativeFullscreen(expandedRef.current);
+      wasFullscreen = active;
+    };
     document.addEventListener("fullscreenchange", sync);
     return () => document.removeEventListener("fullscreenchange", sync);
   }, []);
 
+  useEffect(() => {
+    if (!expanded) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setExpanded(false);
+      notifyNativeFullscreen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [expanded]);
+
   const toggleFullscreen = () => {
-    const target = shell.current;
-    if (!target) return;
-    if (document.fullscreenElement) {
-      void document.exitFullscreen().catch(() => {});
+    if (fullscreen || expanded) {
+      setExpanded(false);
+      notifyNativeFullscreen(false);
+      if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
       return;
     }
-    if (target.requestFullscreen) void target.requestFullscreen().catch(() => {});
+    // Keep a visible expanded layout even where requestFullscreen is a no-op
+    // (Android WebView); browsers that support it still enter real fullscreen.
+    setExpanded(true);
+    notifyNativeFullscreen(true);
+    const target = shell.current;
+    if (target?.requestFullscreen) void target.requestFullscreen().catch(() => {});
   };
 
   useImperativeHandle(ref, () => ({
@@ -356,7 +397,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
   }, [keyboardControls]);
 
   return (
-    <div className="viewer-shell" ref={shell}>
+    <div className="viewer-shell" data-expanded={expanded} ref={shell}>
       {poster && status !== "" ? <img className="viewer-poster" src={poster} alt="" /> : null}
       <div
         className="viewer"
@@ -370,8 +411,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({
         {showControls ? (
           <>
             <button type="button" onClick={() => controlsRef.current?.reset()} aria-label="将相机恢复到初始视角">重置视角</button>
-            <button type="button" onClick={toggleFullscreen} aria-pressed={fullscreen}>
-              {fullscreen ? "退出全屏" : "全屏"}
+            <button type="button" onClick={toggleFullscreen} aria-pressed={fullscreen || expanded}>
+              {fullscreen || expanded ? "退出全屏" : "全屏"}
             </button>
           </>
         ) : null}

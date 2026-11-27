@@ -309,7 +309,6 @@ export function ProjectsScreen({ page, onNavigate, onBack, onReturnToProject, on
           <Text style={[textStyles.muted, textStyles.numeric]}>第 {library.index + 1} / {library.pages} 页</Text>
           <Button label="下一页" tone="ghost" disabled={library.index + 1 >= library.pages} onPress={() => setProjectPage(library.index + 1)} />
         </View> : null}
-        {legacyQueue ? <Text style={textStyles.muted}>{LEGACY_QUEUE_NOTICE}</Text> : null}
       </> : null}
       {page === "new-project" ? <Card style={FORM_WIDTH}>
         <Field label="项目名称" value={name} onChangeText={setName} placeholder="例如：街角重建" />
@@ -341,6 +340,7 @@ export function ProjectsScreen({ page, onNavigate, onBack, onReturnToProject, on
         <Button label="外观" tone="ghost" onPress={() => onNavigate("appearance")} />
         <Button label="账户" tone="ghost" onPress={() => onNavigate("account")} />
         {!listError && me?.is_admin ? <Button label="管理控制台" onPress={onAdmin} /> : null}
+        {legacyQueue ? <Text style={textStyles.muted}>{LEGACY_QUEUE_NOTICE}</Text> : null}
       </Card> : null}
       {page === "account" ? <Card style={FORM_WIDTH}>
         {listError ? <>

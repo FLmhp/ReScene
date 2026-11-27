@@ -25,6 +25,7 @@ export function ViewerScreen({ reconstructionId, onBack, backLabel = "返回任�
   const textStyles = useTextStyles();
   const webview = useRef<WebViewHandle>(null);
   const [error, setError] = useState("");
+  const [immersive, setImmersive] = useState(false);
   const [viewer, setViewer] = useState<{ url: string; generation: number; scene: string } | null>(null);
   const generation = useRef(0);
   const scene = JSON.stringify([reconstructionId, dark]);
@@ -35,6 +36,7 @@ export function ViewerScreen({ reconstructionId, onBack, backLabel = "返回任�
   const load = useCallback(() => {
     const nextGeneration = ++generation.current;
     setError("");
+    setImmersive(false);
     setViewer({
       url: `${webBaseUrl}/viewer?reconstruction=${encodeURIComponent(reconstructionId)}&theme=${dark ? "dark" : "light"}`,
       generation: nextGeneration,
@@ -68,6 +70,10 @@ export function ViewerScreen({ reconstructionId, onBack, backLabel = "返回任�
       const request: unknown = JSON.parse(event.nativeEvent.data);
       if (!request || typeof request !== "object") return;
       const payload = request as Record<string, unknown>;
+      if (payload.type === "RESCENE_VIEWER_FULLSCREEN") {
+        if (typeof payload.active === "boolean") setImmersive(payload.active);
+        return;
+      }
       if (payload.type !== "RESCENE_MANIFEST_REQUEST" || payload.reconstructionId !== reconstructionId || typeof payload.requestId !== "string") return;
       let response: Record<string, string>;
       try {
@@ -87,9 +93,9 @@ export function ViewerScreen({ reconstructionId, onBack, backLabel = "返回任�
   }
 
   return <View style={{ flex: 1, backgroundColor: theme.bg }}>
-    <View style={{ paddingHorizontal: 16, paddingVertical: 8, backgroundColor: theme.panel, borderBottomWidth: 1, borderBottomColor: theme.divider }}>
+    {!immersive ? <View style={{ paddingHorizontal: 16, paddingVertical: 8, backgroundColor: theme.panel, borderBottomWidth: 1, borderBottomColor: theme.divider }}>
       <Button label={backLabel} tone="ghost" onPress={onBack} />
-    </View>
+    </View> : null}
     {viewer && viewer.scene === scene && !error ? <WebView
       key={viewer.generation}
       ref={webview}
