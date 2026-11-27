@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { Viewer } from "@rescene/viewer";
 import "@rescene/viewer/viewer.css";
-import { DEMO_VIEW_DIRECTION, DEMO_VIEW_DISTANCE } from "./demo-camera";
+import { DEMO_VIEW } from "./demo-camera";
 import { initSiteTheme } from "./theme";
 
 initSiteTheme();
@@ -19,8 +19,7 @@ if (!viewport || !modelSrc) {
       src: modelSrc,
       poster: viewport.dataset.modelPoster,
       keyboardControls: true,
-      viewDirection: DEMO_VIEW_DIRECTION,
-      viewDistance: DEMO_VIEW_DISTANCE,
+      ...DEMO_VIEW,
       loadErrorMessage: "公开建筑模型加载失败，请重试",
     }),
   );
