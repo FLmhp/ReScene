@@ -56,6 +56,7 @@ class Recorder:
         self.summary: dict[str, object] = {
             "images": {},
             "dbRevision": None,
+            "dbRevisionBefore": None,
             "dumpPath": None,
             "dumpSha256": None,
             "backupDir": None,
@@ -143,26 +144,40 @@ class Remote:
         self.run(name, f'mkdir -p "$(dirname {path})"\nprintf %s {encoded} | base64 -d > {path}\n')
 
 
-def migration_head(root: Path) -> str:
-    """Resolve the alembic head the checked-out source would apply."""
+def migrations(root: Path) -> dict[str, str | None]:
+    """Read revision -> down_revision for every migration in the checked-out source."""
     versions = root / "src/rescene_api/migrations/versions"
-    revisions: set[str] = set()
-    parents: set[str] = set()
+    chain: dict[str, str | None] = {}
     for path in sorted(versions.glob("v*.py")):
         text = path.read_text(encoding="utf-8")
         revision = re.search(r'^revision = "([^"]+)"', text, re.M)
         if revision is None:
             raise DeployError(f"no revision in {path.name}")
-        revisions.add(revision.group(1))
         down = re.search(r'^down_revision = ("([^"]+)"|None)$', text, re.M)
         if down is None:
             raise DeployError(f"no down_revision in {path.name}")
-        if down.group(2) is not None:
-            parents.add(down.group(2))
-    heads = revisions - parents
+        chain[revision.group(1)] = down.group(2)
+    return chain
+
+
+def migration_head(root: Path) -> str:
+    """Resolve the alembic head the checked-out source would apply."""
+    chain = migrations(root)
+    heads = set(chain) - {parent for parent in chain.values() if parent is not None}
     if len(heads) != 1:
         raise DeployError(f"expected one migration head, found {sorted(heads)}")
     return heads.pop()
+
+
+def migration_covers(root: Path, current: str, head: str) -> bool:
+    """Return whether applying `head` upgrades `current` without a schema branch."""
+    chain = migrations(root)
+    revision: str | None = head
+    while revision is not None:
+        if revision == current:
+            return True
+        revision = chain.get(revision)
+    return False
 
 
 def probe(name: str, method: str, url: str, expected: int, body: dict[str, str] | None) -> dict[str, object]:
@@ -339,8 +354,8 @@ printf 'backup=%s\\ndump=%s\\ndump_sha256=%s\\n' "$backup" "$dump" "$(sha256sum 
     if missing:
         raise DeployError(f"backup: the snapshot was not recorded ({', '.join(missing)})")
 
-    revision = remote.read(
-        "db-revision",
+    before = remote.read(
+        "db-revision-before",
         fill(
             """
 @@COMPOSE@@ exec -T db psql -U rescene -tAc 'select version_num from alembic_version'
@@ -348,9 +363,12 @@ printf 'backup=%s\\ndump=%s\\ndump_sha256=%s\\n' "$backup" "$dump" "$(sha256sum 
             COMPOSE=COMPOSE,
         ),
     ).strip()
-    if revision != recorder.summary["dbRevision"]:
-        recorder.step("db-revision", False, f"expected {recorder.summary['dbRevision']}, found {revision}")
-        raise DeployError("db-revision: alembic_version does not match the source head")
+    recorder.summary["dbRevisionBefore"] = before
+    head = str(recorder.summary["dbRevision"])
+    if not migration_covers(root, before, head):
+        recorder.step("db-revision-before", False, f"{before} does not reach {head}")
+        raise DeployError("db-revision-before: database is not on the release migration path")
+    recorder.step("db-revision-before", True, f"{before} -> {head}")
 
     for service in ("api", "web"):
         remote.run(
@@ -366,6 +384,22 @@ docker tag "rescene-{service}:@@VERSION@@" "rescene-{service}:latest"
             600,
         )
         wait_healthy(remote, service)
+        if service == "api":
+            # API startup applies migrations. The upgraded schema must be visible
+            # before web starts; a different revision is a failed release.
+            revision = remote.read(
+                "db-revision-after",
+                fill(
+                    """
+@@COMPOSE@@ exec -T db psql -U rescene -tAc 'select version_num from alembic_version'
+""",
+                    COMPOSE=COMPOSE,
+                ),
+            ).strip()
+            if revision != head:
+                recorder.step("db-revision-after", False, f"expected {head}, found {revision}")
+                raise DeployError("db-revision-after: API did not apply the release migration")
+            recorder.step("db-revision-after", True, revision)
 
     probes = [
         probe("api-ready", "GET", f"{API_URL}/health/ready", 200, None),
