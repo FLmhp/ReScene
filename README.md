@@ -67,10 +67,10 @@ The step counts are per-scene Gaussian optimization steps, not retraining of VGG
 | Client | State |
 |---|---|
 | Web workbench | <https://app.rescene.xyz/> — the current release is deployed there |
-| Windows | `ReScene_0.5.1_x64-setup.exe` in [Releases](https://github.com/FLmhp/ReScene/releases); built in CI, not code-signed, no local install test recorded |
-| Linux | `ReScene_0.5.1_amd64.deb` and `ReScene_0.5.1_amd64.AppImage` in Releases; built in CI, no install test recorded |
-| macOS | `ReScene_0.5.1_universal.dmg` in Releases; built in CI, not signed or notarized |
-| Android | `app-release.apk` in Releases; signed with the release keystore, not distributed through an app store |
+| Windows | `ReScene_0.7.0_x64-setup.exe` in [Releases](https://github.com/FLmhp/ReScene/releases); built in CI, not code-signed, no local install test recorded |
+| Linux | `ReScene_0.7.0_amd64.deb` and `ReScene_0.7.0_amd64.AppImage` in Releases; built in CI, no install test recorded |
+| macOS | `ReScene_0.7.0_universal.dmg` in Releases; built in CI, not signed or notarized |
+| Android | `app-release.apk` in Releases; signed with the release keystore, versionCode 11, not distributed through an app store |
 | WeChat mini program | Trial version available in WeChat |
 
 Project collaboration is by invitation: the inviter issues a one-time claim code bound to an invited email address and forwards the code to that person by hand. ReScene does not send invitation emails.

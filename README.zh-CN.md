@@ -67,10 +67,10 @@ COLMAP 和 Splatfacto 都是自带查看器与导出能力的成熟引擎；ReSc
 | 客户端 | 当前状态 |
 |---|---|
 | Web 工作台 | <https://app.rescene.xyz/>，线上已部署当前发布版 |
-| Windows | [Releases](https://github.com/FLmhp/ReScene/releases) 中的 `ReScene_0.5.1_x64-setup.exe`；CI 构建，未做代码签名，未记录本机安装实测 |
-| Linux | Releases 中的 `ReScene_0.5.1_amd64.deb` 与 `ReScene_0.5.1_amd64.AppImage`；CI 构建，未记录安装实测 |
-| macOS | Releases 中的 `ReScene_0.5.1_universal.dmg`；CI 构建，未签名、未公证 |
-| Android | Releases 中的 `app-release.apk`；已用发布 keystore 签名，不通过应用商店分发 |
+| Windows | [Releases](https://github.com/FLmhp/ReScene/releases) 中的 `ReScene_0.7.0_x64-setup.exe`；CI 构建，未做代码签名，未记录本机安装实测 |
+| Linux | Releases 中的 `ReScene_0.7.0_amd64.deb` 与 `ReScene_0.7.0_amd64.AppImage`；CI 构建，未记录安装实测 |
+| macOS | Releases 中的 `ReScene_0.7.0_universal.dmg`；CI 构建，未签名、未公证 |
+| Android | Releases 中的 `app-release.apk`；已用发布 keystore 签名，versionCode 11，不通过应用商店分发 |
 | 微信小程序 | 已上架体验版 |
 
 项目协作采用邀请制：邀请方签发一枚绑定受邀邮箱的一次性领取码，再自行转交给对方。ReScene 不发送邀请邮件。
