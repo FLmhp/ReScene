@@ -595,13 +595,30 @@ def test_postgres_invitation_rechecks_credential_after_project_lock(postgres_ses
 @pytest.mark.parametrize("postgres_sessions", ["0006"], indirect=True)
 def test_postgres_invitation_upgrade_preserves_inert_legacy_rows(postgres_sessions):
     with postgres_sessions.begin() as db:
-        owner = User(email="legacy-owner@example.com", password_hash="unused")
-        db.add(owner)
-        db.flush()
-        project = Project(owner_id=owner.id, name="Legacy project")
-        db.add(project)
-        db.flush()
         connection = db.connection()
+        users = Table("users", MetaData(), autoload_with=connection)
+        projects = Table("projects", MetaData(), autoload_with=connection)
+        owner_id = str(uuid4())
+        project_id = str(uuid4())
+        now = datetime.now(UTC)
+        db.execute(
+            users.insert().values(
+                id=owner_id,
+                email="legacy-owner@example.com",
+                password_hash="unused",
+                is_admin=False,
+                active=True,
+                created_at=now,
+            )
+        )
+        db.execute(
+            projects.insert().values(
+                id=project_id,
+                owner_id=owner_id,
+                name="Legacy project",
+                created_at=now,
+            )
+        )
         invitations = Table("project_invitations", MetaData(), autoload_with=connection)
         assert "claim_digest" not in invitations.c
         db.execute(
@@ -609,11 +626,11 @@ def test_postgres_invitation_upgrade_preserves_inert_legacy_rows(postgres_sessio
             [
                 {
                     "id": action,
-                    "project_id": project.id,
+                    "project_id": project_id,
                     "email": f"legacy-{action}@example.com",
                     "role": "viewer",
-                    "invited_by": owner.id,
-                    "created_at": datetime.now(UTC),
+                    "invited_by": owner_id,
+                    "created_at": now,
                 }
                 for action in ("reissue", "revoke")
             ],
@@ -623,8 +640,8 @@ def test_postgres_invitation_upgrade_preserves_inert_legacy_rows(postgres_sessio
     with postgres_sessions() as db:
         pending = db.scalars(select(ProjectInvitation)).all()
         assert len(pending) == 2 and all(row.claim_digest is None and row.expires_at is None for row in pending)
-    headers = {"Authorization": f"Bearer {issue_token(owner.id)}"}
-    route = f"/v1/projects/{project.id}"
+    headers = {"Authorization": f"Bearer {issue_token(owner_id)}"}
+    route = f"/v1/projects/{project_id}"
     with TestClient(main.app) as client:
         assert client.delete(f"{route}/invitations/revoke", headers=headers).status_code == 204
         reissued = client.post(f"{route}/members", headers=headers, json={"email": "legacy-reissue@example.com"})

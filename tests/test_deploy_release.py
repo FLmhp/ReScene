@@ -23,6 +23,7 @@ class FakeRemote:
     def __init__(self, recorder: release.Recorder, key: str, known_hosts: str) -> None:
         self.calls: list[tuple[str, str]] = []
         self.revision = "0011"
+        self.head = "0012"
         self.fail_health = False
 
     def run(self, name: str, script: str, timeout: int = 600) -> str:
@@ -37,8 +38,10 @@ class FakeRemote:
 
     def read(self, name: str, script: str, timeout: int = 120) -> str:
         self.calls.append((name, script))
-        if name == "db-revision":
+        if name == "db-revision-before":
             return self.revision
+        if name == "db-revision-after":
+            return self.head
         if name == "health-api" and self.fail_health:
             raise release.DeployError("unhealthy API")
         return "healthy"
@@ -52,7 +55,6 @@ def deployment(monkeypatch: pytest.MonkeyPatch) -> tuple[FakeRemote, release.Rec
     recorder = release.Recorder("0.6.0", "v0.6.0", "example")
     remote = FakeRemote(recorder, "", "")
     monkeypatch.setattr(release, "Remote", lambda *_: remote)
-    monkeypatch.setattr(release, "migration_head", lambda _: "0011")
     monkeypatch.setattr(release, "probe", lambda name, method, url, expected, body: {"name": name, "ok": True})
     return remote, recorder, arguments()
 
@@ -72,15 +74,30 @@ def test_deploy_uses_unique_stage_commit_and_safe_order(deployment: tuple) -> No
     assert 'mkdir -m 700 "$backup"' in scripts["backup"]
     assert 'chmod 600 "$backup/env"' in scripts["backup"]
     assert names.index("check-config") < names.index("up-api")
-    assert names.index("db-revision") < names.index("up-api") < names.index("health-api") < names.index("up-web")
+    assert (
+        names.index("db-revision-before")
+        < names.index("up-api")
+        < names.index("health-api")
+        < names.index("db-revision-after")
+        < names.index("up-web")
+    )
 
 
 def test_migration_mismatch_never_switches_services(deployment: tuple) -> None:
     remote, recorder, args = deployment
-    remote.revision = "0010"
-    with pytest.raises(release.DeployError, match="alembic_version"):
+    remote.revision = "9999"
+    with pytest.raises(release.DeployError, match="migration path"):
         release.deploy(recorder, ROOT, args, "", "")
     assert not any(name.startswith("up-") for name, _ in remote.calls)
+
+
+def test_api_must_apply_release_migration(deployment: tuple) -> None:
+    remote, recorder, args = deployment
+    remote.head = "0011"
+    with pytest.raises(release.DeployError, match="db-revision-after"):
+        release.deploy(recorder, ROOT, args, "", "")
+    assert "up-api" in [name for name, _ in remote.calls]
+    assert "up-web" not in [name for name, _ in remote.calls]
 
 
 def test_unhealthy_api_never_switches_web(deployment: tuple) -> None:
