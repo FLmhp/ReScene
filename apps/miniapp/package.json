@@ -1,7 +1,7 @@
 {
   "name": "@rescene/miniapp",
   "private": true,
-  "version": "0.6.1",
+  "version": "0.7.0",
   "scripts": {
     "dev:weapp": "taro build --type weapp --watch --env development",
     "build:weapp": "taro build --type weapp --env production",

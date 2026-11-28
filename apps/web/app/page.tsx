@@ -37,6 +37,7 @@ export default function Page() {
       viewer={Viewer}
       tokenStore={tokenStore}
       webBaseUrl={webBaseUrl}
+      platform="web"
     />
   );
 }

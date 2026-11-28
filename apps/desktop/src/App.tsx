@@ -166,6 +166,7 @@ export function App() {
       viewer={DesktopViewer}
       tokenStore={tokenStore}
       webBaseUrl={WEB}
+      platform="desktop"
     />
   );
 }

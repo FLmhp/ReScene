@@ -1,6 +1,7 @@
 [
   {
     "announcement_id": null,
+    "announcement_level": null,
     "body": "Golden Scene is ready to view.",
     "created_at": "2026-01-02T03:14:05",
     "id": "77777777-7777-4777-8777-777777777771",

@@ -1,24 +1,20 @@
 import { Button, Text, View } from "@tarojs/components";
 import Taro, { useRouter } from "@tarojs/taro";
 import { useEffect, useRef, useState } from "react";
-import { hasToken } from "../../api";
-import { Screen, WorkspaceEntry, AppearancePage } from "../../screen";
+import { openHome } from "../../navigation";
+import { Screen, WorkspaceEntry } from "../../screen";
 import { ConfigureForm, type ConfigureState } from "./configure";
 import { JobFocus } from "./job";
 import { LibraryFocus } from "./library";
 import { ManagementFocus } from "./management";
 
-const VIEWS = ["new-project", "claim-invite", "notifications", "settings", "appearance", "account", "password", "project-management", "configure", "job", "job-logs", "result", "shares"] as const;
+const VIEWS = ["new-project", "claim-invite", "notifications", "project-management", "configure", "job", "job-logs", "result", "shares"] as const;
 type FocusView = (typeof VIEWS)[number];
-const LIBRARY_VIEWS: FocusView[] = ["new-project", "claim-invite", "notifications", "settings", "account", "password"];
+const LIBRARY_VIEWS: FocusView[] = ["new-project", "claim-invite", "notifications"];
 const TITLES: Record<FocusView, string> = {
   "new-project": "新建项目",
   "claim-invite": "领取邀请",
   notifications: "通知",
-  settings: "设置",
-  appearance: "外观",
-  account: "账户",
-  password: "修改密码",
   "project-management": "项目管理",
   configure: "配置重建",
   job: "任务详情",
@@ -29,6 +25,13 @@ const TITLES: Record<FocusView, string> = {
 
 type FocusEventChannel = { emit(name: string, ...args: unknown[]): void; on(name: string, callback: (payload: ConfigureState) => void): void; off(name: string, callback: (payload: ConfigureState) => void): void };
 
+const LEGACY_SETTINGS: Record<string, { title: string; section: string | null }> = {
+  settings: { title: "设置", section: null },
+  appearance: { title: "外观", section: "appearance" },
+  account: { title: "账户与安全", section: "account" },
+  password: { title: "修改密码", section: "password" },
+};
+
 function focusView(value: string | undefined): FocusView | null {
   return VIEWS.find((view) => view === value) ?? null;
 }
@@ -36,13 +39,18 @@ function focusView(value: string | undefined): FocusView | null {
 export default function FocusPage() {
   const params = useRouter()?.params ?? {};
   const view = focusView(params.view);
+  const legacy = params.view && Object.prototype.hasOwnProperty.call(LEGACY_SETTINGS, params.view) ? LEGACY_SETTINGS[params.view] : null;
   const projectId = params.id ?? "";
   const jobId = params.job ?? "";
   const needsProject = view === "project-management" || view === "configure" || view === "job" || view === "job-logs" || view === "result" || view === "shares";
   const needsJob = view === "job" || view === "job-logs" || view === "result" || view === "shares";
-  useEffect(() => { if (view) void Taro.setNavigationBarTitle({ title: TITLES[view] }).catch(() => undefined); }, [view]);
-  if (view === "appearance") return <Screen><AppearancePage /></Screen>;
-  if (view === "settings" && !hasToken()) return <Screen><Button className="button ghost" onClick={() => void Taro.navigateTo({ url: "/pages/focus/index?view=appearance" }).catch(() => undefined)}>外观</Button></Screen>;
+  useEffect(() => {
+    const title = view ? TITLES[view] : legacy?.title;
+    if (title) void Taro.setNavigationBarTitle({ title }).catch(() => undefined);
+  }, [view, legacy?.title]);
+  if (legacy) {
+    return <WorkspaceEntry><SettingsRedirect section={legacy.section} /></WorkspaceEntry>;
+  }
   return <WorkspaceEntry hasTarget={Boolean(view)}>
     <Screen>
       {!view ? <View className="card"><Text className="error">页面参数无效，请返回后重新打开。</Text></View> : null}
@@ -56,6 +64,20 @@ export default function FocusPage() {
       {view && needsJob && projectId && jobId ? <JobFocus projectId={projectId} jobId={jobId} view={view} /> : null}
     </Screen>
   </WorkspaceEntry>;
+}
+
+function SettingsRedirect({ section }: { section: string | null }) {
+  const [failed, setFailed] = useState(false);
+  const target = section ? `/pages/settings/index?section=${section}` : "/pages/settings/index";
+  useEffect(() => {
+    let active = true;
+    void Taro.redirectTo({ url: target }).catch(() => { if (active) setFailed(true); });
+    return () => { active = false; };
+  }, [target]);
+  return <Screen>
+    <Text className={failed ? "error" : "muted"}>{failed ? "无法打开设置，请返回首页后重试。" : "正在打开设置…"}</Text>
+    <Button className="button ghost" onClick={() => void openHome().catch(() => undefined)}>返回首页</Button>
+  </Screen>;
 }
 
 function openerChannel(): FocusEventChannel | undefined {

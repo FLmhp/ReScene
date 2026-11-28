@@ -1,54 +1,46 @@
 import { explainError, isOfflineError } from "@rescene/api-client";
-import { LEGACY_QUEUE_NOTICE, QUEUE_PAUSED, newIdempotencyKey } from "@rescene/uploader";
+import { QUEUE_PAUSED, newIdempotencyKey } from "@rescene/uploader";
 import { JOB_STATUS_LABELS, projectLibraryPage } from "@rescene/schemas";
-import type { AppNotification, ProjectSummary, User } from "@rescene/schemas";
+import type { ProjectSummary } from "@rescene/schemas";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Pressable, View } from "react-native";
 
-import { changeSessionPassword, client, currentQueueOwner, isQueueOwnerCurrent, queueClient } from "../api";
+import { client, currentQueueOwner, isQueueOwnerCurrent, queueClient } from "../api";
 import { AssetThumbnail } from "../AssetThumbnail";
-import { enqueue, hasLegacyQueue, replayQueued } from "../queue";
+import { Inbox } from "./Inbox";
+import { enqueue, replayQueued } from "../queue";
 import { useAppearance } from "../appearance";
 import { Button, Card, ErrorText, Field, ScaledText as Text, Screen, useTextStyles } from "../ui";
 
-type ProjectsPage = "projects" | "new-project" | "claim-invite" | "notifications" | "settings" | "account" | "password";
+type ProjectsPage = "projects" | "new-project" | "claim-invite" | "notifications";
 const FORM_WIDTH = { maxWidth: 560, width: "100%" as const, alignSelf: "center" as const };
 
-export function ProjectsScreen({ page, onNavigate, onBack, onReturnToProject, onOpen, onSignOut, onAdmin, onJob, returnToProject }: {
+export function ProjectsScreen({ page, onNavigate, onSettings, onBack, onReturnToProject, onOpen, onJob, returnToProject }: {
   page: ProjectsPage | null;
-  onNavigate: (page: ProjectsPage | "appearance") => void;
+  onNavigate: (page: ProjectsPage) => void;
+  onSettings: () => void;
   onBack: () => void;
   onReturnToProject?: () => void;
   returnToProject?: boolean;
   onOpen: (project: { id: string; name: string }) => void;
-  onSignOut: () => void;
-  onAdmin: () => void;
   onJob?: (jobId: string) => void;
 }) {
   const { theme } = useAppearance();
   const textStyles = useTextStyles();
   const [projectPage, setProjectPage] = useState(0);
-  const [notificationLoading, setNotificationLoading] = useState(false);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState("");
-  const [me, setMe] = useState<User | null>(null);
-  const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [unread, setUnread] = useState(0);
-  const [notificationError, setNotificationError] = useState("");
   const [name, setName] = useState("");
   const [search, setSearch] = useState("");
   const [inviteCode, setInviteCode] = useState("");
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const flight = useRef(false);
   const attemptKey = useRef<{ name: string; key: string } | null>(null);
   const replayed = useRef(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [legacyQueue, setLegacyQueue] = useState(false);
 
   const loadUnread = useCallback(async () => {
     try {
@@ -58,27 +50,11 @@ export function ProjectsScreen({ page, onNavigate, onBack, onReturnToProject, on
     }
   }, []);
 
-  const loadNotifications = useCallback(async () => {
-    setNotificationLoading(true);
-    try {
-      const [items, count] = await Promise.all([client.listNotifications(false), client.notificationCount()]);
-      setNotifications(items);
-      setUnread(count);
-      setNotificationError("");
-    } catch (reason) {
-      setNotificationError(explainError(reason, "加载通知失败"));
-    } finally {
-      setNotificationLoading(false);
-    }
-  }, []);
-
   const load = useCallback(async () => {
     setLoading(true);
     setListError("");
     try {
-      const [nextProjects, user] = await Promise.all([client.listProjectSummaries(), client.getMe()]);
-      setProjects(nextProjects);
-      setMe(user);
+      setProjects(await client.listProjectSummaries());
     } catch (reason) {
       setListError(explainError(reason, "加载项目失败"));
     } finally {
@@ -97,18 +73,6 @@ export function ProjectsScreen({ page, onNavigate, onBack, onReturnToProject, on
     void loadUnread();
   }, [load, loadUnread, page]);
 
-  useEffect(() => {
-    setError("");
-    if (page === "notifications") void loadNotifications();
-  }, [page, loadNotifications]);
-
-  useEffect(() => {
-    if (page === "password") return;
-    setCurrentPassword("");
-    setNewPassword("");
-    setConfirmPassword("");
-  }, [page]);
-
   const replay = useCallback(() => {
     const owner = currentQueueOwner();
     if (!owner) return;
@@ -120,7 +84,6 @@ export function ProjectsScreen({ page, onNavigate, onBack, onReturnToProject, on
   useEffect(() => {
     if (replayed.current) return;
     replayed.current = true;
-    void hasLegacyQueue().then(setLegacyQueue).catch(() => undefined);
     replay();
   }, [replay]);
 
@@ -129,10 +92,9 @@ export function ProjectsScreen({ page, onNavigate, onBack, onReturnToProject, on
       if (state !== "active") return;
       replay();
       void loadUnread();
-      if (page === "notifications") void loadNotifications();
     });
     return () => subscription.remove();
-  }, [loadNotifications, loadUnread, page, replay]);
+  }, [loadUnread, page, replay]);
 
   async function create() {
     const trimmed = name.trim();
@@ -182,30 +144,6 @@ export function ProjectsScreen({ page, onNavigate, onBack, onReturnToProject, on
     }
   }
 
-  async function changePassword() {
-    if (newPassword !== confirmPassword) { setError("两次输入的新密码不一致。"); return; }
-    if (!currentPassword || newPassword.length < 12 || flight.current) return;
-    flight.current = true;
-    setBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      if (!await changeSessionPassword(currentPassword, newPassword)) {
-        setError("密码已更新，但无法保存设备登录信息。请检查系统安全存储后重新登录。");
-        return;
-      }
-      setCurrentPassword("");
-      setNewPassword("");
-      setConfirmPassword("");
-      setNotice("密码已更新，其他设备已退出登录。");
-    } catch (reason) {
-      setError(explainError(reason, "更新密码失败。"));
-    } finally {
-      flight.current = false;
-      setBusy(false);
-    }
-  }
-
   async function acceptInvitation() {
     const code = inviteCode.trim();
     if (!code || flight.current) return;
@@ -231,40 +169,13 @@ export function ProjectsScreen({ page, onNavigate, onBack, onReturnToProject, on
     void loadUnread();
   }
 
-  async function markAllRead() {
-    try {
-      await client.markNotificationsRead();
-      await loadNotifications();
-    } catch (reason) {
-      setError(explainError(reason, "操作失败"));
-    }
-  }
-
-  async function openNotification(item: AppNotification) {
-    try {
-      await client.markNotificationsRead([item.id]);
-    } catch (reason) {
-      setError(explainError(reason, "操作失败"));
-      return;
-    }
-    void loadNotifications();
-    if (item.job_id && onJob) {
-      onJob(item.job_id);
-      return;
-    }
-    if (item.project_id) {
-      const known = projects.find((project) => project.id === item.project_id);
-      onOpen({ id: item.project_id, name: known?.name ?? "" });
-    }
-  }
-
   if (page === null) return null;
   const library = projectLibraryPage(projects, search, projectPage);
   const titles: Record<ProjectsPage, string> = {
     projects: "项目列表", "new-project": "新建项目", "claim-invite": "领取邀请",
-    notifications: "通知", settings: "设置", account: "账户", password: "修改密码",
+    notifications: "通知",
   };
-  const rootPage = page === "projects" || page === "notifications" || page === "settings";
+  const rootPage = page === "projects" || page === "notifications";
   return (
     <Screen
       scroll
@@ -274,7 +185,7 @@ export function ProjectsScreen({ page, onNavigate, onBack, onReturnToProject, on
       navigation={rootPage ? <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap", paddingHorizontal: 16, paddingBottom: 12 }}>
         {page !== "projects" ? <Button label="项目列表" tone="ghost" onPress={() => onNavigate("projects")} /> : null}
         {page !== "notifications" ? <Button accessibilityLabel="通知" label={unread ? `通知（${unread}）` : "通知"} tone="ghost" onPress={() => onNavigate("notifications")} /> : null}
-        {page !== "settings" ? <Button label="设置" tone="ghost" onPress={() => onNavigate("settings")} /> : null}
+        <Button label="设置" tone="ghost" onPress={onSettings} />
       </View> : undefined}
     >
       {error ? <ErrorText>{error}</ErrorText> : null}
@@ -318,44 +229,9 @@ export function ProjectsScreen({ page, onNavigate, onBack, onReturnToProject, on
         <Field label="领取码" value={inviteCode} onChangeText={setInviteCode} autoComplete="off" />
         <Button disabled={busy || !inviteCode.trim()} label="领取邀请" onPress={acceptInvitation} />
       </Card> : null}
-      {page === "notifications" ? <>
-        <Text style={textStyles.body}>{unread ? `${unread} 条未读` : "暂无未读通知"}</Text>
-        <Button disabled={busy || notificationLoading || unread === 0} label="全部已读" tone="ghost" onPress={() => void markAllRead()} />
-        {notificationError ? <>
-          <ErrorText>{notificationError}</ErrorText>
-          <Button label="重新加载" tone="ghost" onPress={() => void loadNotifications()} />
-        </> : null}
-        {!notificationError && !notificationLoading && notifications.length === 0 ? <Text style={textStyles.muted}>暂无通知。</Text> : null}
-        {!notificationError ? notifications.map((item) => (
-          <Pressable accessibilityRole="button" key={item.id} onPress={() => void openNotification(item)}
-            style={{ paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: theme.border, minHeight: 44 }}>
-            <Text style={textStyles.body}>{item.read_at ? "" : "未读 · "}{item.kind === "announcement" ? "公告 · " : ""}{item.title}</Text>
-            {item.body ? <Text numberOfLines={2} style={textStyles.muted}>{item.body}</Text> : null}
-            <Text style={[textStyles.muted, textStyles.numeric]}>{new Date(item.created_at).toLocaleString()}</Text>
-          </Pressable>
-        )) : null}
-        {notificationLoading ? <Text accessibilityLiveRegion="polite" style={textStyles.muted}>正在加载通知…</Text> : null}
-      </> : null}
-      {page === "settings" ? <Card style={FORM_WIDTH}>
-        <Button label="外观" tone="ghost" onPress={() => onNavigate("appearance")} />
-        <Button label="账户" tone="ghost" onPress={() => onNavigate("account")} />
-        {!listError && me?.is_admin ? <Button label="管理控制台" onPress={onAdmin} /> : null}
-        {legacyQueue ? <Text style={textStyles.muted}>{LEGACY_QUEUE_NOTICE}</Text> : null}
-      </Card> : null}
-      {page === "account" ? <Card style={FORM_WIDTH}>
-        {listError ? <>
-          <ErrorText>{listError}</ErrorText>
-          <Button label="重新加载" tone="ghost" onPress={() => void load()} />
-        </> : <Text style={textStyles.body}>{me ? `${me.email} · ${me.is_admin ? "管理员" : "成员"}` : "正在加载账户…"}</Text>}
-        <Button label="修改密码" onPress={() => onNavigate("password")} />
-        <Button label="退出登录" onPress={onSignOut} tone="ghost" />
-      </Card> : null}
-      {page === "password" ? <Card style={FORM_WIDTH}>
-        <Field label="当前密码" value={currentPassword} onChangeText={setCurrentPassword} secureTextEntry autoComplete="current-password" />
-        <Field label="新密码（至少 12 位）" value={newPassword} onChangeText={setNewPassword} secureTextEntry autoComplete="new-password" />
-        <Field label="确认新密码" value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry autoComplete="new-password" />
-        <Button disabled={busy || !currentPassword || newPassword.length < 12 || !confirmPassword} label="更新密码" onPress={() => void changePassword()} />
-      </Card> : null}
+      {page === "notifications" ? (
+        <Inbox projects={projects} onJob={onJob} onOpen={onOpen} onUnreadChange={setUnread} />
+      ) : null}
     </Screen>
   );
 }

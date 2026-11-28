@@ -79,6 +79,7 @@ export default function IndexPage() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [search, setSearch] = useState("");
   const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [code, setCode] = useState("");
@@ -193,18 +194,20 @@ export default function IndexPage() {
 
   async function login() {
     if (authLock.current) return;
+    if (!identifier.trim()) return setError("请输入邮箱或用户名。");
+    if (!password) return setError("请输入密码。");
     authLock.current = true;
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      const current = await authenticate("login", email.trim(), password);
+      const current = await authenticate("login", identifier.trim(), password);
       if (!current) return;
       setPassword("");
       await completeSignIn(current);
     } catch (reason) {
       if (reason instanceof ResceneApiError && (reason.status === 401 || reason.status === 403)) {
-        setError("邮箱或密码不正确。");
+        setError("邮箱、用户名或密码不正确。");
       } else {
         setError(message(reason, "登录失败，请重试。"));
       }
@@ -344,7 +347,7 @@ export default function IndexPage() {
 
   const library = projectLibraryPage(projects, search, projectPage);
 
-  function openFocus(view: "new-project" | "claim-invite" | "notifications" | "settings" | "appearance") {
+  function openFocus(view: "new-project" | "claim-invite" | "notifications") {
     void Taro.navigateTo({
       url: `/pages/focus/index?view=${view}`,
       events: {
@@ -356,6 +359,10 @@ export default function IndexPage() {
       },
       fail: () => setError("无法打开页面，请重试。"),
     });
+  }
+
+  function openSettings() {
+    void Taro.navigateTo({ url: "/pages/settings/index", fail: () => setError("无法打开页面，请重试。") });
   }
 
   function switchMode(next: AuthMode) {
@@ -378,17 +385,23 @@ export default function IndexPage() {
   if (!user && !currentQueueOwner()) {
     return (
       <Screen>
-        <View className="auth-top">
-          <Button className="button ghost compact" onClick={() => openFocus("appearance")}>外观</Button>
-        </View>
         <View className="card auth-card">
           <View className="brand-lockup">
             <Image className="brand-icon" src={icon} mode="aspectFit" />
             <Text className="brand-name">ReScene</Text>
           </View>
           <Text className="auth-title">{AUTH_TITLES[mode]}</Text>
-          <Text className="label">邮箱</Text>
-          <Input className="input" placeholder="name@example.com" value={email} onInput={(event) => setEmail(event.detail.value)} />
+          {mode === "login" ? (
+            <>
+              <Text className="label">邮箱或用户名</Text>
+              <Input className="input" placeholder="邮箱或用户名" value={identifier} onInput={(event) => setIdentifier(event.detail.value)} />
+            </>
+          ) : (
+            <>
+              <Text className="label">邮箱</Text>
+              <Input className="input" placeholder="name@example.com" value={email} onInput={(event) => setEmail(event.detail.value)} />
+            </>
+          )}
           {mode === "login" || mode === "register" ? (
             <>
               <Text className="label">{mode === "login" ? "密码" : "密码（至少 12 位）"}</Text>
@@ -463,7 +476,7 @@ export default function IndexPage() {
     <Screen>
       <View className="library-top">
         <Button className="button ghost compact" onClick={() => openFocus("notifications")}>通知（{unread}）</Button>
-        <Button className="button ghost compact" onClick={() => openFocus("settings")}>设置</Button>
+        <Button className="button ghost compact" onClick={openSettings}>设置</Button>
       </View>
       <Text className="title">项目列表</Text>
       <View className="library-actions">

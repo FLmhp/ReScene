@@ -12,11 +12,14 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
+    false,
+    select,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, column_property, deferred, mapped_column
 
 from rescene_api.db import Base
 
@@ -33,11 +36,25 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    username: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    username_key: Mapped[str | None] = mapped_column(String(32), unique=True, index=True, nullable=True)
     password_hash: Mapped[str] = mapped_column(Text)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    email_critical_announcements: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    email_job_results: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     token_version: Mapped[int] = mapped_column(Integer, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class UserAvatar(Base):
+    """One small, canonical avatar per account; the bytes are loaded on demand."""
+
+    __tablename__ = "user_avatars"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    jpeg_bytes: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))
+    revision: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class Project(Base):
@@ -212,6 +229,20 @@ class Notification(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
 
 
+class NotificationEmailOutbox(Base):
+    """Reliable email delivery queue for notifications."""
+
+    __tablename__ = "notification_email_outbox"
+    __table_args__ = (Index("ix_notification_email_outbox_state_next_attempt_at", "state", "next_attempt_at"),)
+    notification_id: Mapped[str] = mapped_column(ForeignKey("notifications.id", ondelete="CASCADE"), primary_key=True)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
 class JobLog(Base):
     __tablename__ = "job_logs"
     __table_args__ = (Index("ix_job_logs_job_id_id", "job_id", "id"),)
@@ -253,3 +284,18 @@ class ProjectInvitation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     claim_digest: Mapped[str | None] = mapped_column(String(64), index=True, unique=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ReservedLoginKey(Base):
+    """Legacy non-@ email identifiers that share the username namespace.
+
+    Only normalized values that could match an allowed username are reserved.
+    """
+
+    __tablename__ = "reserved_login_keys"
+    key: Mapped[str] = mapped_column(String(32), primary_key=True)
+
+
+User.avatar_revision = column_property(
+    select(UserAvatar.revision).where(UserAvatar.user_id == User.id).scalar_subquery()
+)

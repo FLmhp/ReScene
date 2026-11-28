@@ -75,6 +75,10 @@ The step counts are per-scene Gaussian optimization steps, not retraining of VGG
 
 Project collaboration is by invitation: the inviter issues a one-time claim code bound to an invited email address and forwards the code to that person by hand. ReScene does not send invitation emails.
 
+On this branch, **Settings** separates account and security, notification preferences, device appearance, and legal texts. Existing accounts can keep signing in by email without choosing a username. A saved username also works with password sign-in; email-code flows still use an email address. Account changes and subscriptions apply across devices. Appearance is saved only on the device and applies after session verification; signed-out workbenches follow the system with the default ultramarine colorway.
+
+In-app announcements and task results are independent of email. Email is off by default: verify the account email in **Notification Preferences**, then opt in to important announcements, task results, or both. Administrators can manage users, publish or withdraw announcements, and export filtered platform audit logs. Task run logs identify the attempt when available. The in-app agreement and privacy text are drafts, not in force; the repository and Inter licenses are available offline.
+
 <p align="center">
   <img src="apps/site/public/media/viewer-reconstruction.webp" width="720" alt="Scene sample in the ReScene Viewer">
   <br>

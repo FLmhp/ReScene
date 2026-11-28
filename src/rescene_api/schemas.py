@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 # Login must still accept accounts created before strict validation existed;
 # new accounts/invitations use StrictEmail.
@@ -11,6 +11,7 @@ LoginEmail = Annotated[
     str,
     StringConstraints(strip_whitespace=True, to_lower=True, min_length=1, max_length=320),
 ]
+LoginIdentifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=320)]
 StrictEmail = Annotated[
     str,
     StringConstraints(
@@ -24,9 +25,32 @@ StrictEmail = Annotated[
 
 
 class LoginRequest(BaseModel):
-    email: LoginEmail
+    model_config = ConfigDict(extra="forbid")
+
+    # New clients log in with a username or email; legacy clients send `email`.
+    identifier: LoginIdentifier | None = None
+    email: LoginEmail | None = Field(default=None)
     # Far above any legitimate password; keeps scrypt off arbitrarily long inputs.
     password: str = Field(min_length=1, max_length=1024)
+
+    @model_validator(mode="after")
+    def require_one_identifier(self) -> Self:
+        supplied = self.model_fields_set.intersection({"email", "identifier"})
+        if len(supplied) != 1 or (self.identifier is None and self.email is None):
+            raise ValueError("Exactly one of identifier or email is required")
+        return self
+
+
+class UpdateProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str
+
+
+class AvatarUploadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    image_base64: str
 
 
 class ChangePasswordRequest(BaseModel):
@@ -52,6 +76,29 @@ class EmailPasswordResetRequest(BaseModel):
     new_password: str = Field(min_length=12, max_length=128)
 
 
+class NotificationPreferencesPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email_critical_announcements: bool | None = Field(default=None, strict=True)
+    email_job_results: bool | None = Field(default=None, strict=True)
+
+    @model_validator(mode="after")
+    def require_boolean_change(self) -> Self:
+        if not self.model_fields_set or any(getattr(self, key) is None for key in self.model_fields_set):
+            raise ValueError("Supply at least one boolean subscription preference")
+        return self
+
+
+class NotificationEmailRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class NotificationEmailConfirmation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
+
+
 class UpdateUserRequest(BaseModel):
     active: bool | None = None
     is_admin: bool | None = None
@@ -72,9 +119,7 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=12, max_length=128)
 
 
-class CreateUserRequest(LoginRequest):
-    email: StrictEmail
-    password: str = Field(min_length=12, max_length=128)
+class CreateUserRequest(RegisterRequest):
     is_admin: bool = False
 
 
@@ -164,6 +209,11 @@ class CreateAnnouncementRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     body: str = Field(min_length=1, max_length=4000)
     level: Literal["info", "warning", "critical"] = "info"
+
+    @field_validator("title", "body", "level", mode="before")
+    @classmethod
+    def strip_content(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
 
 class WorkerLogLine(BaseModel):

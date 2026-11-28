@@ -19,6 +19,7 @@ import {
   AssetPreviewSchema,
   AuditPageSchema,
   AuthTokenSchema,
+  AvatarSchema,
   CompleteAssetSchema,
   EmailCodeAcceptedSchema,
   InvitationSchema,
@@ -28,6 +29,7 @@ import {
   JobStageSchema,
   ManifestSchema,
   NotificationCountSchema,
+  NotificationPreferencesSchema,
   NotificationSchema,
   ProjectDetailSchema,
   ProjectMemberSchema,
@@ -51,12 +53,16 @@ import {
   type Artifact,
   type AuditPage,
   type AuthToken,
+  type Avatar,
   type EmailCodePurpose,
   type Job,
   type JobLog,
   type JobStage,
   type Manifest,
   type MemberRole,
+  type NotificationKind,
+  type NotificationPreferences,
+  type NotificationPreferencesPatch,
   type Profile,
   type Project,
   type ProjectDetail,
@@ -126,8 +132,17 @@ function legacyWorkspace(project: ProjectDetail): ProjectWorkspace {
 }
 
 const ERROR_MESSAGES: Record<string, string> = {
-  "auth.invalid_credentials": "邮箱或密码不正确。",
+  "auth.invalid_credentials": "邮箱、用户名或密码不正确。",
   "auth.email_taken": "该邮箱已注册，请直接登录。",
+  "auth.username_taken": "该用户名已被使用，请换一个。",
+  "username.invalid_char": "用户名只能使用汉字、英文字母、数字、下划线和连字符，且至少含一个汉字、字母或数字。",
+  "username.invalid_length": "用户名须为 3–32 个字符。",
+  "avatar.too_large": "请选择不超过 1 MiB 和 1600 万像素的图片。",
+  "avatar.invalid_image": "请选择完好的单帧 JPEG、PNG 或 WebP 图片。",
+  "avatar.not_found": "该账号还没有头像。",
+  "avatar.forbidden": "没有权限查看该头像。",
+  "notifications.email_unverified": "请先验证收件邮箱，再开启邮件订阅。",
+  "notifications.smtp_unavailable": "验证邮件暂不可用，请稍后重试。",
   "auth.rate_limited": "尝试过于频繁，请稍后再试。",
   "auth.password_mismatch": "当前密码不正确。",
   "auth.invalid_code": "验证码无效或已过期，请重新获取。",
@@ -137,13 +152,14 @@ const ERROR_MESSAGES: Record<string, string> = {
   "job.invalid_input": "请更换无效素材，再创建新任务。",
   "user.not_found": "账号不存在。",
   "admin.self_locked": "不能停用或降级当前登录的管理员。",
+  "admin.forbidden": "当前账户已无总管理员权限。",
   "share.not_found": "分享链接不存在或已撤销。",
   "invitation.unavailable": "邀请不可领取。请确认登录邮箱和领取码，或联系项目管理者重新签发。",
   "announcement.not_found": "公告不存在或已删除。",
-  "audit.invalid_time": "时间格式不正确。",
+  "audit.invalid_time": "请检查起止时间格式，结束时间不能早于开始时间。",
 };
 
-type AuditFilters = {
+export type AuditFilters = {
   actor?: string;
   action?: string;
   projectId?: string;
@@ -203,6 +219,27 @@ async function throwApiError(response: Response): Promise<never> {
   );
 }
 
+/** Audit filters are entered in the device's local time and sent as UTC instants. */
+export function parseAuditLocalRange(sinceInput: string, untilInput: string): { since?: string; until?: string } {
+  const parse = (input: string): Date | undefined => {
+    const value = input.trim();
+    if (!value) return;
+    const match = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})$/.exec(value);
+    if (!match || match[1] === "0000") throw new Error("请输入有效的本地时间，格式为 YYYY-MM-DD HH:mm。");
+    const [, year, month, day, hour, minute] = match;
+    const date = new Date(value.replace(" ", "T"));
+    if (date.getFullYear() !== Number(year) || date.getMonth() + 1 !== Number(month)
+      || date.getDate() !== Number(day) || date.getHours() !== Number(hour) || date.getMinutes() !== Number(minute)) {
+      throw new Error("请输入有效的本地时间，格式为 YYYY-MM-DD HH:mm。");
+    }
+    return date;
+  };
+  const since = parse(sinceInput);
+  const until = parse(untilInput);
+  if (since && until && until < since) throw new Error("结束时间不能早于开始时间。");
+  return { since: since?.toISOString(), until: until?.toISOString() };
+}
+
 function auditQuery(params: AuditFilters): URLSearchParams {
   const search = new URLSearchParams();
   if (params.actor) search.set("actor", params.actor);
@@ -256,10 +293,12 @@ export class ResceneClient {
     return schema.parse(await response.json());
   }
 
-  async login(email: string, password: string): Promise<AuthToken> {
+  async login(identifier: string, password: string): Promise<AuthToken> {
+    const address = identifier.trim();
+    // Keep email sign-in compatible with servers that only know the original payload.
     const result = await this.send("/v1/auth/login", AuthTokenSchema, {
       method: "POST",
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify(address.includes("@") ? { email: address, password } : { identifier: address, password }),
     });
     this.token = result.access_token;
     return result;
@@ -317,6 +356,44 @@ export class ResceneClient {
 
   async getMe(): Promise<User> {
     return this.send("/v1/auth/me", UserSchema);
+  }
+
+  async updateProfile(patch: { username: string }): Promise<User> {
+    return this.send("/v1/auth/me", UserSchema, { method: "PATCH", body: JSON.stringify(patch) });
+  }
+
+  async setAvatar(imageBase64: string): Promise<User> {
+    return this.send("/v1/auth/me/avatar", UserSchema, {
+      method: "POST", body: JSON.stringify({ image_base64: imageBase64 }),
+    });
+  }
+
+  async removeAvatar(): Promise<User> {
+    return this.send("/v1/auth/me/avatar", UserSchema, { method: "DELETE" });
+  }
+
+  async getAvatar(userId: string): Promise<Avatar> {
+    return this.send(`/v1/users/${encodeURIComponent(userId)}/avatar`, AvatarSchema);
+  }
+
+  async getNotificationPreferences(): Promise<NotificationPreferences> {
+    return this.send("/v1/auth/me/notification-preferences", NotificationPreferencesSchema);
+  }
+
+  async updateNotificationPreferences(patch: NotificationPreferencesPatch): Promise<NotificationPreferences> {
+    return this.send("/v1/auth/me/notification-preferences", NotificationPreferencesSchema, {
+      method: "PATCH", body: JSON.stringify(patch),
+    });
+  }
+
+  async requestNotificationEmailVerification(): Promise<void> {
+    await this.send("/v1/auth/me/email-verification", EmailCodeAcceptedSchema, { method: "POST" });
+  }
+
+  async confirmNotificationEmailVerification(code: string): Promise<NotificationPreferences> {
+    return this.send("/v1/auth/me/email-verification/confirm", NotificationPreferencesSchema, {
+      method: "POST", body: JSON.stringify({ code }),
+    });
   }
 
   /** Rotate the signed-in password; the returned token replaces every other session. */
@@ -477,20 +554,29 @@ export class ResceneClient {
 
   /** CSV is not JSON, so it bypasses Zod parsing but keeps the same auth and error mapping. */
   async auditCsv(params: AuditFilters = {}): Promise<Blob> {
-    const query = auditQuery(params).toString();
-    const response = await this.raw(`/v1/audit.csv${query ? `?${query}` : ""}`);
-    return response.blob();
+    return (await this.auditCsvResponse(params)).blob();
   }
 
-  async createAnnouncement(input: { title: string; body: string; level: AnnouncementLevel }): Promise<Announcement> {
+  async auditCsvText(params: AuditFilters = {}): Promise<string> {
+    const text = await (await this.auditCsvResponse(params)).text();
+    return text.startsWith("\uFEFF") ? text : `\uFEFF${text}`;
+  }
+
+  private auditCsvResponse(params: AuditFilters): Promise<Response> {
+    const query = auditQuery(params).toString();
+    return this.raw(`/v1/audit.csv${query ? `?${query}` : ""}`);
+  }
+
+  async createAnnouncement(input: { title: string; body: string; level: AnnouncementLevel }, key?: string): Promise<Announcement> {
     return this.send("/v1/announcements", AnnouncementSchema, {
       method: "POST",
       body: JSON.stringify(input),
+      ...idempotencyHeader(key),
     });
   }
 
-  async listAnnouncements(limit = 50): Promise<Announcement[]> {
-    return this.send(`/v1/announcements?limit=${limit}`, AnnouncementSchema.array());
+  async listAnnouncements(limit = 50, offset = 0): Promise<Announcement[]> {
+    return this.send(`/v1/announcements?limit=${limit}${offset > 0 ? `&offset=${offset}` : ""}`, AnnouncementSchema.array());
   }
 
   async deleteAnnouncement(announcementId: string): Promise<void> {
@@ -594,8 +680,8 @@ export class ResceneClient {
     return this.send("/v1/workers/status", WorkerStatusSchema);
   }
 
-  async listNotifications(unreadOnly = false, limit = 50, offset = 0): Promise<AppNotification[]> {
-    const query = `?unread=${unreadOnly ? 1 : 0}&limit=${limit}&offset=${offset}`;
+  async listNotifications(unreadOnly = false, limit = 50, offset = 0, kind?: NotificationKind): Promise<AppNotification[]> {
+    const query = `?unread=${unreadOnly ? 1 : 0}&limit=${limit}&offset=${offset}${kind ? `&kind=${encodeURIComponent(kind)}` : ""}`;
     return this.send(`/v1/notifications${query}`, NotificationSchema.array());
   }
 

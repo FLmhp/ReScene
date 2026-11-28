@@ -95,12 +95,6 @@ page { font-family: -apple-system, 'PingFang SC', sans-serif; font-size: 32px; l
   box-shadow: none;
 }
 
-.auth-top {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-}
-
 .brand-lockup {
   display: flex;
   flex-direction: column;
@@ -440,3 +434,23 @@ page { font-family: -apple-system, 'PingFang SC', sans-serif; font-size: 32px; l
 .selection-bar.inline { position: static; margin-top: 24px; border: 1px solid var(--border); border-radius: 18px; }
 .selection-bar .button { margin: 0; flex-shrink: 0; }
 .selection-bar text { display: block; }
+
+.avatar-row { display: flex; align-items: center; gap: 24px; margin-bottom: 16px; }
+.avatar-thumbnail { width: 144px; height: 144px; flex: none; border-radius: 50%; background: var(--bg-deep); border: 1px solid var(--border-soft); overflow: hidden; }
+.avatar-thumbnail.small { width: 80px; height: 80px; }
+.avatar-thumbnail .preview-image { width: 100%; height: 100%; border-radius: 0; }
+.avatar-initial { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 64px; color: var(--muted); }
+.avatar-thumbnail.small .avatar-initial { font-size: 36px; }
+.avatar-meta { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; }
+.avatar-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+.avatar-actions .button { margin: 0; flex: none; }
+.settings-section-head { display: flex; align-items: center; }
+.button.settings-entry { align-items: stretch; flex-direction: column; gap: 12px; min-height: 132px; text-align: left; background: var(--panel); border-color: var(--border-soft); color: var(--fg); }
+.settings-entry-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.settings-entry-title { font-size: var(--mini-font-32); font-weight: 700; }
+.settings-entry .muted { text-align: left; }
+.settings-scope { flex: none; padding: 4px 12px; border: 1px solid var(--border-soft); border-radius: 999px; color: var(--muted); font-size: var(--mini-font-24); font-weight: 400; }
+.settings-admin { margin-top: 8px; border-color: var(--accent); }
+.legal-status { align-self: flex-start; padding: 4px 14px; border: 1px solid var(--border); border-radius: 999px; color: var(--accent-alt); font-size: var(--mini-font-24); font-weight: 600; }
+.legal-document { gap: 24px; }
+.legal-paragraph { color: var(--fg); font-size: var(--mini-font-28); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }

@@ -69,6 +69,10 @@ RESCENE_SMTP_PASSWORD=<SMTP 授权码>
 
 `RESCENE_ENV=production` 时未配置 SMTP 只记录错误、不回显验证码；请求验证码接口仍返回 `202`，避免暴露邮箱是否注册。验证码登录、密码重置和限流的自动化用例见 `tests/test_api.py`（`-k "email_code or password_reset"`）。
 
+「通知偏好」的邮箱验证与登录、重置用途隔离，验证不会自动订阅。该设置不走开发日志回退：未配置 SMTP 时，验证发码返回 `notifications.smtp_unavailable`。联调订阅和邮件时使用无外网转发的本机 SMTP 收件箱，例如 `RESCENE_SMTP_HOST=127.0.0.1`、`RESCENE_SMTP_PORT=1025`、`RESCENE_SMTP_SECURITY=none`、`RESCENE_SMTP_FROM=notify@example.test`，只使用隔离测试账户与数据库。
+
+API 的后台任务从数据库发件箱领取投递。`已接受`只表示 SMTP 服务器接受，不表示进了收件箱，更不表示站内已读；`未确认`表示服务器可能已接收，不自动补发。修改订阅、公告和任务完成通知时，定向执行 `pytest tests/test_api.py tests/test_api_postgres.py -k "notification or outbox or announcement"`，将 `RESCENE_TEST_POSTGRES_URL` 指向可抹除的独立库。
+
 ### 独立官网
 
 `apps/site` 是静态 Vite 页面，不依赖 API、登录态或 GPU。开发使用 `pnpm --filter @rescene/site dev`（127.0.0.1:4320），生产构建为 `pnpm --filter @rescene/site build`，本地预览为 `pnpm --filter @rescene/site preview`（127.0.0.1:4321）。若 Windows 保留了该端口，可临时传入 `--port 14321`，不修改仓库默认端口。版本由根 `VERSION` 在构建时注入；修改后运行官网 typecheck/build，并在浏览器验证桌面、手机、无 JavaScript 导航与 FAQ。

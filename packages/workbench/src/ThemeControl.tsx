@@ -2,38 +2,30 @@
 
 import {
   COLORWAY_OPTIONS, DISPLAY_STORAGE_KEY, THEME_OPTIONS, THEME_STORAGE_KEY,
-  applyDisplayToRoot, colorwayPreference, colorwayPrimary, displayPreferences, normalizePrimary, resolvePalette,
-  themePreference, type DisplayPreferences, type ThemePreference,
+  colorwayPreference, colorwayPrimary, displayPreferences, normalizePrimary, resolvePalette, themePreference,
+  type DisplayPreferences, type ThemePreference,
 } from "@rescene/design-tokens";
 import { useEffect, useState } from "react";
 
-export function ThemeControl() {
-  const [preference, setPreference] = useState<ThemePreference>("system");
-  const [display, setDisplay] = useState<DisplayPreferences>(() => displayPreferences(null));
+export type AppearanceSelection = { preference: ThemePreference; display: DisplayPreferences };
+export type ThemeControlProps = AppearanceSelection & { onChange: (next: AppearanceSelection) => void };
+
+/**
+ * Controlled appearance editor. The workbench decides which preference is effective;
+ * this control only edits it and persists the explicit device choice.
+ */
+export function ThemeControl({ preference, display, onChange }: ThemeControlProps) {
   const [primaryInput, setPrimaryInput] = useState(display.primary);
   const [invalidPrimary, setInvalidPrimary] = useState(false);
   const [storageError, setStorageError] = useState(false);
 
   useEffect(() => {
-    const root = document.documentElement;
-    // The bootstrap has already resolved query parameters, storage and system theme.
-    setPreference(themePreference(root.dataset.themePreference));
-    const initialized = displayPreferences({
-      colorway: root.dataset.colorway, primary: root.dataset.primary,
-      fontSize: root.dataset.fontSize, surface: root.dataset.surface,
-    });
-    setDisplay(initialized);
-    setPrimaryInput(initialized.primary);
-  }, []);
+    setPrimaryInput(display.primary);
+    setInvalidPrimary(false);
+  }, [display.primary]);
 
   const apply = (nextPreference: ThemePreference, nextDisplay: DisplayPreferences) => {
-    const root = document.documentElement;
-    root.dataset.themePreference = nextPreference;
-    const dark = nextPreference === "dark" || (nextPreference === "system" &&
-      typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-    applyDisplayToRoot(root, dark, nextDisplay);
-    setPreference(nextPreference);
-    setDisplay(nextDisplay);
+    onChange({ preference: nextPreference, display: nextDisplay });
     try {
       localStorage.setItem(THEME_STORAGE_KEY, nextPreference);
       localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify(nextDisplay));

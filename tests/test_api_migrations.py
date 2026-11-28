@@ -69,7 +69,7 @@ def test_legacy_adoption_preserves_data_and_ignores_unrelated_tables(migration_e
     db.init_db()
     with migration_engine.connect() as connection:
         assert connection.scalar(text("SELECT email FROM users WHERE id = 'legacy'")) == "legacy@example.com"
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0011"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0012"
         assert "external_table" in inspect(connection).get_table_names()
         assert "token_version" in {column["name"] for column in inspect(connection).get_columns("users")}
 
@@ -116,14 +116,14 @@ def test_versioned_legacy_database_upgrades(migration_engine):
     migrate(migration_engine, "0001")
     db.init_db()
     with migration_engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0011"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0012"
 
 
 def test_job_log_composite_index_upgrades_from_0009(migration_engine):
     migrate(migration_engine, "0009")
     migrate(migration_engine, "head")
     with migration_engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0011"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0012"
         indexes = {index["name"]: index["column_names"] for index in inspect(connection).get_indexes("job_logs")}
     assert indexes["ix_job_logs_job_id_id"] == ["job_id", "id"]
     assert any(
@@ -136,5 +136,101 @@ def test_new_and_versioned_databases_upgrade(migration_engine):
     db.init_db()
     db.init_db()
     with migration_engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0011"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0012"
         assert "email_auth_codes" in inspect(connection).get_table_names()
+        assert "user_avatars" in inspect(connection).get_table_names()
+        assert "notification_email_outbox" in inspect(connection).get_table_names()
+        assert "reserved_login_keys" in inspect(connection).get_table_names()
+
+
+def test_username_and_outbox_migration_from_0011(migration_engine):
+    """Upgrade from 0011 preserves historic users/projects/reads and reserves legacy non-@ emails."""
+    migrate(migration_engine, "0011")
+
+    with migration_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, email, password_hash, is_admin, active, created_at) VALUES "
+                "('u1', 'LegacyUser', 'hash', false, true, CURRENT_TIMESTAMP),"
+                "('u2', 'with@example.com', 'hash', false, true, CURRENT_TIMESTAMP),"
+                "('u3', 'a', 'hash', false, true, CURRENT_TIMESTAMP),"
+                "('u4', 'Valid-Legacy_山景', 'hash', false, true, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO projects (id, owner_id, name, created_at) VALUES "
+                "('p1', 'u1', 'historic project', CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO notifications (id, user_id, kind, title, body, read_at, created_at) VALUES "
+                "('n1', 'u1', 'announcement', 'title', 'body', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+
+    migrate(migration_engine, "0012")
+
+    with migration_engine.connect() as connection:
+        columns = {column["name"] for column in inspect(connection).get_columns("users")}
+        assert "username" in columns
+        assert "username_key" in columns
+        assert "email_verified_at" in columns
+        assert "email_critical_announcements" in columns
+        assert "email_job_results" in columns
+
+        tables = set(inspect(connection).get_table_names())
+        assert "user_avatars" in tables
+        assert "notification_email_outbox" in tables
+        assert "reserved_login_keys" in tables
+
+        indexes = {index["name"] for index in inspect(connection).get_indexes("users")}
+        assert "ix_users_username_key" in indexes
+        outbox_indexes = {
+            index["name"]: index["column_names"]
+            for index in inspect(connection).get_indexes("notification_email_outbox")
+        }
+        assert outbox_indexes.get("ix_notification_email_outbox_state_next_attempt_at") == [
+            "state",
+            "next_attempt_at",
+        ]
+
+        reserved = set(connection.execute(text("SELECT key FROM reserved_login_keys")).scalars().all())
+        assert "legacyuser" in reserved
+        assert "valid-legacy_山景" in reserved
+        assert "with@example.com" not in reserved
+        assert "a" not in reserved
+
+        assert connection.scalar(text("SELECT email FROM users WHERE id = 'u1'")) == "LegacyUser"
+        assert connection.scalar(text("SELECT name FROM projects WHERE id = 'p1'")) == "historic project"
+        assert connection.scalar(text("SELECT read_at IS NOT NULL FROM notifications WHERE id = 'n1'"))
+
+    with migration_engine.begin() as connection:
+        config = Config()
+        config.set_main_option("script_location", "rescene_api:migrations")
+        config.attributes["connection"] = connection
+        command.downgrade(config, "0011")
+
+    with migration_engine.connect() as connection:
+        columns = {column["name"] for column in inspect(connection).get_columns("users")}
+        assert "username" not in columns
+        assert "username_key" not in columns
+        assert "email_verified_at" not in columns
+        assert "email_critical_announcements" not in columns
+        assert "email_job_results" not in columns
+
+        tables = set(inspect(connection).get_table_names())
+        assert "user_avatars" not in tables
+        assert "notification_email_outbox" not in tables
+        assert "reserved_login_keys" not in tables
+
+        assert connection.scalar(text("SELECT email FROM users WHERE id = 'u1'")) == "LegacyUser"
+        assert connection.scalar(text("SELECT name FROM projects WHERE id = 'p1'")) == "historic project"
+        assert connection.scalar(text("SELECT read_at IS NOT NULL FROM notifications WHERE id = 'n1'"))
+
+    migrate(migration_engine, "0012")
+    with migration_engine.connect() as connection:
+        reserved = set(connection.execute(text("SELECT key FROM reserved_login_keys")).scalars().all())
+        assert "legacyuser" in reserved
+        assert "valid-legacy_山景" in reserved

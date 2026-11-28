@@ -7,6 +7,7 @@ import {
   isOfflineError,
   nextPollDelay,
   nextReconnectDelay,
+  parseAuditLocalRange,
   type JobEvent,
 } from "./index";
 
@@ -106,6 +107,72 @@ describe("account, project and share contracts", () => {
     });
     await expect(new ResceneClient("https://api.example", "t", transport).getWorkspace("p1", "old"))
       .resolves.toMatchObject({ ...summary, assets: [], jobs: [job], nextAssetCursor: null, nextJobCursor: "next" });
+  });
+
+  it("preserves email login for old servers and uses identifier for a username", async () => {
+    const transport = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ access_token: "token-username", token_type: "bearer" }),
+    );
+    const client = new ResceneClient("https://api.example", null, transport);
+    await client.login(" ops@example.com ", "secret");
+    await client.login(" 山景_A ", "secret");
+    expect(transport.mock.calls.map(([url, init]) => [url, JSON.parse(String(init?.body))])).toEqual([
+      ["https://api.example/v1/auth/login", { email: "ops@example.com", password: "secret" }],
+      ["https://api.example/v1/auth/login", { identifier: "山景_A", password: "secret" }],
+    ]);
+    expect(client.getToken()).toBe("token-username");
+  });
+
+  it("updates the signed-in profile without changing the session", async () => {
+    const owner = { id: "u1", email: "owner@example.com", is_admin: false, username: "山景_A", avatar_revision: null };
+    const transport = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(owner));
+    const client = new ResceneClient("https://api.example", "token", transport);
+    await expect(client.updateProfile({ username: "山景_A" })).resolves.toEqual(owner);
+    expect(transport).toHaveBeenCalledWith("https://api.example/v1/auth/me", {
+      method: "PATCH", body: JSON.stringify({ username: "山景_A" }),
+      headers: { "Content-Type": "application/json", Authorization: "Bearer token" },
+    });
+    expect(client.getToken()).toBe("token");
+  });
+
+  it("stores, fetches and removes a private avatar without adopting a new token", async () => {
+    const revision = "a".repeat(64);
+    const avatar = { image_base64: "/9j/2Q==", revision };
+    const user = { id: "u/1", email: "owner@example.com", is_admin: false, username: null, avatar_revision: revision };
+    const responses = [jsonResponse(user), jsonResponse(avatar), jsonResponse({ ...user, avatar_revision: null })];
+    const transport = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => responses.shift()!);
+    const client = new ResceneClient("https://api.example", "token", transport);
+
+    expect((await client.setAvatar(avatar.image_base64)).avatar_revision).toBe(revision);
+    expect(await client.getAvatar(user.id)).toEqual(avatar);
+    expect((await client.removeAvatar()).avatar_revision).toBeNull();
+    expect(transport.mock.calls.map(([url, init]) => [url, init?.method, init?.body])).toEqual([
+      ["https://api.example/v1/auth/me/avatar", "POST", JSON.stringify({ image_base64: avatar.image_base64 })],
+      ["https://api.example/v1/users/u%2F1/avatar", undefined, undefined],
+      ["https://api.example/v1/auth/me/avatar", "DELETE", undefined],
+    ]);
+    expect(transport.mock.calls.every(([, init]) => new Headers(init?.headers).get("Authorization") === "Bearer token")).toBe(true);
+  });
+
+  it("verifies notification email without accepting an address or replacing the session", async () => {
+    const preferences = { email_verified: true, email_critical_announcements: false, email_job_results: false };
+    const responses = [
+      jsonResponse({ ...preferences, email_verified: false }), jsonResponse({ status: "accepted" }, 202),
+      jsonResponse(preferences), jsonResponse({ ...preferences, email_job_results: true }),
+    ];
+    const fetcher = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => responses.shift()!);
+    const client = new ResceneClient("https://api.example", "session", fetcher);
+    expect((await client.getNotificationPreferences()).email_verified).toBe(false);
+    await client.requestNotificationEmailVerification();
+    expect(await client.confirmNotificationEmailVerification("123456")).toEqual(preferences);
+    expect((await client.updateNotificationPreferences({ email_job_results: true })).email_critical_announcements).toBe(false);
+    expect(fetcher.mock.calls.map(([url, init]) => [url, init?.method, init?.body])).toEqual([
+      ["https://api.example/v1/auth/me/notification-preferences", undefined, undefined],
+      ["https://api.example/v1/auth/me/email-verification", "POST", undefined],
+      ["https://api.example/v1/auth/me/email-verification/confirm", "POST", JSON.stringify({ code: "123456" })],
+      ["https://api.example/v1/auth/me/notification-preferences", "PATCH", JSON.stringify({ email_job_results: true })],
+    ]);
+    expect(client.getToken()).toBe("session");
   });
 
   it("registers an account and adopts the returned token", async () => {
@@ -393,13 +460,16 @@ describe("asset, stage, notification and admin contracts", () => {
   const notification = {
     id: "n1", kind: "job.succeeded", title: "重建已完成", body: "项目「厨房」的重建已完成",
     project_id: "p1", job_id: "j1", announcement_id: null, read_at: null, created_at: "2026-01-01T00:00:00Z",
+    announcement_level: null,
   };
   const invitation = { id: "i1", email: "guest@example.com", role: "viewer", created_at: "2026-01-01T00:00:00Z" };
   const adminUser = {
     id: "u2", email: "member@example.com", is_admin: false, active: true, created_at: "2026-01-01T00:00:00Z",
+    username: "Member_A", avatar_revision: null,
   };
   const entry = {
     id: "l1", actor_email: null, action: "job.complete", target_type: "job", target_id: "j1",
+    actor_username: null,
     project_id: null, project_name: null, metadata: { worker_id: "w1" }, created_at: "2026-01-01T00:00:00Z",
   };
 
@@ -512,12 +582,14 @@ describe("admin console endpoints", () => {
   const announcement = {
     id: "a1", title: "维护", body: "今晚 23:00", level: "warning", created_by: "u1",
     created_at: "2026-01-01T00:00:00Z",
+    recipient_count: 5, read_count: 1, mail_pending: 0, mail_accepted: 0, mail_failed: 0, mail_unknown: 0,
   };
   const entry = {
     id: "l1", actor_email: "ops@example.com", action: "user.update", target_type: "user", target_id: "u2",
+    actor_username: "Ops_A",
     project_id: null, project_name: null, metadata: {}, created_at: "2026-01-01T00:00:00Z",
   };
-  const logLine = { id: 7, level: "error", message: "gsplat failed", created_at: "2026-01-01T00:00:00Z" };
+  const logLine = { id: 7, attempt: 2, level: "error", message: "gsplat failed", created_at: "2026-01-01T00:00:00Z" };
 
   it("pages the user directory and loads one account", async () => {
     const responses = [jsonResponse({ total: 3, items: [adminUser] }), jsonResponse(detail)];
@@ -546,17 +618,18 @@ describe("admin console endpoints", () => {
     vi.stubGlobal("fetch", fetchMock);
     const client = new ResceneClient("https://api.example", "t");
 
-    expect(await client.createAnnouncement({ title: "维护", body: "今晚 23:00", level: "warning" })).toEqual(
+    expect(await client.createAnnouncement({ title: "维护", body: "今晚 23:00", level: "warning" }, "announce-key")).toEqual(
       announcement,
     );
-    expect(await client.listAnnouncements()).toEqual([announcement]);
+    expect(await client.listAnnouncements(20, 20)).toEqual([announcement]);
     await client.deleteAnnouncement("a1");
 
     expect(fetchMock.mock.calls.map(([input, init]) => [String(input), (init as RequestInit).method ?? "GET"])).toEqual([
       ["https://api.example/v1/announcements", "POST"],
-      ["https://api.example/v1/announcements?limit=50", "GET"],
+      ["https://api.example/v1/announcements?limit=20&offset=20", "GET"],
       ["https://api.example/v1/announcements/a1", "DELETE"],
     ]);
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("Idempotency-Key")).toBe("announce-key");
   });
 
   it("filters the global trail and downloads it as CSV", async () => {
@@ -564,6 +637,7 @@ describe("admin console endpoints", () => {
       jsonResponse({ total: 1, items: [entry] }),
       jsonResponse(["project.create", "user.update"]),
       new Response("time,actor\n", { status: 200, headers: { "content-type": "text/csv" } }),
+      new Response("\uFEFFtime,actor\n", { status: 200, headers: { "content-type": "text/csv" } }),
     ];
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => responses.shift()!);
     vi.stubGlobal("fetch", fetchMock);
@@ -572,12 +646,24 @@ describe("admin console endpoints", () => {
     expect((await client.listAudit({ actor: "ops", action: "user.", projectId: "p1", limit: 10 })).total).toBe(1);
     expect(await client.auditActionList()).toEqual(["project.create", "user.update"]);
     expect(await (await client.auditCsv({ since: "2026-01-01T00:00:00Z" })).text()).toBe("time,actor\n");
+    expect(await client.auditCsvText({ since: "2026-01-01T00:00:00Z" })).toBe("\uFEFFtime,actor\n");
+    expect(new Headers(fetchMock.mock.calls[3]?.[1]?.headers).get("Authorization")).toBe("Bearer t");
 
     expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
       "https://api.example/v1/audit?actor=ops&action=user.&project_id=p1&limit=10",
       "https://api.example/v1/audit/actions",
       "https://api.example/v1/audit.csv?since=2026-01-01T00%3A00%3A00Z",
+      "https://api.example/v1/audit.csv?since=2026-01-01T00%3A00%3A00Z",
     ]);
+  });
+
+  it("converts local audit times to UTC and rejects invalid or reversed dates", () => {
+    expect(parseAuditLocalRange("2026-01-02 09:30", "2026-01-02T10:00")).toEqual({
+      since: new Date(2026, 0, 2, 9, 30).toISOString(),
+      until: new Date(2026, 0, 2, 10).toISOString(),
+    });
+    expect(() => parseAuditLocalRange("2026-02-30T09:30", "")).toThrow("有效");
+    expect(() => parseAuditLocalRange("2026-01-02 10:00", "2026-01-02 09:30")).toThrow("结束时间不能");
   });
 
   it("tails job logs and reads the unread badge", async () => {

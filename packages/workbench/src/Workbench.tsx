@@ -1,7 +1,7 @@
 "use client";
 
 import { ResceneApiError, explainError, type JobEvent, type ResceneClient } from "@rescene/api-client";
-import { ASSET_STATUS_LABELS, JOB_STATUS_LABELS, RECONSTRUCTION_PROFILES, canRetryJob, jobErrorHint, projectLibraryPage, queuedJobHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
+import { ANNOUNCEMENT_LEVEL_LABELS, ASSET_STATUS_LABELS, JOB_STATUS_LABELS, NOTIFICATION_KIND_LABELS, RECONSTRUCTION_PROFILES, canRetryJob, jobErrorHint, projectLibraryPage, queuedJobHint, reconcileWorkspaceSelection, selectWorkspaceAssets, selectionBytes, stageLabel } from "@rescene/schemas";
 import type {
   AppNotification,
   Artifact,
@@ -11,6 +11,7 @@ import type {
   JobLog,
   JobStage,
   MemberRole,
+  NotificationKind,
   Profile,
   ProjectSummary,
   ProjectWorkspace,
@@ -21,17 +22,19 @@ import type {
   WorkerStatus,
 } from "@rescene/schemas";
 import { inspectMedia, newIdempotencyKey, SAMPLE_SIDE, summarizeMediaWarnings, type UploadAdapter } from "@rescene/uploader";
-import { type ComponentType, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type ComponentType, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { COLORWAY_STORAGE_KEY, DISPLAY_STORAGE_KEY, THEME_STORAGE_KEY, applyDisplayToRoot, displayPreferences, themePreference } from "@rescene/design-tokens";
 
 import { AdminConsole } from "./AdminConsole";
 import { BrandMark } from "./BrandMark";
-import { ThemeControl } from "./ThemeControl";
+import { SettingsView, type SettingsCategory } from "./SettingsView";
+import type { AppearanceSelection } from "./ThemeControl";
 import { AssetPreview } from "./AssetPreview";
 import { ProjectCard } from "./ProjectCard";
 
 export type KeyValueStore = { get(key: string): string | null; set(key: string, value: string): void; remove(key: string): void };
 export type WorkbenchViewerProps = { src: string; artifactKind?: string; reconstructionId?: string; sha256?: string; size?: number; onStatus?: (status: "loading" | "ready" | "error", detail?: string) => void; onRetry?: () => void };
-export type WorkbenchProps = { client: ResceneClient; uploader: UploadAdapter; viewer: ComponentType<WorkbenchViewerProps>; tokenStore: KeyValueStore; webBaseUrl: string };
+export type WorkbenchProps = { client: ResceneClient; uploader: UploadAdapter; viewer: ComponentType<WorkbenchViewerProps>; tokenStore: KeyValueStore; webBaseUrl: string; platform: "web" | "desktop" };
 
 const TOKEN_KEY = "rescene-token";
 const PROJECT_KEY = "rescene-project";
@@ -77,6 +80,40 @@ function preferredJob(live: Job | undefined, snapshot: Job | undefined): Job | u
   return Date.parse(snapshot.updated_at) > Date.parse(live.updated_at) ? snapshot : live;
 }
 const PROFILES: Profile[] = ["fast", "balanced", "quality"];
+const ANONYMOUS_APPEARANCE: AppearanceSelection = { preference: "system", display: displayPreferences(null) };
+const useBrowserLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
+/** Device preferences may only be read once a real session has been verified. */
+function storedAppearance(): AppearanceSelection {
+  try {
+    return {
+      preference: themePreference(localStorage.getItem(THEME_STORAGE_KEY)),
+      display: displayPreferences(localStorage.getItem(DISPLAY_STORAGE_KEY), localStorage.getItem(COLORWAY_STORAGE_KEY)),
+    };
+  } catch {
+    return ANONYMOUS_APPEARANCE;
+  }
+}
+
+function useSystemDark(): boolean {
+  const [dark, setDark] = useState(() => typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    const update = (event?: MediaQueryListEvent) => setDark(event ? event.matches : query.matches);
+    update();
+    if (typeof query.addEventListener === "function") query.addEventListener("change", update);
+    else if (typeof query.addListener === "function") query.addListener(update);
+    return () => {
+      if (typeof query.removeEventListener === "function") query.removeEventListener("change", update);
+      else if (typeof query.removeListener === "function") query.removeListener(update);
+    };
+  }, []);
+  return dark;
+}
+
 type AuthMode = "login" | "code" | "reset" | "register";
 const AUTH_TITLES: Record<AuthMode, string> = { login: "登录", code: "验证码登录", reset: "重置密码", register: "注册" };
 const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -98,7 +135,14 @@ function formatClock(value: number): string {
 }
 type SharePreset = "never" | "1d" | "7d" | "30d";
 type NotifyFilter = "unread" | "all";
-type LogLevel = "" | "info" | "warning" | "error";
+type NotifyKindFilter = "all" | NotificationKind;
+type LogLevel = "" | "debug" | "info" | "warning" | "error";
+const NOTIFY_KIND_OPTIONS: { key: NotifyKindFilter; label: string }[] = [
+  { key: "all", label: "所有类型" },
+  { key: "announcement", label: NOTIFICATION_KIND_LABELS.announcement },
+  { key: "job.succeeded", label: NOTIFICATION_KIND_LABELS["job.succeeded"] },
+  { key: "job.failed", label: NOTIFICATION_KIND_LABELS["job.failed"] },
+];
 const SHARE_PRESETS: { value: SharePreset; label: string; ms: number | null }[] = [
   { value: "never", label: "永久", ms: null },
   { value: "1d", label: "1 天", ms: 86_400_000 },
@@ -106,10 +150,23 @@ const SHARE_PRESETS: { value: SharePreset; label: string; ms: number | null }[] 
   { value: "30d", label: "30 天", ms: 2_592_000_000 },
 ];
 
-export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBaseUrl }: WorkbenchProps) {
+export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBaseUrl, platform }: WorkbenchProps) {
   const [token, setToken] = useState(client.getToken() ?? "");
   const [sessionReady, setSessionReady] = useState(false);
   const [me, setMe] = useState<User | null>(null);
+  const [sessionAppearance, setSessionAppearance] = useState<{ token: string; userId: string; value: AppearanceSelection } | null>(null);
+  const systemDark = useSystemDark();
+  const appearanceVerified = Boolean(sessionAppearance && token !== ""
+    && sessionAppearance.token === token && sessionAppearance.userId === me?.id);
+  const effectiveAppearance = appearanceVerified && sessionAppearance ? sessionAppearance.value : ANONYMOUS_APPEARANCE;
+  const effectiveDark = effectiveAppearance.preference === "dark"
+    || (effectiveAppearance.preference === "system" && systemDark);
+  // Runs before paint so a signed-out render never shows the previous session's palette.
+  useBrowserLayoutEffect(() => {
+    const root = document.documentElement;
+    root.dataset.themePreference = effectiveAppearance.preference;
+    applyDisplayToRoot(root, effectiveDark, effectiveAppearance.display);
+  }, [effectiveAppearance, effectiveDark]);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [selected, setSelected] = useState("");
   const [selectedJob, setSelectedJob] = useState("");
@@ -142,6 +199,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [message, setMessage] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("login");
+  const [authIdentifier, setAuthIdentifier] = useState("");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authConfirm, setAuthConfirm] = useState("");
@@ -151,8 +209,10 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const [codeCooldown, setCodeCooldown] = useState(0);
   const [libraryPage, setLibraryPage] = useState(0);
   const library = projectLibraryPage(projects, search, libraryPage);
-  const [page, setPage] = useState<"" | "appearance" | "new-project" | "claim-invite" | "configure" | "job" | "job-logs" | "result" | "downloads" | "shares" | "project-management" | "account" | "password">("");
+  const [page, setPage] = useState<"" | "new-project" | "claim-invite" | "configure" | "job" | "job-logs" | "result" | "downloads" | "shares" | "project-management">("");
   const [rootPage, setRootPage] = useState<"projects" | "notifications" | "settings">("projects");
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>("account");
+  const [settingsVisit, setSettingsVisit] = useState(0);
   const [resultOrigin, setResultOrigin] = useState<"job" | "results">("job");
   const [timeline, setTimeline] = useState<TimelineRow[]>([]);
   const liveEventKey = useRef(0);
@@ -189,18 +249,29 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   const projectHeadingRef = useRef<HTMLHeadingElement>(null);
   const navReturnFocus = useRef<"toggle" | "content" | null>(null);
   const [notifyFilter, setNotifyFilter] = useState<NotifyFilter>("all");
+  const [notifyKind, setNotifyKind] = useState<NotifyKindFilter>("all");
   const [notifyOffset, setNotifyOffset] = useState(0);
   const [notifyLoading, setNotifyLoading] = useState(false);
   const [notifyHasMore, setNotifyHasMore] = useState(false);
+  const [notifyError, setNotifyError] = useState<{ message: string; offset: number } | null>(null);
+  const [notifyItem, setNotifyItem] = useState<AppNotification | null>(null);
+  const [notifyMarking, setNotifyMarking] = useState(false);
+  const notifyMarkRequest = useRef(0);
+  const unreadRequest = useRef(0);
   const [unreadCount, setUnreadCount] = useState<number | null>(null);
   const [logs, setLogs] = useState<JobLog[]>([]);
   const [logLevel, setLogLevel] = useState<LogLevel>("");
   const [logsLoading, setLogsLoading] = useState(false);
   const [loadingEarlierJob, setLoadingEarlierJob] = useState("");
+  const [logError, setLogError] = useState<{ message: string; earlier: boolean } | null>(null);
+  const [logEarlierDone, setLogEarlierDone] = useState(false);
+  const pollLogs = useRef<(() => void) | null>(null);
   const logsGeneration = useRef(0);
   const earlierJob = useRef("");
   const notifyFilterRef = useRef<NotifyFilter>(notifyFilter);
   notifyFilterRef.current = notifyFilter;
+  const notifyKindRef = useRef<NotifyKindFilter>(notifyKind);
+  notifyKindRef.current = notifyKind;
   const notifyRequest = useRef(0);
   const notifyLoaded = useRef(false);
   const notifyOpen = useRef(false);
@@ -318,13 +389,47 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     setSelectedJob(tokenStore.get(JOB_KEY) ?? "");
     setSessionReady(true);
   }, [client, tokenStore]);
-  const expire = useCallback(() => { clearStoredSelections(); client.setToken(null); tokenStore.remove(TOKEN_KEY); setToken(""); setMe(null); pendingPage.current = null; setPageRequest(null); setFailedPage(null); setDetailLoading(false); setSelected(""); setPage(""); setRootPage("projects"); setView("project"); setMessage("登录已过期，请重新登录。"); }, [client, tokenStore]);
+  const adoptVerifiedUser = useCallback((user: User, credential: string) => {
+    setSessionAppearance((current) => ({
+      token: credential,
+      userId: user.id,
+      // A repeated /auth/me for the same person must not discard an unsaved in-memory edit.
+      value: current?.userId === user.id ? current.value : storedAppearance(),
+    }));
+  }, []);
+  const changeAppearance = useCallback((next: AppearanceSelection) => {
+    setSessionAppearance((current) => current && current.token === token && current.userId === me?.id
+      ? { ...current, value: next }
+      : current);
+  }, [me?.id, token]);
+  const expire = useCallback(() => {
+    workspaceRequest.current += 1;
+    setSessionAppearance(null);
+    clearStoredSelections();
+    client.setToken(null);
+    tokenStore.remove(TOKEN_KEY);
+    setToken("");
+    setMe(null);
+    pendingPage.current = null;
+    setPageRequest(null);
+    setFailedPage(null);
+    setDetailLoading(false);
+    setSelected("");
+    setPage("");
+    setRootPage("projects");
+    setView("project");
+    setSettingsCategory("account");
+    setMessage("登录已过期，请重新登录。");
+  }, [client, tokenStore]);
   const loadNotifications = useCallback(async (filter: NotifyFilter = notifyFilterRef.current, offset = 0, mode: "replace" | "merge" = "replace"): Promise<AppNotification[]> => {
     const request = ++notifyRequest.current;
+    const credential = client.getToken();
     setNotifyLoading(true);
+    setNotifyError(null);
     try {
-      const list = await client.listNotifications(filter === "unread", NOTIFY_PAGE_SIZE, offset);
-      if (request !== notifyRequest.current) return list;
+      const kind = notifyKindRef.current === "all" ? undefined : notifyKindRef.current;
+      const list = await client.listNotifications(filter === "unread", NOTIFY_PAGE_SIZE, offset, kind);
+      if (request !== notifyRequest.current || client.getToken() !== credential) return list;
       setNotifications((current) => {
         if (offset === 0) {
           notifyLoaded.current = true;
@@ -343,46 +448,59 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
         setNotifyHasMore(list.length >= NOTIFY_PAGE_SIZE);
       }
       return list;
+    } catch (error) {
+      if (request !== notifyRequest.current || client.getToken() !== credential) return [];
+      if (error instanceof ResceneApiError && error.status === 401) expire();
+      else setNotifyError({ message: explainError(error, "无法加载通知"), offset });
+      return [];
     } finally {
       if (request === notifyRequest.current) setNotifyLoading(false);
     }
-  }, [client]);
+  }, [client, expire]);
   const reloadNotifications = useCallback(() => {
-    void loadNotifications(notifyFilterRef.current, 0, "merge").catch((error: unknown) => {
-      if (error instanceof ResceneApiError && error.status === 401) expire();
-      else setMessage(explainError(error, "无法加载通知"));
-    });
-  }, [expire, loadNotifications]);
+    void loadNotifications(notifyFilterRef.current, 0, "merge");
+  }, [loadNotifications]);
   const loadUnread = useCallback(async () => {
+    const request = ++unreadRequest.current;
+    const credential = client.getToken();
     try {
-      setUnreadCount(await client.notificationCount());
+      const count = await client.notificationCount();
+      if (request === unreadRequest.current && credential === client.getToken()) setUnreadCount(count);
     } catch (error) {
       // The badge falls back to the loaded page when the count endpoint is unavailable.
-      if (error instanceof ResceneApiError && error.status === 401) expire();
+      if (request === unreadRequest.current && credential === client.getToken() && error instanceof ResceneApiError && error.status === 401) expire();
     }
   }, [client, expire]);
   const refresh = useCallback(async () => {
     if (!token) return;
+    const credential = client.getToken();
+    if (!credential) return;
     const request = ++workspaceRequest.current;
+    const current = () => request === workspaceRequest.current && client.getToken() === credential;
     try {
-      const [user, list, worker] = await Promise.all([
-        client.getMe(), client.listProjectSummaries(), client.getWorkerStatus().catch((error: unknown) => {
+      // A verified identity restores device appearance even if the project list later fails.
+      const user = await client.getMe();
+      if (!current()) return;
+      setMe(user);
+      adoptVerifiedUser(user, credential);
+      const [list, worker] = await Promise.all([
+        client.listProjectSummaries(), client.getWorkerStatus().catch((error: unknown) => {
           if (error instanceof ResceneApiError && error.status === 401) throw error;
           return null;
         }),
       ]);
-      if (request !== workspaceRequest.current) return;
-      setMe(user); setProjects(list); setWorkerStatus(worker); setLoaded(true); setLibraryError("");
+      if (!current()) return;
+      setProjects(list); setWorkerStatus(worker); setLoaded(true); setLibraryError("");
       if (!notifyLoaded.current) void loadNotifications().catch((error: unknown) => { if (error instanceof ResceneApiError && error.status === 401) expire(); });
       void loadUnread();
-      if (selected && selectedRef.current === selected && request === workspaceRequest.current) {
+      if (selected && selectedRef.current === selected && current()) {
         if (!detailRef.current) setDetailLoading(true);
         const candidate = pendingPage.current;
         try {
           const assets = candidate?.projectId === selected && candidate.kind === "assets" ? candidate.stack : assetPages;
           const jobs = candidate?.projectId === selected && candidate.kind === "jobs" ? candidate.stack : jobPages;
           const project = await client.getWorkspace(selected, assets[assets.length - 1], jobs[jobs.length - 1]);
-          if (selectedRef.current === selected && request === workspaceRequest.current && pendingPage.current === candidate) {
+          if (selectedRef.current === selected && current() && pendingPage.current === candidate) {
             if (candidate) {
               if (candidate.kind === "assets") setAssetPages(candidate.stack); else setJobPages(candidate.stack);
               pendingPage.current = null; setPageRequest(null); setFailedPage(null);
@@ -399,7 +517,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
           }
         } catch (error) {
           if (error instanceof ResceneApiError && error.status === 401) throw error;
-          if (selectedRef.current === selected && request === workspaceRequest.current && pendingPage.current === candidate) {
+          if (selectedRef.current === selected && current() && pendingPage.current === candidate) {
             if (candidate) { pendingPage.current = null; setPageRequest(null); setFailedPage(candidate); }
             const text = error instanceof ResceneApiError && error.status === 403
               ? "当前账号无权访问该项目。"
@@ -416,11 +534,11 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
             }
           }
         } finally {
-          if (request === workspaceRequest.current) setDetailLoading(false);
+          if (current()) setDetailLoading(false);
         }
       }
     } catch (error) {
-      if (request !== workspaceRequest.current) return;
+      if (!current()) return;
       setWorkerStatus(null);
       setLoaded(true);
       if (error instanceof ResceneApiError && error.status === 401) expire();
@@ -430,7 +548,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
         if (detailRef.current) setStaleRefresh({ message: text, at: Date.now() });
       }
     }
-  }, [assetPages, client, expire, jobPages, loadNotifications, loadUnread, selected, token]);
+  }, [adoptVerifiedUser, assetPages, client, expire, jobPages, loadNotifications, loadUnread, selected, token]);
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
   useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 15000); return () => clearInterval(timer); }, [refresh]);
@@ -444,10 +562,14 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   useEffect(() => {
     if (token) return;
     notifyRequest.current += 1;
+    notifyMarkRequest.current += 1;
+    unreadRequest.current += 1;
     notifyLoaded.current = false;
     notifyOpen.current = false;
     previousUnreadCount.current = null;
     setNotifications([]); setUnreadCount(null); setNotifyHasMore(false); setNotifyOffset(0); setNotifyLoading(false);
+    setNotifyFilter("all"); setNotifyKind("all");
+    setNotifyError(null); setNotifyItem(null); setNotifyMarking(false);
     setUploadBatches({});
   }, [token]);
   useEffect(() => {
@@ -544,35 +666,61 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   }, [client, latest?.id]);
   useEffect(() => {
     const id = latest?.id;
-    const status = latest?.status ?? "";
     const level = logLevel || undefined;
-    logsGeneration.current += 1;
+    const generation = ++logsGeneration.current;
+    earlierJob.current = "";
+    setLoadingEarlierJob("");
     setLogs([]);
-    if (!id || page !== "job-logs") return;
-    let cancelled = false;
-    let lastId = 0;
-    let timer: ReturnType<typeof setInterval> | undefined;
-    setLogsLoading(true);
-    void client.listJobLogs(id, { limit: 200, level }).then((rows) => {
-      if (cancelled) return;
-      setLogs(rows);
-      lastId = rows.length > 0 ? rows[rows.length - 1].id : 0;
-    }).catch((error: unknown) => { if (!cancelled) setMessage(explainError(error, "无法加载运行日志")); })
-      .finally(() => { if (!cancelled) setLogsLoading(false); });
-    if (ACTIVE[status]) {
-      timer = setInterval(() => {
-        void client.listJobLogs(id, { afterId: lastId > 0 ? lastId : undefined, limit: 200, level }).then((rows) => {
-          if (cancelled || rows.length === 0) return;
-          lastId = rows[rows.length - 1].id;
-          setLogs((current) => {
-            const seen = new Set(current.map((line) => line.id));
-            return [...current, ...rows.filter((line) => !seen.has(line.id))].slice(-500);
+    setLogEarlierDone(false);
+    setLogError(null);
+    if (!id || page !== "job-logs" || rootPage !== "projects" || !token) return;
+    const credential = client.getToken();
+    const current = () => generation === logsGeneration.current && credential === client.getToken();
+    let pending = false;
+    let firstPage = true;
+    let lastId: number | undefined;
+    let completed = false;
+    const read = async () => {
+      if (pending || !current()) return;
+      pending = true;
+      if (firstPage) setLogsLoading(true);
+      try {
+        const batch = await client.listJobLogs(id, { afterId: lastId, limit: 200, level });
+        if (!current()) return;
+        setLogError((error) => error?.earlier ? error : null);
+        if (batch.length) {
+          lastId = batch[batch.length - 1].id;
+          setLogs((rows) => {
+            const seen = new Set(rows.map((line) => line.id));
+            return [...rows, ...batch.filter((line) => {
+              if (seen.has(line.id)) return false;
+              seen.add(line.id);
+              return true;
+            })];
           });
-        }).catch(() => { /* Runtime logs are best-effort; task progress stays authoritative. */ });
-      }, 3000);
-    }
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [client, latest?.id, latest?.status, logLevel, page]);
+        }
+        completed = !ACTIVE[latestRef.current?.status ?? ""] && batch.length < 200;
+        firstPage = false;
+      } catch (error) {
+        if (!current()) return;
+        if (error instanceof ResceneApiError && error.status === 401) expire();
+        else setLogError({ message: explainError(error, "无法加载运行日志"), earlier: false });
+      } finally {
+        pending = false;
+        if (current()) setLogsLoading(false);
+      }
+    };
+    pollLogs.current = () => { void read(); };
+    void read();
+    const timer = setInterval(() => {
+      if (!completed || ACTIVE[latestRef.current?.status ?? ""]) void read();
+    }, 3000);
+    return () => {
+      logsGeneration.current += 1;
+      pollLogs.current = null;
+      clearInterval(timer);
+    };
+  }, [client, expire, latest?.id, logLevel, page, rootPage, token]);
   useEffect(() => {
     if (!selected || !detail || page !== "project-management") return;
     let cancelled = false;
@@ -692,8 +840,46 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     else tokenStore.remove(PROJECT_KEY);
   }
   function goRoot(next: "projects" | "notifications" | "settings") {
+    if (next === "settings") setSettingsVisit((value) => value + 1);
     setView("project"); setPage(""); setRootPage(next); setNavOpen(false);
+    setNotifyItem(null);
     navReturnFocus.current = null;
+  }
+  function filterNotifications(filter: NotifyFilter, kind: NotifyKindFilter) {
+    if (filter === notifyFilterRef.current && kind === notifyKindRef.current) return;
+    notifyFilterRef.current = filter;
+    notifyKindRef.current = kind;
+    setNotifyFilter(filter);
+    setNotifyKind(kind);
+    setNotifications([]);
+    setNotifyOffset(0);
+    setNotifyHasMore(false);
+    void loadNotifications(filter);
+  }
+  async function markNotifications(ids?: string[]) {
+    if (notifyMarking) return;
+    const mark = ++notifyMarkRequest.current;
+    const credential = client.getToken();
+    setNotifyMarking(true);
+    try {
+      await client.markNotificationsRead(ids);
+      if (mark !== notifyMarkRequest.current || credential !== client.getToken()) return;
+      setNotifyItem((item) => item && (!ids || ids.includes(item.id)) ? { ...item, read_at: new Date().toISOString() } : item);
+      await Promise.all([loadNotifications(), loadUnread()]);
+    } catch (error) {
+      if (mark !== notifyMarkRequest.current || credential !== client.getToken()) return;
+      if (error instanceof ResceneApiError && error.status === 401) expire();
+      else setMessage(explainError(error, "标记已读失败"));
+    } finally {
+      if (mark === notifyMarkRequest.current) setNotifyMarking(false);
+    }
+  }
+  function openNotifiedProject(item: AppNotification) {
+    if (!item.project_id) return;
+    setNotifyItem(null);
+    setRootPage("projects");
+    selectProject(item.project_id);
+    if (item.job_id) { selectJob(item.job_id); setPane("tasks"); setPage("job"); }
   }
   const previousPage = useRef("");
   useEffect(() => {
@@ -705,15 +891,25 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
   }, [page]);
   useEffect(() => {
     if (navOpen) return;
-    const heading = document.querySelector<HTMLElement>(".workspace h1");
+    const heading = document.querySelector<HTMLElement>(".workspace h1")
+      ?? document.querySelector<HTMLElement>('.settings-nav button[aria-current="page"]');
     if (!heading) return;
     heading.focus();
-  }, [detail?.id, page, rootPage, view]);
+  }, [detail?.id, notifyItem?.id, page, rootPage, view]);
+  const previousView = useRef(view);
+  useEffect(() => {
+    const returning = previousView.current === "admin" && view === "project";
+    previousView.current = view;
+    if (!returning) return;
+    const frame = requestAnimationFrame(() => {
+      document.querySelector<HTMLButtonElement>('.settings-nav [data-category="admin"]')?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [view]);
   function backFromPage() {
     if (page === "job-logs") setPage("job");
     else if (page === "downloads" || page === "shares") setPage("result");
     else if (page === "result") setPage(resultOrigin === "results" ? "" : "job");
-    else if (page === "password") setPage("account");
     else setPage("");
   }
   const pageBackLabel = page === "job" ? "← 返回任务" : page === "job-logs" || (page === "result" && resultOrigin === "job") ? "← 返回任务详情" : page === "result" ? "← 返回结果" : page === "downloads" || page === "shares" ? "← 返回成果" : "← 返回设置";
@@ -745,12 +941,12 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     const form = new FormData(event.currentTarget);
     setAuthPending(true);
     try {
-      const result = await client.login(String(form.get("email") ?? "").trim(), String(form.get("password") ?? ""));
+      const result = await client.login(String(form.get("identifier") ?? "").trim(), String(form.get("password") ?? ""));
       tokenStore.set(TOKEN_KEY, result.access_token);
       setToken(result.access_token);
-      setPage(""); setAuthPassword(""); setMessage("");
+      setPage(""); setAuthIdentifier(""); setAuthPassword(""); setMessage("");
     } catch (error) {
-      if (error instanceof ResceneApiError && (error.status === 401 || error.status === 403)) setMessage("邮箱或密码不正确。");
+      if (error instanceof ResceneApiError && (error.status === 401 || error.status === 403)) setMessage("邮箱、用户名或密码不正确。");
       else setMessage(error instanceof Error ? error.message : "登录失败");
     } finally { setAuthPending(false); }
   }
@@ -851,7 +1047,7 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
       else setMessage(explainError(error, "重置密码失败"));
     } finally { setAuthPending(false); }
   }
-  async function signOut() { let failed = false; try { await client.logout(); } catch { failed = true; } finally { clearStoredSelections(); client.setToken(null); tokenStore.remove(TOKEN_KEY); tokenStore.remove(PROJECT_KEY); tokenStore.remove(JOB_KEY); setToken(""); setMe(null); setSelected(""); setPage(""); setRootPage("projects"); setAuthEmail(""); setAuthPassword(""); setAuthConfirm(""); setMessage(failed ? "已在本设备退出，但无法确认其他设备的会话已撤销；请重新登录后重试。" : ""); } }
+  async function signOut() { let failed = false; try { await client.logout(); } catch { failed = true; } finally { clearStoredSelections(); client.setToken(null); tokenStore.remove(TOKEN_KEY); tokenStore.remove(PROJECT_KEY); tokenStore.remove(JOB_KEY); setToken(""); setMe(null); setSessionAppearance(null); setSelected(""); setPage(""); setRootPage("projects"); setSettingsCategory("account"); setAuthIdentifier(""); setAuthEmail(""); setAuthPassword(""); setAuthConfirm(""); setMessage(failed ? "已在本设备退出，但无法确认其他设备的会话已撤销；请重新登录后重试。" : ""); } }
   function changePassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -967,20 +1163,29 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
     const first = logs[0];
     if (!jobId || !first || earlierJob.current === jobId) return;
     const generation = logsGeneration.current;
+    const credential = client.getToken();
+    const current = () => jobId === latestRef.current?.id && generation === logsGeneration.current && credential === client.getToken();
     earlierJob.current = jobId;
     setLoadingEarlierJob(jobId);
+    setLogError(null);
     try {
       const older = await client.listJobLogs(jobId, { beforeId: first.id, limit: 200, level: logLevel || undefined });
-      // A page for a job the user already left (or a reset log list) must never leak into the new task.
-      if (jobId !== latestRef.current?.id || generation !== logsGeneration.current) return;
-      if (older.length === 0) { setMessage("没有更早的日志"); return; }
+      if (!current()) return;
+      setLogEarlierDone(older.length < 200);
+      if (older.length === 0) return;
       setLogs((current) => {
         const seen = new Set(current.map((line) => line.id));
         return [...older.filter((line) => !seen.has(line.id)), ...current];
       });
+    } catch (error) {
+      if (!current()) return;
+      if (error instanceof ResceneApiError && error.status === 401) expire();
+      else setLogError({ message: explainError(error, "无法加载更早的日志"), earlier: true });
     } finally {
-      if (earlierJob.current === jobId) earlierJob.current = "";
-      setLoadingEarlierJob((current) => current === jobId ? "" : current);
+      if (current()) {
+        earlierJob.current = "";
+        setLoadingEarlierJob("");
+      }
     }
   }
   function trapDrawerFocus(event: ReactKeyboardEvent<HTMLElement>) {
@@ -1023,13 +1228,11 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
         <section className="login-card">
           <div className="login-head">
             <div className="brand login-brand"><span className="mark"><BrandMark size={28} /></span><strong>ReScene</strong></div>
-            <button type="button" className="text-action" onClick={() => setPage(page === "appearance" ? "" : "appearance")}>{page === "appearance" ? `返回${AUTH_TITLES[authMode]}` : "外观"}</button>
           </div>
-          {page === "appearance" ? <><h1>外观</h1><ThemeControl /></> : <>
-            <h1>{AUTH_TITLES[authMode]}</h1>
-            {authMode === "login" ? <>
+          <h1>{AUTH_TITLES[authMode]}</h1>
+          {authMode === "login" ? <>
               <form onSubmit={login}>
-                {emailField}
+                <label>邮箱或用户名<input name="identifier" type="text" required autoComplete="username" autoCapitalize="off" autoCorrect="off" value={authIdentifier} onChange={(event) => setAuthIdentifier(event.target.value)} /></label>
                 <label>密码<input name="password" type={showPassword ? "text" : "password"} required autoComplete="current-password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
                 {passwordToggle}
                 <button type="submit" disabled={authPending}>{authPending ? "请稍候…" : "登录"}</button>
@@ -1072,7 +1275,6 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
               {feedback}
               <button type="button" className="text-action auth-switch" onClick={() => switchAuthMode("login")}>返回登录</button>
             </>}
-          </>}
         </section>
       </main>
     );
@@ -1105,61 +1307,74 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
           <>
             {!navigatorOnline && <p className="offline-banner" role="alert">网络已断开：恢复连接后可继续上传、查询任务和查看结果。</p>}
             {rootPage === "notifications" ? (
-              <section className="panel">
-                <header className="page-header">{detail && <button type="button" onClick={() => setRootPage("projects")}>返回项目</button>}<h1 tabIndex={-1}>通知</h1></header>
-                <div className="notify-tools">
-                  <button type="button" onClick={() => runAction(async () => { await client.markNotificationsRead(); await loadNotifications(); await loadUnread(); })}>全部已读</button>
-                  <div className="notify-filter" role="tablist" aria-label="通知筛选">
-                    <button type="button" role="tab" aria-selected={notifyFilter === "unread"} className={notifyFilter === "unread" ? "active" : ""} onClick={() => { setNotifyFilter("unread"); setNotifyOffset(0); void loadNotifications("unread", 0).catch((error: unknown) => setMessage(explainError(error, "无法加载通知"))); }}>未读</button>
-                    <button type="button" role="tab" aria-selected={notifyFilter === "all"} className={notifyFilter === "all" ? "active" : ""} onClick={() => { setNotifyFilter("all"); setNotifyOffset(0); void loadNotifications("all", 0).catch((error: unknown) => setMessage(explainError(error, "无法加载通知"))); }}>全部</button>
-                  </div>
-                </div>
-                {notifications.length === 0 ? <p className="muted">暂无通知</p> : (
-                  <ul>
-                    {notifications.map((item) => (
-                      <li key={item.id}>
-                        <button type="button" onClick={() => runAction(async () => {
-                          await client.markNotificationsRead([item.id]);
-                          if (item.project_id || item.job_id) setRootPage("projects");
-                          if (item.project_id) selectProject(item.project_id);
-                          if (item.job_id) { selectJob(item.job_id); setPane("tasks"); setPage("job"); }
-                          await loadNotifications();
-                          await loadUnread();
-                        })}>
-                          {item.kind === "announcement" && <small className="notify-kind">公告</small>}
-                          <strong>{item.title}</strong>
-                          <small>{new Date(item.created_at).toLocaleString()}</small>
-                          {item.body && <small className="notify-body">{item.body}</small>}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {notifyHasMore && <button type="button" className="notify-more" disabled={notifyLoading} onClick={() => runAction(async () => { await loadNotifications(notifyFilter, notifyOffset + NOTIFY_PAGE_SIZE); })}>加载更多</button>}
-              </section>
-            ) : rootPage === "settings" ? (
-              <section className="panel">
-                {page === "appearance" || page === "account" || page === "password" ? (
+              <section className="panel notify">
+                {notifyItem ? (
                   <>
-                    <header className="page-header"><button type="button" onClick={() => setPage(page === "password" ? "account" : "")}>{page === "password" ? "← 返回账户" : "← 返回设置"}</button><h1 tabIndex={-1}>{page === "appearance" ? "外观" : page === "account" ? "账户" : "修改密码"}</h1></header>
-                    {page === "appearance" ? <ThemeControl /> : page === "account" ? (
-                      <><p>{me?.email}{me?.is_admin ? " · 管理员" : ""}</p><button type="button" onClick={() => setPage("password")}>修改密码</button><button type="button" onClick={() => runAction(signOut)}>退出登录</button></>
-                    ) : (
-                      <form onSubmit={changePassword}>
-                        <label>当前密码<input name="current" type="password" required autoComplete="current-password" /></label>
-                        <label>新密码（至少 12 位）<input name="new" type="password" required minLength={12} autoComplete="new-password" /></label>
-                        <label>确认新密码<input name="confirm" type="password" required minLength={12} autoComplete="new-password" /></label>
-                        <button type="submit">更新密码</button>
-                      </form>
-                    )}
+                    <header className="page-header"><button type="button" onClick={() => setNotifyItem(null)}>← 返回通知</button><h1 tabIndex={-1}>{notifyItem.title}</h1></header>
+                    <p className="muted">{notifyItem.announcement_level ? `${ANNOUNCEMENT_LEVEL_LABELS[notifyItem.announcement_level]}公告` : NOTIFICATION_KIND_LABELS[notifyItem.kind as NotificationKind] ?? notifyItem.kind} · {new Date(notifyItem.created_at).toLocaleString()}</p>
+                    {notifyItem.body && <p className="notify-body">{notifyItem.body}</p>}
+                    {!notifyItem.read_at && <button type="button" disabled={notifyMarking} onClick={() => void markNotifications([notifyItem.id])}>标记已读</button>}
+                    {notifyItem.project_id && <button type="button" onClick={() => openNotifiedProject(notifyItem)}>{notifyItem.job_id ? "查看任务" : "打开项目"}</button>}
                   </>
                 ) : <>
-                  <header className="page-header"><button type="button" onClick={() => goRoot("projects")}>返回项目</button><h1 tabIndex={-1}>设置</h1></header>
-                  <button type="button" onClick={() => setPage("appearance")}>外观</button>
-                  <button type="button" onClick={() => setPage("account")}>账户</button>
-                  {me?.is_admin && <button type="button" onClick={() => setView("admin")}>管理控制台</button>}
+                <header className="page-header">{detail && <button type="button" onClick={() => goRoot("projects")}>返回项目</button>}<h1 tabIndex={-1}>通知</h1></header>
+                <div className="notify-tools">
+                  <button type="button" disabled={notifyMarking || unread === 0} onClick={() => void markNotifications()}>标记所有可见未读</button>
+                  <div className="notify-filter" role="tablist" aria-label="通知筛选">
+                    <button type="button" role="tab" aria-selected={notifyFilter === "unread"} className={notifyFilter === "unread" ? "active" : ""} onClick={() => filterNotifications("unread", notifyKind)}>未读</button>
+                    <button type="button" role="tab" aria-selected={notifyFilter === "all"} className={notifyFilter === "all" ? "active" : ""} onClick={() => filterNotifications("all", notifyKind)}>全部</button>
+                  </div>
+                </div>
+                <div className="notify-kind-filter" role="tablist" aria-label="通知类型">
+                  {NOTIFY_KIND_OPTIONS.map((option) => (
+                    <button key={option.key} type="button" role="tab" aria-selected={notifyKind === option.key} className={notifyKind === option.key ? "active" : ""} onClick={() => filterNotifications(notifyFilter, option.key)}>
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                {notifyError && <p role="alert">{notifyError.message} <button type="button" onClick={() => void loadNotifications(notifyFilter, notifyError.offset)}>重试</button></p>}
+                {notifications.length === 0 ? (notifyError ? null : <p className="muted" role="status">{notifyLoading || !notifyLoaded.current ? "正在加载通知…" : "暂无通知"}</p>) : (
+                  <ul>
+                    {notifications.map((item) => {
+                      const kindLabel = NOTIFICATION_KIND_LABELS[item.kind as NotificationKind] ?? item.kind;
+                      const levelLabel = item.kind === "announcement" && item.announcement_level ? ANNOUNCEMENT_LEVEL_LABELS[item.announcement_level] : null;
+                      return (
+                        <li key={item.id} className={item.read_at === null ? "unread" : undefined}>
+                          <button type="button" onClick={() => {
+                            setNotifyItem(item);
+                            if (!item.read_at) void markNotifications([item.id]);
+                          }}>
+                            <small className="notify-kind">{levelLabel ? `${levelLabel}公告` : kindLabel}</small>
+                            <strong>{item.title}</strong>
+                            <small>{new Date(item.created_at).toLocaleString()}</small>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                {notifyHasMore && <button type="button" className="notify-more" disabled={notifyLoading || notifyMarking} onClick={() => void loadNotifications(notifyFilter, notifyOffset + NOTIFY_PAGE_SIZE)}>加载更多</button>}
                 </>}
               </section>
+            ) : rootPage === "settings" ? (
+              <SettingsView
+                key={settingsVisit}
+                client={client}
+                user={me}
+                platform={platform}
+                narrow={narrow}
+                category={settingsCategory}
+                onCategoryChange={setSettingsCategory}
+                onUserUpdate={setMe}
+                onMessage={setMessage}
+                onChangePassword={changePassword}
+                onSignOut={() => runAction(signOut)}
+                onReturnToProject={selected ? () => goRoot("projects") : undefined}
+                isAdmin={Boolean(me?.is_admin)}
+                onOpenAdmin={() => setView("admin")}
+                appearance={effectiveAppearance}
+                onAppearanceChange={changeAppearance}
+              />
             ) : page === "new-project" || page === "claim-invite" ? (
               <section className="panel">
                 <button type="button" onClick={() => setPage("")}>← 返回项目列表</button>
@@ -1376,13 +1591,14 @@ export function Workbench({ client, uploader, viewer: Viewer, tokenStore, webBas
                         {reconstructionId && <button className="task-action" onClick={() => { setResultOrigin("job"); setPage("result"); }}>查看结果</button>}
                         </div>}
                         {page === "job-logs" && <>
-                          <label>级别<select value={logLevel} onChange={(event) => setLogLevel(event.target.value as LogLevel)}><option value="">全部</option><option value="info">信息</option><option value="warning">警告</option><option value="error">错误</option></select></label>
-                          {logs.length === 0 ? <p className="muted">{logsLoading ? "正在加载运行日志…" : "暂无运行日志"}</p> : (
+                          <label>级别<select value={logLevel} onChange={(event) => setLogLevel(event.target.value as LogLevel)}><option value="">全部</option><option value="debug">调试</option><option value="info">信息</option><option value="warning">警告</option><option value="error">错误</option></select></label>
+                          {logError && <p role="alert">{logError.message} <button type="button" onClick={() => { if (logError.earlier) void loadEarlierLogs(); else pollLogs.current?.(); }}>重试</button></p>}
+                          {logs.length === 0 ? (!logError && <p className="muted" role="status">{logsLoading ? "正在加载运行日志…" : "暂无运行日志"}</p>) : (
                             <ol className="log-list">
-                              {logs.map((line) => <li key={line.id} data-level={line.level.toLowerCase()}><code className="log-line">{new Date(line.created_at).toLocaleTimeString()} · {line.level.toUpperCase()} · {line.message}</code></li>)}
+                              {logs.map((line) => <li key={line.id} data-level={line.level.toLowerCase()}><code className="log-line">{new Date(line.created_at).toLocaleTimeString()} · {line.attempt == null ? "轮次未知" : `第 ${line.attempt} 轮`} · {line.level.toUpperCase()} · {line.message}</code></li>)}
                             </ol>
                           )}
-                          {logs.length > 0 && <button disabled={loadingEarlierJob === latest.id} onClick={() => runAction(loadEarlierLogs)}>{loadingEarlierJob === latest.id ? "正在加载…" : "加载更早"}</button>}
+                          {logs.length > 0 && !logEarlierDone && <button disabled={loadingEarlierJob === latest.id} onClick={() => void loadEarlierLogs()}>{loadingEarlierJob === latest.id ? "正在加载…" : "加载更早"}</button>}
                         </>}
                         {page === "result" && (reconstructionId ? <>
                           <div className="scene-tools" role="group" aria-label="场景操作">

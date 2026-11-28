@@ -64,25 +64,50 @@ test("display storage values are independently normalized", () => {
   assert.equal(display.surface, "solid");
 });
 
-test("bootstrap honors query and reads applied state on system changes", () => {
+test("workbench boots with OS appearance even with a credential, stored colors, and a URL override", () => {
   const bootstrap = readFileSync(new URL("../apps/web/public/theme-init.js", import.meta.url), "utf8");
   assert.equal(bootstrap, readFileSync(new URL("../apps/desktop/public/theme-init.js", import.meta.url), "utf8"));
-  const run = (query, storage) => {
+  const root = { dataset: {}, style: { setProperty() {} } };
+  let listener;
+  let storageReads = 0;
+  const storage = { "rescene-token": "expired-credential", "rescene-theme": "light", "rescene-colorway": "ink" };
+  runInNewContext(bootstrap, {
+    document: { documentElement: root },
+    location: { pathname: "/", search: "?theme=light" },
+    URLSearchParams,
+    localStorage: { getItem(key) { storageReads++; return storage[key] ?? null; } },
+    matchMedia: () => ({ matches: true, addEventListener(_event, fn) { listener = fn; } }),
+  });
+  assert.equal(storageReads, 0);
+  assert.equal(root.dataset.themePreference, "system");
+  assert.equal(root.dataset.theme, "dark");
+  assert.equal(root.dataset.colorway, "ultramarine");
+  listener({ matches: false });
+  assert.equal(root.dataset.theme, "light");
+  assert.equal(root.dataset.colorway, "ultramarine");
+});
+
+test("standalone viewer and share still honor their independent appearance parameters", () => {
+  const bootstrap = readFileSync(new URL("../apps/web/public/theme-init.js", import.meta.url), "utf8");
+  const run = (pathname, search, storage) => {
     const root = { dataset: {}, style: { setProperty() {} } };
     let listener;
-    const media = { matches: false, addEventListener(_event, fn) { listener = fn; } };
-    runInNewContext(bootstrap, { document: { documentElement: root }, location: { search: query }, URLSearchParams, localStorage: { getItem(key) { if (storage === null) throw Error("blocked"); return storage[key] ?? null; } }, matchMedia: () => media });
+    runInNewContext(bootstrap, {
+      document: { documentElement: root }, location: { pathname, search }, URLSearchParams,
+      localStorage: { getItem(key) { if (storage === null) throw Error("blocked"); return storage[key] ?? null; } },
+      matchMedia: () => ({ matches: false, addEventListener(_event, fn) { listener = fn; } }),
+    });
     return { root, change: matches => listener({ matches }) };
   };
-  const fixed = run("?theme=dark", { "rescene-theme": "light", "rescene-colorway": "ink" });
-  assert.equal(fixed.root.dataset.theme, "dark");
-  fixed.change(false);
-  assert.equal(fixed.root.dataset.theme, "dark");
-  const system = run("", null);
-  system.root.dataset.colorway = "custom";
-  system.root.dataset.primary = "#AA405C";
-  system.change(true);
-  assert.equal(system.root.dataset.theme, "dark");
-  assert.equal(system.root.dataset.primary, "#AA405C");
-  assert.equal(system.root.dataset.colorway, "custom");
+  const viewer = run("/viewer", "?theme=dark", { "rescene-theme": "light", "rescene-colorway": "ink" });
+  viewer.change(false);
+  assert.equal(viewer.root.dataset.theme, "dark");
+  assert.equal(viewer.root.dataset.colorway, "ink");
+  const share = run("/share/example", "", null);
+  share.root.dataset.colorway = "custom";
+  share.root.dataset.primary = "#AA405C";
+  share.change(true);
+  assert.equal(share.root.dataset.theme, "dark");
+  assert.equal(share.root.dataset.primary, "#AA405C");
+  assert.equal(share.root.dataset.colorway, "custom");
 });

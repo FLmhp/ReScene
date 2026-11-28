@@ -22,6 +22,14 @@ function storedCredential(): QueueCredential | null {
 const session = createQueueSession(storedCredential());
 type Snapshot = ReturnType<typeof session.snapshot>;
 
+// A stored token only hints at a session. Appearance and other signed-in
+// surfaces stay anonymous until this process has confirmed the credential with
+// the server (login, recovery, or an authenticated token rotation for a known
+// owner). The session generation changes whenever that owner changes, so a
+// snapshot match keeps the verified flag bound to the active credential.
+let verifiedSession: Snapshot | null = null;
+const sessionListeners = new Set<() => void>();
+
 function sessionFetch(expected: Snapshot, owner?: QueueOwner): typeof fetch {
   return async (input, init) => {
     if (owner) assertQueueOwner(owner);
@@ -38,6 +46,41 @@ const expiryListeners = new Set<() => void>();
 export function onSessionExpired(listener: () => void): () => void {
   expiryListeners.add(listener);
   return () => { expiryListeners.delete(listener); };
+}
+
+function notifySessionChange(): void {
+  for (const listener of [...sessionListeners]) {
+    try { listener(); } catch { /* One screen must not block the others. */ }
+  }
+}
+
+/** Subscribe to verified-session changes that affect shared signed-in rendering. */
+export function onSessionChange(listener: () => void): () => void {
+  sessionListeners.add(listener);
+  return () => { sessionListeners.delete(listener); };
+}
+
+export function hasVerifiedSession(): boolean {
+  const snapshot = session.snapshot();
+  return Boolean(
+    verifiedSession
+    && snapshot.token
+    && session.matches(verifiedSession)
+    && (sessionExpiry(snapshot.token) ?? Infinity) > Date.now(),
+  );
+}
+
+function markSessionVerified(ownerId: string | null | undefined): void {
+  const snapshot = session.snapshot();
+  if (!ownerId || !snapshot.token) return;
+  verifiedSession = snapshot;
+  notifySessionChange();
+}
+
+function clearVerifiedSession(): void {
+  if (!verifiedSession) return;
+  verifiedSession = null;
+  notifySessionChange();
 }
 
 function expireSession(): void {
@@ -70,6 +113,7 @@ function persistCredential(expected: Snapshot, next: QueueCredential): boolean {
 function clearToken(): void {
   session.reset();
   client.setToken(null);
+  clearVerifiedSession();
   Taro.removeStorageSync(TOKEN_KEY);
 }
 
@@ -104,15 +148,18 @@ async function establishSession(action: (auth: ResceneClient) => Promise<{ acces
     const { access_token: token } = await action(auth);
     if (!session.matches(expected)) return null;
     const user = await auth.getMe();
-    return persistCredential(expected, { token, owner: user.id }) ? user : null;
+    if (!persistCredential(expected, { token, owner: user.id })) return null;
+    markSessionVerified(user.id);
+    return user;
   } catch (reason) {
     if (session.matches(expected)) throw reason;
     return null;
   }
 }
 
-export function authenticate(mode: "login" | "register", email: string, password: string) {
-  return establishSession((auth) => auth[mode](email, password));
+export function authenticate(mode: "login" | "register", identifier: string, password: string) {
+  // Login accepts either an email or a username; register still requires an email.
+  return establishSession((auth) => auth[mode](identifier, password));
 }
 
 export async function sendEmailCode(email: string, purpose: "login" | "reset"): Promise<void> {
@@ -144,6 +191,7 @@ export async function verifySession() {
     if (!session.owns({ id: user.id, generation: expected.generation })) {
       if (!persistCredential(expected, { token, owner: user.id })) return null;
     }
+    markSessionVerified(user.id);
     return user;
   } catch (reason) {
     if (session.matches(expected)) throw reason;
@@ -157,7 +205,9 @@ async function rotateToken(action: (auth: ResceneClient) => Promise<{ access_tok
   const auth = new ResceneClient(apiBaseUrl, expected.token, sessionFetch(expected));
   try {
     const result = await action(auth);
-    return persistCredential(expected, { token: result.access_token, owner: owner?.id ?? null });
+    if (!persistCredential(expected, { token: result.access_token, owner: owner?.id ?? null })) return false;
+    markSessionVerified(owner?.id);
+    return true;
   } catch (reason) {
     if (session.matches(expected)) throw reason;
     return false;
