@@ -1,8 +1,8 @@
 import { COLORWAY_OPTIONS, COLORWAY_STORAGE_KEY, DEFAULT_COLORWAY, DISPLAY_STORAGE_KEY, FONT_SIZE_SCALES, colorwayPrimary, displayPreferences, normalizePrimary, paletteCssVariables, resolvePalette, THEME_OPTIONS, THEME_STORAGE_KEY, themePreference, type DisplayPreferences, type Palette, type ThemePreference } from "@rescene/design-tokens";
 import { Button, Input, Picker, Text, View } from "@tarojs/components";
 import Taro, { useDidHide, useDidShow } from "@tarojs/taro";
-import { createContext, useContext, useEffect, useRef, useState, type PropsWithChildren } from "react";
-import { hasToken } from "./api";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type PropsWithChildren } from "react";
+import { hasToken, hasVerifiedSession, onSessionChange, verifySession } from "./api";
 import { openHome } from "./navigation";
 
 const ScreenPaletteContext = createContext<Palette>(resolvePalette(DEFAULT_COLORWAY, false));
@@ -25,81 +25,110 @@ type AppearanceState = {
 };
 const AppearanceContext = createContext<AppearanceState | null>(null);
 
-// Keep the final appearance for the rest of this JS process. Pages read this
-// snapshot on show instead of re-reading storage that may fail between pages.
+// Device appearance is cached for the rest of this JS process, but only a
+// verified owner may render it. Pages read this snapshot on show instead of
+// re-reading storage that may fail between pages.
 let activeTheme: ThemePreference | undefined;
 let activeDisplay: DisplayPreferences | undefined;
 // Keep unsaved changes alive across page-stack transitions when device storage fails.
 let unsavedTheme: ThemePreference | undefined;
 let unsavedDisplay: DisplayPreferences | undefined;
-function readTheme(): ThemePreference {
-  if (unsavedTheme) return unsavedTheme;
-  if (activeTheme) return activeTheme;
-  try { return (activeTheme = themePreference(Taro.getStorageSync(THEME_STORAGE_KEY))); } catch { return "system"; }
+const ANONYMOUS_DISPLAY = displayPreferences(null);
+
+type Appearance = { preference: ThemePreference; display: DisplayPreferences };
+
+function savedAppearance(): Appearance {
+  let preference: ThemePreference;
+  if (unsavedTheme) preference = unsavedTheme;
+  else if (activeTheme) preference = activeTheme;
+  else {
+    try { preference = activeTheme = themePreference(Taro.getStorageSync(THEME_STORAGE_KEY)); }
+    catch { preference = "system"; }
+  }
+  let display: DisplayPreferences;
+  if (unsavedDisplay) display = unsavedDisplay;
+  else if (activeDisplay) display = activeDisplay;
+  else {
+    try { display = activeDisplay = displayPreferences(Taro.getStorageSync(DISPLAY_STORAGE_KEY), Taro.getStorageSync(COLORWAY_STORAGE_KEY)); }
+    catch { display = ANONYMOUS_DISPLAY; }
+  }
+  return { preference, display };
 }
-function readDisplay(): DisplayPreferences {
-  if (unsavedDisplay) return unsavedDisplay;
-  if (activeDisplay) return activeDisplay;
-  try { return (activeDisplay = displayPreferences(Taro.getStorageSync(DISPLAY_STORAGE_KEY), Taro.getStorageSync(COLORWAY_STORAGE_KEY))); }
-  catch { return displayPreferences(null); }
+
+function effectiveAppearance(): Appearance {
+  return hasVerifiedSession()
+    ? savedAppearance()
+    : { preference: "system", display: ANONYMOUS_DISPLAY };
+}
+
+// Unsaved appearance belongs to the verified session that produced it. Drop it
+// even if no Screen happens to be mounted when that session ends.
+onSessionChange(() => {
+  if (hasVerifiedSession()) return;
+  unsavedTheme = undefined;
+  unsavedDisplay = undefined;
+});
+
+function applyChrome(isDark: boolean, background: string): void {
+  const run = (action: () => Promise<unknown>) => {
+    try { void Promise.resolve(action()).catch(() => undefined); } catch { /* Native chrome is unavailable before the page is ready. */ }
+  };
+  run(() => Taro.setNavigationBarColor({ frontColor: isDark ? "#ffffff" : "#000000", backgroundColor: background }));
+  run(() => Taro.setBackgroundColor({ backgroundColor: background, backgroundColorTop: background, backgroundColorBottom: background }));
+  run(() => Taro.setBackgroundTextStyle({ textStyle: isDark ? "light" : "dark" }));
 }
 
 export function Screen({ children }: PropsWithChildren) {
-  const [preference, updatePreference] = useState(readTheme);
-  const [display, updateDisplay] = useState(readDisplay);
-  const [saveError, setSaveError] = useState(!!unsavedTheme || !!unsavedDisplay);
+  const [appearance, setAppearance] = useState<Appearance>(effectiveAppearance);
+  const [saveError, setSaveError] = useState(() => hasVerifiedSession() && (!!unsavedTheme || !!unsavedDisplay));
   const [system, setSystem] = useState(systemTheme);
-  const current = useRef({ preference, display });
-  current.current = { preference, display };
-  const visible = useRef(false);
+  const { preference, display } = appearance;
   const dark = preference === "dark" || (preference === "system" && system === "dark");
   const palette = resolvePalette(display.colorway, dark, display.primary);
+  // Re-derive every entry point from the same verified-session snapshot so the
+  // initial render, useDidShow, and onThemeChange cannot disagree.
+  const syncAppearance = useCallback((systemOverride?: "light" | "dark") => {
+    const verified = hasVerifiedSession();
+    if (!verified) {
+      // Unsaved edits belong to the session that made them and never survive
+      // sign-out, expiry, or a failed restore.
+      unsavedTheme = undefined;
+      unsavedDisplay = undefined;
+    }
+    const next = verified ? savedAppearance() : { preference: "system" as const, display: ANONYMOUS_DISPLAY };
+    setAppearance(next);
+    setSaveError(verified && (!!unsavedTheme || !!unsavedDisplay));
+    const nextSystem = systemOverride ?? systemTheme();
+    setSystem(nextSystem);
+    const nextDark = next.preference === "dark" || (next.preference === "system" && nextSystem === "dark");
+    applyChrome(nextDark, resolvePalette(next.display.colorway, nextDark, next.display.primary).bg);
+  }, []);
   const setPreference = (value: ThemePreference) => {
-    current.current.preference = value;
-    activeTheme = value;
-    updatePreference(value);
-    try { Taro.setStorageSync(THEME_STORAGE_KEY, value); unsavedTheme = undefined; }
+    if (!hasVerifiedSession()) return;
+    setAppearance(current => ({ ...current, preference: value }));
+    try { Taro.setStorageSync(THEME_STORAGE_KEY, value); activeTheme = value; unsavedTheme = undefined; }
     catch { unsavedTheme = value; }
     setSaveError(!!unsavedTheme || !!unsavedDisplay);
   };
   const setDisplay = (value: DisplayPreferences) => {
-    current.current.display = value;
-    activeDisplay = value;
-    updateDisplay(value);
-    try { Taro.setStorageSync(DISPLAY_STORAGE_KEY, value); unsavedDisplay = undefined; }
+    if (!hasVerifiedSession()) return;
+    setAppearance(current => ({ ...current, display: value }));
+    try { Taro.setStorageSync(DISPLAY_STORAGE_KEY, value); activeDisplay = value; unsavedDisplay = undefined; }
     catch { unsavedDisplay = value; }
     setSaveError(!!unsavedTheme || !!unsavedDisplay);
   };
-  const apply = (isDark: boolean, background: string) => {
-    if (!visible.current) return;
-    void Promise.resolve().then(() => Taro.setNavigationBarColor({
-      frontColor: isDark ? "#ffffff" : "#000000", backgroundColor: background,
-    })).catch(() => undefined);
-    void Promise.resolve().then(() => Taro.setBackgroundColor({
-      backgroundColor: background, backgroundColorTop: background, backgroundColorBottom: background,
-    })).catch(() => undefined);
-    void Promise.resolve().then(() => Taro.setBackgroundTextStyle({ textStyle: isDark ? "light" : "dark" })).catch(() => undefined);
-  };
   useDidShow(() => {
-    visible.current = true;
-    // Use the process snapshot; a failing storage read must not reset the live page.
-    const nextPreference = unsavedTheme ?? activeTheme ?? current.current.preference;
-    const nextDisplay = unsavedDisplay ?? activeDisplay ?? current.current.display;
-    updatePreference(nextPreference);
-    updateDisplay(nextDisplay);
-    setSaveError(!!unsavedTheme || !!unsavedDisplay);
-    const nextSystem = systemTheme();
-    setSystem(nextSystem);
-    const nextDark = nextPreference === "dark" || (nextPreference === "system" && nextSystem === "dark");
-    apply(nextDark, resolvePalette(nextDisplay.colorway, nextDark, nextDisplay.primary).bg);
+    syncAppearance();
   });
-  useEffect(() => { apply(dark, palette.bg); }, [dark, palette.bg]);
-  useDidHide(() => { visible.current = false; });
   useEffect(() => {
-    const change = (event: { theme: "light" | "dark" }) => setSystem(event.theme);
+    applyChrome(dark, palette.bg);
+  }, [dark, palette.bg]);
+  useEffect(() => onSessionChange(() => syncAppearance()), [syncAppearance]);
+  useEffect(() => {
+    const change = (event: { theme: "light" | "dark" }) => syncAppearance(event.theme);
     Taro.onThemeChange?.(change);
     return () => Taro.offThemeChange?.(change);
-  }, []);
+  }, [syncAppearance]);
   const scale = FONT_SIZE_SCALES[display.fontSize];
   const variables = Object.entries(paletteCssVariables(palette)).map(([key, value]) => `${key}:${value}`);
   for (const base of [22, 24, 26, 28, 30, 32, 34, 36, 44, 56]) variables.push(`--mini-font-${base}:${Math.round(base * scale)}rpx`);
@@ -113,8 +142,8 @@ export function Screen({ children }: PropsWithChildren) {
 }
 
 export function AppearancePage() {
-  // Standalone route usage renders its own Screen; inside a workspace it inherits the page shell.
-  return useContext(AppearanceContext) ? <AppearanceForm /> : <Screen><AppearanceForm /></Screen>;
+  // Only the protected settings route renders this, inside a workspace Screen.
+  return <AppearanceForm />;
 }
 
 function AppearanceForm() {
@@ -182,19 +211,69 @@ function AppearanceForm() {
 }
 
 export function WorkspaceEntry({ children, hasTarget = true }: PropsWithChildren<{ hasTarget?: boolean }>) {
-  const [signedIn, setSignedIn] = useState(hasToken);
-  const allowed = signedIn && hasTarget;
+  const [allowed, setAllowed] = useState(() => hasTarget && hasVerifiedSession());
+  const [checking, setChecking] = useState(() => hasTarget && !hasVerifiedSession() && hasToken());
+  const [error, setError] = useState("");
+  const pending = useRef(false);
+  const shown = useRef(true);
   const goHome = () => { void openHome().catch(() => undefined); };
-  useDidShow(() => {
-    const current = hasToken();
-    setSignedIn(current);
-    if (!current || !hasTarget) goHome();
-  });
-  if (allowed) return children;
+  const verify = useCallback(async () => {
+    if (pending.current) return;
+    if (!hasTarget) { goHome(); return; }
+    if (hasVerifiedSession()) {
+      setAllowed(true);
+      setChecking(false);
+      setError("");
+      return;
+    }
+    if (!hasToken()) {
+      setAllowed(false);
+      setChecking(false);
+      goHome();
+      return;
+    }
+    if (!shown.current) return;
+    pending.current = true;
+    setChecking(true);
+    setError("");
+    try {
+      const user = await verifySession();
+      if (!shown.current) return;
+      if (user && hasVerifiedSession()) {
+        setAllowed(true);
+        setError("");
+        return;
+      }
+      setAllowed(false);
+      if (!hasToken()) goHome();
+      else setError("登录状态已变化，请重试。");
+    } catch {
+      if (!shown.current) return;
+      setAllowed(false);
+      // A failed network check keeps the stored credential and this page so the
+      // user can retry instead of being sent home as if signed out.
+      setError("无法验证登录状态，请检查网络后重试。");
+    } finally {
+      pending.current = false;
+      if (shown.current) setChecking(false);
+    }
+  }, [hasTarget]);
+  useDidShow(() => { shown.current = true; void verify(); });
+  useDidHide(() => { shown.current = false; });
+  useEffect(() => () => { shown.current = false; }, []);
+  useEffect(() => onSessionChange(() => {
+    if (!hasVerifiedSession()) {
+      setAllowed(false);
+      setChecking(false);
+    }
+  }), []);
+  if (allowed && hasTarget) return children;
   return (
     <Screen>
-      <Text className="title">{signedIn ? "项目入口已失效" : "请先登录"}</Text>
-      <Button className="button" onClick={goHome}>返回首页</Button>
+      <Text className="title">{checking ? "正在恢复登录…" : error ? "无法确认登录状态" : "请先登录"}</Text>
+      {!checking && error ? <Text className="error">{error}</Text> : null}
+      {!checking && error && hasToken() ? <Button className="button" onClick={() => void verify()}>重试</Button> : null}
+      <Button className="button ghost" onClick={goHome}>返回首页</Button>
     </Screen>
   );
 }

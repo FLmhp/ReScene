@@ -24,7 +24,7 @@ const AppearanceContext = createContext<Appearance>({
   setPreference: () => undefined, setColorway: () => undefined, setDisplay: () => undefined, resetAppearance: () => undefined,
 });
 
-export function AppearanceProvider({ children }: PropsWithChildren) {
+export function AppearanceProvider({ children, active }: PropsWithChildren<{ active: boolean }>) {
   const system = useColorScheme();
   const [preference, updatePreference] = useState<ThemePreference>("system");
   const [display, updateDisplay] = useState<DisplayPreferences>(defaults);
@@ -40,10 +40,10 @@ export function AppearanceProvider({ children }: PropsWithChildren) {
     ready.current = { promise, resolve };
   }
   useEffect(() => {
-    let active = true;
+    let mounted = true;
     const read = (file: string) => FileSystem.readAsStringAsync(file).catch(() => null);
     void Promise.all([read(preferenceFile), read(colorwayFile), read(displayFile)]).then(([storedTheme, legacy, storedDisplay]) => {
-      if (active) {
+      if (mounted) {
         if (!changed.current.theme && storedTheme !== null) {
           let stored: unknown = storedTheme;
           try { stored = JSON.parse(storedTheme); } catch { /* keep the raw value */ }
@@ -58,7 +58,7 @@ export function AppearanceProvider({ children }: PropsWithChildren) {
       }
       ready.current?.resolve();
     });
-    return () => { active = false; };
+    return () => { mounted = false; };
   }, []);
   const store = (file: string, value: () => unknown) => {
     pendingWrite.current = pendingWrite.current.then(async () => {
@@ -85,9 +85,13 @@ export function AppearanceProvider({ children }: PropsWithChildren) {
   };
   const setColorway = (value: Colorway) => setDisplay({ colorway: value });
   const resetAppearance = () => { setPreference("system"); setDisplay(defaults); };
-  const dark = preference === "dark" || (preference === "system" && system === "dark");
-  const theme = resolvePalette(display.colorway, dark, display.primary);
-  return <AppearanceContext.Provider value={{ theme, dark, preference, colorway: display.colorway, display, scale: FONT_SIZE_SCALES[display.fontSize], saveError, setPreference, setColorway, setDisplay, resetAppearance }}>{children}</AppearanceContext.Provider>;
+  // Only an established session may show this device's saved appearance. Anonymous, restoring,
+  // expired and unverified-offline states stay on system + DEFAULT_COLORWAY without rewriting it.
+  const effectivePreference = active ? preference : "system";
+  const effectiveDisplay = active ? display : defaults;
+  const dark = effectivePreference === "dark" || (effectivePreference === "system" && system === "dark");
+  const theme = resolvePalette(effectiveDisplay.colorway, dark, effectiveDisplay.primary);
+  return <AppearanceContext.Provider value={{ theme, dark, preference: effectivePreference, colorway: effectiveDisplay.colorway, display: effectiveDisplay, scale: FONT_SIZE_SCALES[effectiveDisplay.fontSize], saveError: active ? saveError : "", setPreference, setColorway, setDisplay, resetAppearance }}>{children}</AppearanceContext.Provider>;
 }
 
 export const useAppearance = () => useContext(AppearanceContext);

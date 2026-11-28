@@ -375,6 +375,8 @@ def test_identity_refresh_and_validation(accounts):
         assert client.get("/v1/auth/me", headers=owner["headers"]).json() == {
             "id": owner["id"],
             "email": owner["email"],
+            "username": None,
+            "avatar_revision": None,
             "is_admin": False,
         }
         assert client.post("/v1/auth/refresh", headers=owner["headers"]).status_code == 200

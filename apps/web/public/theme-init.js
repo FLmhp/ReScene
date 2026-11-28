@@ -253,12 +253,16 @@ exports.fontSize = {
 };
 
   var root = document.documentElement;
-  var query = new URLSearchParams(location.search).get("theme");
-  var storedTheme = null, storedDisplay = null, legacyColorway = null;
-  try { storedTheme = localStorage.getItem(exports.THEME_STORAGE_KEY); } catch (error) {}
-  try { storedDisplay = localStorage.getItem(exports.DISPLAY_STORAGE_KEY); } catch (error) {}
-  try { legacyColorway = localStorage.getItem(exports.COLORWAY_STORAGE_KEY); } catch (error) {}
-  var preference = query === "light" || query === "dark" ? query : exports.themePreference(storedTheme);
+  var storedTheme = null, storedDisplay = null, legacyColorway = null, preference = "system";
+  // Workbench hosts boot anonymously. Standalone viewers keep their existing
+  // appearance contract, including the explicit theme on embedded viewer URLs.
+  if (/^\/(viewer|share)(\/|$)/.test(location.pathname)) {
+    var query = new URLSearchParams(location.search).get("theme");
+    try { storedTheme = localStorage.getItem(exports.THEME_STORAGE_KEY); } catch (error) {}
+    try { storedDisplay = localStorage.getItem(exports.DISPLAY_STORAGE_KEY); } catch (error) {}
+    try { legacyColorway = localStorage.getItem(exports.COLORWAY_STORAGE_KEY); } catch (error) {}
+    preference = query === "light" || query === "dark" ? query : exports.themePreference(storedTheme);
+  }
   var media = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: dark)") : null;
   root.dataset.themePreference = preference;
   exports.applyDisplayToRoot(root, preference === "dark" || (preference === "system" && !!media && media.matches),

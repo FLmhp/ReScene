@@ -13,6 +13,7 @@ export {
   selectWorkspaceAssets, selectionBytes, stageLabel,
 } from "./reconstruction-labels";
 export type { ProjectSection } from "./reconstruction-labels";
+export { legalDocuments, type LegalDocumentId } from "./legal-documents";
 
 export const ProfileSchema = z.enum(["fast", "balanced", "quality"]);
 export const JobStatusSchema = z.enum(["QUEUED", "LEASED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]);
@@ -33,7 +34,21 @@ export const UserSchema = z.object({
   id: z.string(),
   email: z.string(),
   is_admin: z.boolean(),
+  username: z.string().nullable().default(null),
+  avatar_revision: z.string().nullable().default(null),
 });
+
+export const MAX_AVATAR_BYTES = 1024 * 1024;
+export const AvatarSchema = z.object({
+  image_base64: z.string().min(1),
+  revision: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type Avatar = z.infer<typeof AvatarSchema>;
+
+export function accountInitial(user: { username: string | null; email: string }): string {
+  const first = (user.username ?? user.email).codePointAt(0);
+  return first === undefined ? "?" : String.fromCodePoint(first).toUpperCase();
+}
 
 export const EffectiveRoleSchema = z.enum(["owner", "admin", "member", "viewer"]);
 export const MemberRoleSchema = z.enum(["member", "viewer"]);
@@ -210,6 +225,15 @@ export const JobStageSchema = z.object({
   created_at: z.string(),
 });
 
+export const AnnouncementLevelSchema = z.enum(["info", "warning", "critical"]);
+export const ANNOUNCEMENT_LEVEL_LABELS: Record<z.infer<typeof AnnouncementLevelSchema>, string> = {
+  info: "信息", warning: "警告", critical: "重要",
+};
+export const NotificationKindSchema = z.enum(["announcement", "job.succeeded", "job.failed"]);
+export const NOTIFICATION_KIND_LABELS: Record<z.infer<typeof NotificationKindSchema>, string> = {
+  announcement: "公告", "job.succeeded": "任务成功", "job.failed": "任务失败",
+};
+
 export const NotificationSchema = z.object({
   id: z.string(),
   kind: z.string(),
@@ -218,6 +242,7 @@ export const NotificationSchema = z.object({
   project_id: z.string().nullable(),
   job_id: z.string().nullable(),
   announcement_id: z.string().nullable(),
+  announcement_level: AnnouncementLevelSchema.nullable().default(null),
   read_at: z.string().nullable(),
   created_at: z.string(),
 });
@@ -242,10 +267,7 @@ export const AddMemberResultSchema = z.discriminatedUnion("status", [
 
 export const AcceptInvitationResultSchema = z.object({ project_id: z.string(), role: MemberRoleSchema });
 
-export const AdminUserSchema = z.object({
-  id: z.string(),
-  email: z.string(),
-  is_admin: z.boolean(),
+export const AdminUserSchema = UserSchema.extend({
   active: z.boolean(),
   created_at: z.string(),
 });
@@ -253,6 +275,7 @@ export const AdminUserSchema = z.object({
 export const AuditEntrySchema = z.object({
   id: z.string(),
   actor_email: z.string().nullable(),
+  actor_username: z.string().nullable().default(null),
   action: z.string(),
   target_type: z.string(),
   target_id: z.string(),
@@ -277,8 +300,6 @@ export const AdminUserDetailSchema = AdminUserSchema.extend({
   memberships: UserMembershipSchema.array(),
 });
 
-export const AnnouncementLevelSchema = z.enum(["info", "warning", "critical"]);
-
 export const AnnouncementSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -286,6 +307,12 @@ export const AnnouncementSchema = z.object({
   level: AnnouncementLevelSchema,
   created_by: z.string().nullable(),
   created_at: z.string(),
+  recipient_count: z.number().int().nonnegative().nullable().default(null),
+  read_count: z.number().int().nonnegative().nullable().default(null),
+  mail_pending: z.number().int().nonnegative().nullable().default(null),
+  mail_accepted: z.number().int().nonnegative().nullable().default(null),
+  mail_failed: z.number().int().nonnegative().nullable().default(null),
+  mail_unknown: z.number().int().nonnegative().nullable().default(null),
 });
 
 export const AuditPageSchema = z.object({
@@ -295,6 +322,7 @@ export const AuditPageSchema = z.object({
 
 export const JobLogSchema = z.object({
   id: z.number().int(),
+  attempt: z.number().int().nonnegative().nullable().default(null),
   level: z.enum(["debug", "info", "warning", "error"]),
   message: z.string(),
   created_at: z.string(),
@@ -307,6 +335,15 @@ export const JobLogPageSchema = z.object({
 export const NotificationCountSchema = z.object({
   unread: z.number().int(),
 });
+
+export const NotificationPreferencesSchema = z.object({
+  email_verified: z.boolean(),
+  email_critical_announcements: z.boolean(),
+  email_job_results: z.boolean(),
+});
+export type NotificationPreferences = z.infer<typeof NotificationPreferencesSchema>;
+export type NotificationPreferencesPatch = Partial<Omit<NotificationPreferences, "email_verified">>;
+export type NotificationKind = z.infer<typeof NotificationKindSchema>;
 
 export type Profile = z.infer<typeof ProfileSchema>;
 export type JobStatus = z.infer<typeof JobStatusSchema>;

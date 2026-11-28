@@ -16,6 +16,7 @@ import {
   reconcileWorkspaceSelection,
   selectWorkspaceAssets,
   UploadGrantSchema,
+  UserSchema,
 } from "./index";
 
 describe("project library pages", () => {
@@ -148,6 +149,8 @@ describe("admin console contracts", () => {
 
   it("keeps announcement payloads and their notifications tied together", () => {
     expect(NotificationSchema.parse(notification).announcement_id).toBe("a1");
+    expect(NotificationSchema.parse(notification).announcement_level).toBeNull();
+    expect(NotificationSchema.parse({ ...notification, announcement_level: "critical" }).announcement_level).toBe("critical");
     expect(NotificationSchema.parse({ ...notification, announcement_id: null }).announcement_id).toBeNull();
     expect(
       AnnouncementSchema.parse({
@@ -163,14 +166,26 @@ describe("admin console contracts", () => {
     expect(NotificationCountSchema.parse({ unread: 3 }).unread).toBe(3);
   });
 
+  it("reads old account responses without inventing a profile", () => {
+    expect(UserSchema.parse(user)).toEqual({
+      id: user.id, email: user.email, is_admin: false, username: null, avatar_revision: null,
+    });
+    expect(AdminUserPageSchema.parse({ total: 1, items: [user] }).items[0]).toMatchObject({
+      username: null, avatar_revision: null,
+    });
+  });
+
   it("separates the paged directory from the single-account detail", () => {
     expect(AdminUserPageSchema.parse({ total: 1, items: [user] }).total).toBe(1);
     expect(() => AdminUserPageSchema.parse([user])).toThrow();
     const detail = AdminUserDetailSchema.parse({
       ...user,
+      username: "山景_A",
+      avatar_revision: "image-revision",
       memberships: [{ project_id: "p1", name: "厨房", role: "owner" }],
     });
     expect(detail.memberships[0]?.role).toBe("owner");
+    expect(detail).toMatchObject({ username: "山景_A", avatar_revision: "image-revision" });
     expect(() => AdminUserDetailSchema.parse(user)).toThrow();
     expect(() =>
       AdminUserDetailSchema.parse({ ...user, memberships: [{ project_id: "p1", name: "厨房", role: "guest" }] }),
@@ -190,13 +205,15 @@ describe("admin console contracts", () => {
       created_at: "2026-01-01T00:00:00Z",
     };
     expect(AuditPageSchema.parse({ total: 1, items: [entry] }).items[0]?.project_name).toBe("厨房");
+    expect(AuditPageSchema.parse({ total: 1, items: [entry] }).items[0]?.actor_username).toBeNull();
     const { project_name: _dropped, ...withoutProject } = entry;
     expect(() => AuditPageSchema.parse({ total: 1, items: [withoutProject] })).toThrow();
   });
 
   it("rejects unknown job log levels so the console filter stays trustworthy", () => {
     const log = { id: 1, level: "error", message: "gsplat failed", created_at: "2026-01-01T00:00:00Z" };
-    expect(JobLogPageSchema.parse({ items: [log] }).items[0]?.id).toBe(1);
+    expect(JobLogPageSchema.parse({ items: [log] }).items[0]?.attempt).toBeNull();
+    expect(JobLogPageSchema.parse({ items: [{ ...log, attempt: 3 }] }).items[0]?.attempt).toBe(3);
     expect(() => JobLogPageSchema.parse({ items: [{ ...log, level: "fatal" }] })).toThrow();
     expect(() => JobLogPageSchema.parse({ items: [{ ...log, id: "1" }] })).toThrow();
   });

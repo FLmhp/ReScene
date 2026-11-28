@@ -47,16 +47,15 @@ function TextAction({ label, onPress, disabled }: { label: string; onPress: () =
   );
 }
 
-export function LoginScreen({ onSignedIn, notice, mode, onModeChange, onAppearance, active }: {
+export function LoginScreen({ onSignedIn, notice, mode, onModeChange }: {
   onSignedIn: () => void;
   notice?: string;
   mode: AuthMode;
   onModeChange: (mode: AuthMode) => void;
-  onAppearance: () => void;
-  active: boolean;
 }) {
   const { theme } = useAppearance();
   const textStyles = useTextStyles();
+  const [identifier, setIdentifier] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
@@ -112,20 +111,17 @@ export function LoginScreen({ onSignedIn, notice, mode, onModeChange, onAppearan
 
   async function submit() {
     if (busy || sending) return;
-    const trimmed = email.trim();
-    if (!EMAIL.test(trimmed)) return setError("请输入有效的邮箱地址。");
-    if (mode === "code") {
-      if (!CODE.test(code)) return setError("请输入 6 位验证码。");
-    } else if (mode === "reset") {
-      if (!CODE.test(code)) return setError("请输入 6 位验证码。");
+    const trimmed = (mode === "login" ? identifier : email).trim();
+    if (mode === "login") {
+      if (!trimmed) return setError("请输入邮箱或用户名。");
+      if (!password) return setError("请输入密码。");
+    } else if (!EMAIL.test(trimmed)) {
+      return setError("请输入有效的邮箱地址。");
+    }
+    if ((mode === "code" || mode === "reset") && !CODE.test(code)) return setError("请输入 6 位验证码。");
+    if (mode === "register" || mode === "reset") {
       if (password.length < 12) return setError("密码至少 12 位。");
       if (confirm !== password) return setError("两次输入的密码不一致。");
-    } else {
-      if (!password) return setError("请输入密码。");
-      if (mode === "register") {
-        if (password.length < 12) return setError("密码至少 12 位。");
-        if (confirm !== password) return setError("两次输入的密码不一致。");
-      }
     }
     setBusy(true);
     setError("");
@@ -144,15 +140,11 @@ export function LoginScreen({ onSignedIn, notice, mode, onModeChange, onAppearan
       if (mode === "login" || mode === "register") {
         if (reason instanceof ResceneApiError) {
           if (reason.code === "auth.rate_limited" || reason.status === 429) setError("操作过于频繁，请稍后再试。");
-          else if (reason.status === 409) setError("该邮箱已注册，请直接登录。");
-          else if (reason.status === 401 || reason.status === 403) setError("邮箱或密码不正确。");
-          else setError(reason.detail || (mode === "register" ? "注册失败，请稍后重试。" : "登录失败，请稍后重试。"));
+          else if (mode === "register" && reason.status === 409) setError("该邮箱已注册，请直接登录。");
+          else if (mode === "login" && (reason.status === 401 || reason.status === 403)) setError("邮箱、用户名或密码不正确。");
+          else setError(reason.detail || `${TITLES[mode]}失败，请稍后重试。`);
         } else {
-          setError(
-            mode === "register"
-              ? "注册失败，请检查网络连接和设备安全存储后重试。"
-              : "登录失败，请检查网络连接和设备安全存储后重试。",
-          );
+          setError(`${TITLES[mode]}失败，请检查网络连接和设备安全存储后重试。`);
         }
       } else {
         setError(authFailure(reason, mode === "reset" ? "重置失败，请稍后重试。" : "登录失败，请稍后重试。"));
@@ -162,25 +154,20 @@ export function LoginScreen({ onSignedIn, notice, mode, onModeChange, onAppearan
     }
   }
 
-  if (!active) return null;
-
   const busyLabel = mode === "register" ? "正在创建…" : mode === "reset" ? "正在重置…" : "正在登录…";
   const submitLabel = mode === "register" ? "创建账号" : mode === "reset" ? "重置并登录" : "登录";
-  const canSubmit = !busy && !sending && Boolean(email.trim()) &&
-    (mode === "code"
-      ? code.length === 6
-      : mode === "login"
-        ? Boolean(password)
-        : Boolean(password) && Boolean(confirm));
+  const canSubmit = !busy && !sending &&
+    (mode === "login"
+      ? Boolean(identifier.trim()) && Boolean(password)
+      : mode === "code"
+        ? Boolean(email.trim()) && code.length === 6
+        : Boolean(email.trim()) && Boolean(password) && Boolean(confirm));
   const canSend = !busy && !sending && cooldown === 0 && Boolean(email.trim());
 
   return (
     <Screen
       scroll
       title={TITLES[mode]}
-      navigation={<View style={{ flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: 16, paddingBottom: 12 }}>
-        <Button label="外观" tone="ghost" onPress={onAppearance} />
-      </View>}
     >
       <View style={{ width: "100%", maxWidth: 420, alignSelf: "center", gap: 16 }}>
         <View style={{ alignItems: "center", gap: 10, paddingTop: 4, paddingBottom: 4 }}>
@@ -199,15 +186,26 @@ export function LoginScreen({ onSignedIn, notice, mode, onModeChange, onAppearan
             {notice}
           </Text>
         ) : null}
-        <Field
-          autoComplete="email"
-          keyboardType="email-address"
-          label="团队邮箱"
-          onChangeText={setEmail}
-          returnKeyType="next"
-          textContentType="username"
-          value={email}
-        />
+        {mode === "login" ? (
+          <Field
+            autoComplete="username"
+            label="邮箱或用户名"
+            onChangeText={setIdentifier}
+            returnKeyType="next"
+            textContentType="username"
+            value={identifier}
+          />
+        ) : (
+          <Field
+            autoComplete="email"
+            keyboardType="email-address"
+            label="团队邮箱"
+            onChangeText={setEmail}
+            returnKeyType="next"
+            textContentType="username"
+            value={email}
+          />
+        )}
         {mode === "code" || mode === "reset" ? (
           <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 12 }}>
             <View style={{ flex: 1 }}>

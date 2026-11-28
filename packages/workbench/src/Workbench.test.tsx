@@ -1,9 +1,9 @@
 import { ResceneClient, type JobEvent } from "@rescene/api-client";
-import type { AdminUserPage, AppNotification, JobLog } from "@rescene/schemas";
+import type { AdminUserPage, AppNotification, JobLog, User } from "@rescene/schemas";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { UploadAdapter } from "@rescene/uploader";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 import type { KeyValueStore } from "./Workbench";
 import { Workbench } from "./Workbench";
@@ -124,6 +124,7 @@ function renderWorkbench(client = new ResceneClient("https://api.example"), stor
       viewer={viewer}
       tokenStore={store}
       webBaseUrl="https://app.example"
+      platform="web"
     />,
   );
   return store;
@@ -289,20 +290,98 @@ describe("session gate", () => {
     const store = renderWorkbench();
 
     expect(screen.getByRole("heading", { name: "登录" })).toBeTruthy();
-    await userEvent.type(screen.getByLabelText("邮箱"), "ops@example.com");
+    await userEvent.type(screen.getByLabelText("邮箱或用户名"), "ops@example.com");
     await userEvent.type(screen.getByLabelText("密码"), "secret");
     await userEvent.click(screen.getByRole("button", { name: "登录" }));
 
     await waitFor(() => expect(store.data.get("rescene-token")).toBe("token-1"));
     await waitFor(() => expect(screen.getByRole("button", { name: "项目列表" })).toBeTruthy());
     await userEvent.click(screen.getByRole("button", { name: "设置" }));
-    await userEvent.click(await screen.findByRole("button", { name: "账户" }));
-    expect(screen.getByText(/ops@example\.com/)).toBeTruthy();
+    await userEvent.click(await screen.findByRole("button", { name: "账户与安全" }));
+    expect(await screen.findByText(/ops@example\.com/)).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "项目列表" }));
     await userEvent.click(await screen.findByRole("button", { name: "Kitchen" }));
     await userEvent.click(await screen.findByRole("checkbox", { name: /frame.jpg/ }));
     await userEvent.click(screen.getByRole("button", { name: "配置重建" }));
     expect(await screen.findByText(/计算节点在线/)).toBeTruthy();
+  });
+
+  it("navigates shared settings categories and returns to the last category", async () => {
+    stubFetch(routeTable({
+      "/v1/auth/me/notification-preferences": {
+        email_verified: false,
+        email_critical_announcements: false,
+        email_job_results: false,
+      },
+    }));
+    renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "项目列表" })).toBeTruthy());
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(screen.getByRole("heading", { name: "账户与安全" })).toBeTruthy();
+    expect(screen.getByText("所有设备")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "通知偏好" }));
+    expect(await screen.findByRole("heading", { name: "通知偏好" })).toBeTruthy();
+    expect(await screen.findByText("ops@example.com")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "验证收件邮箱" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("checkbox", { name: /重要公告/ }));
+    expect(screen.getByText("请先验证收件邮箱，再开启邮件订阅。")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "外观" }));
+    expect(screen.getByRole("heading", { name: "外观" })).toBeTruthy();
+    expect(screen.getByText("仅此设备")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "协议与许可" }));
+    expect(screen.getByRole("heading", { name: "协议与许可" })).toBeTruthy();
+    expect(screen.getByText("审核稿 · 尚未生效")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "隐私说明" }));
+    expect(screen.getByText(/设备偏好。主题、配色、字体和面板效果保存在当前设备/)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "账户与安全" }));
+    await userEvent.click(screen.getByRole("button", { name: "修改密码" }));
+    expect(screen.getByRole("heading", { name: "修改密码" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /返回账户/ }));
+    expect(screen.getByRole("heading", { name: "账户与安全" })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "通知偏好" }));
+    expect(await screen.findByRole("heading", { name: "通知偏好" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "项目列表" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Kitchen" }));
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(screen.getByRole("heading", { name: "通知偏好" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "返回项目" }));
+    expect(await screen.findByRole("heading", { name: "Kitchen" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(screen.getByRole("heading", { name: "通知偏好" })).toBeTruthy();
+  });
+
+  it("signs in with a username identifier using the new payload", async () => {
+    stubFetch(routeTable());
+    const store = renderWorkbench();
+
+    await userEvent.type(screen.getByLabelText("邮箱或用户名"), "ops_user");
+    await userEvent.type(screen.getByLabelText("密码"), "secret");
+    await userEvent.click(screen.getByRole("button", { name: "登录" }));
+
+    await waitFor(() => expect(store.data.get("rescene-token")).toBe("token-1"));
+    const fetchMock = fetch as unknown as Mock;
+    const calls = fetchMock.mock.calls as [RequestInfo | URL, RequestInit | undefined][];
+    const loginCall = calls.find(([input, init]) => init?.method === "POST" && String(input).includes("/v1/auth/login"));
+    expect(loginCall).toBeTruthy();
+    expect(JSON.parse(String(loginCall?.[1]?.body ?? "{}"))).toEqual({ identifier: "ops_user", password: "secret" });
+  });
+
+  it("does not carry a login identifier into email-only forms", async () => {
+    stubFetch(routeTable());
+    renderWorkbench();
+
+    await userEvent.type(screen.getByLabelText("邮箱或用户名"), "ops_user");
+    await userEvent.click(screen.getByRole("button", { name: "使用邮箱验证码登录" }));
+    expect((screen.getByLabelText("邮箱") as HTMLInputElement).value).toBe("");
+    await userEvent.type(screen.getByLabelText("邮箱"), "ops@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "使用密码登录" }));
+    expect((screen.getByLabelText("邮箱或用户名") as HTMLInputElement).value).toBe("ops_user");
   });
 });
 
@@ -397,6 +476,7 @@ function notification(read: boolean) {
     project_id: "p1",
     job_id: null,
     announcement_id: null,
+    announcement_level: null,
     read_at: read ? "2026-01-01T01:00:00Z" : null,
     created_at: "2026-01-01T00:00:00Z",
   };
@@ -419,7 +499,7 @@ describe("collaboration surfaces", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "通知（1）" })).toBeTruthy());
     await userEvent.click(screen.getByRole("button", { name: "通知（1）" }));
-    await userEvent.click(await screen.findByText("全部已读"));
+    await userEvent.click(await screen.findByText("标记所有可见未读"));
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "通知" })).toBeTruthy());
     const call = vi.mocked(fetch).mock.calls.find(([input]) => String(input).endsWith("/v1/notifications/read"));
@@ -441,19 +521,24 @@ describe("collaboration surfaces", () => {
     await screen.findByRole("heading", { name: "Kitchen" });
     await userEvent.click(await screen.findByRole("button", { name: "通知（1）" }));
     await userEvent.click(await screen.findByRole("button", { name: /重建已完成/ }));
+    expect(await screen.findByRole("heading", { name: "重建已完成" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "查看任务" }));
     expect(await screen.findByRole("heading", { name: "任务详情" })).toBeTruthy();
   });
 
   it("keeps targetless announcements on the notification page", async () => {
     stubFetch(routeTable({
-      "/v1/notifications": [{ ...notification(false), kind: "announcement", title: "系统公告", project_id: null }],
+      "/v1/notifications": [{ ...notification(false), kind: "announcement", title: "系统公告", project_id: null, announcement_level: "critical", body: "请在维护窗口结束后再重试上传。" }],
       "POST /v1/notifications/read": { updated: 1 },
     }));
     renderWorkbench(new ResceneClient("https://api.example", "token-1"));
     await userEvent.click(await screen.findByRole("button", { name: "通知（1）" }));
     await userEvent.click(await screen.findByRole("button", { name: /系统公告/ }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/v1/notifications/read") && init?.method === "POST")).toBe(true));
-    expect(screen.getByRole("heading", { name: "通知" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "系统公告" })).toBeTruthy();
+    expect(screen.getByText("请在维护窗口结束后再重试上传。")).toBeTruthy();
+    expect(screen.getByText(/重要公告/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "查看任务" })).toBeNull();
   });
 
   it("deletes an asset after confirmation", async () => {
@@ -481,8 +566,9 @@ describe("collaboration surfaces", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "项目列表" })).toBeTruthy());
 
     await userEvent.click(screen.getByRole("button", { name: "设置" }));
-    await userEvent.click(screen.getByRole("button", { name: "账户" }));
-    await userEvent.click(screen.getByRole("button", { name: "修改密码" }));
+    await userEvent.click(screen.getByRole("button", { name: "账户与安全" }));
+    await userEvent.click(await screen.findByRole("button", { name: "修改密码" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "修改密码" })));
     await userEvent.type(screen.getByLabelText("当前密码"), "correct-horse");
     await userEvent.type(screen.getByLabelText("新密码（至少 12 位）"), "correct-horse-2");
     await userEvent.type(screen.getByLabelText("确认新密码"), "correct-horse-2");
@@ -694,7 +780,10 @@ describe("share state", () => {
 const adminSelf = { id: "u1", email: "ops@example.com", is_admin: true };
 
 function adminUser(id: string, email: string, active: boolean, isAdmin = false) {
-  return { id, email, is_admin: isAdmin, active, created_at: "2026-01-01T00:00:00Z" };
+  return {
+    id, email, is_admin: isAdmin, active, created_at: "2026-01-01T00:00:00Z",
+    username: null, avatar_revision: null,
+  };
 }
 
 async function openAdminConsole() {
@@ -731,7 +820,28 @@ describe("management console", () => {
     expect(String(call?.[0])).toContain("limit=20");
   });
 
-  it("deactivates an account through PATCH", async () => {
+  it("filters accounts by username or email, status and role", async () => {
+    const client = new ResceneClient("https://api.example", "token-1");
+    const pending: { query: string; isAdmin?: boolean; resolve: (page: AdminUserPage) => void }[] = [];
+    vi.spyOn(client, "listUsers").mockImplementation((params) => {
+      const deferred = Promise.withResolvers<AdminUserPage>();
+      pending.push({ query: params?.query ?? "", isAdmin: params?.isAdmin, resolve: deferred.resolve });
+      return deferred.promise;
+    });
+    stubFetch(adminRoutes());
+    renderWorkbench(client);
+    await openAdminConsole();
+    await waitFor(() => expect(pending).toHaveLength(1));
+
+    fireEvent.change(screen.getByLabelText("搜索用户名或邮箱"), { target: { value: "alice" } });
+    await waitFor(() => expect(pending).toHaveLength(2), { timeout: 2000 });
+    expect(pending[1]?.query).toBe("alice");
+
+    await userEvent.selectOptions(screen.getByLabelText("角色"), "管理员");
+    await waitFor(() => expect(pending.some((p) => p.isAdmin === true)).toBe(true));
+  });
+
+  it("deactivates an account after confirming the target and effect", async () => {
     stubFetch(
       adminRoutes({
         "/v1/users": {
@@ -747,6 +857,10 @@ describe("management console", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "停用" })).toBeTruthy());
     await userEvent.click(screen.getByRole("button", { name: "停用" }));
 
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("dialog").textContent).toContain("teammate@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "确认停用" }));
+
     await waitFor(() => {
       const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith("/v1/users/u2") && init?.method === "PATCH");
       expect(call).toBeTruthy();
@@ -754,40 +868,48 @@ describe("management console", () => {
     });
   });
 
-  it("keeps the newest admin search results when responses arrive out of order", async () => {
-    const client = new ResceneClient("https://api.example", "token-1");
-    const pending: { query: string; resolve: (page: AdminUserPage) => void }[] = [];
-    vi.spyOn(client, "listUsers").mockImplementation((params) => {
-      const deferred = Promise.withResolvers<AdminUserPage>();
-      pending.push({ query: params?.query ?? "", resolve: deferred.resolve });
-      return deferred.promise;
-    });
-    stubFetch(adminRoutes());
-    renderWorkbench(client);
+  it("blocks dangerous actions against the signed-in admin account", async () => {
+    stubFetch(adminRoutes({ "/v1/users/u1": { ...adminUser("u1", "ops@example.com", true, true), memberships: [] } }));
+    renderWorkbench(new ResceneClient("https://api.example", "token-1"));
     await openAdminConsole();
-    await waitFor(() => expect(pending).toHaveLength(1));
-    pending[0].resolve({ total: 1, items: [adminUser("u1", "ops@example.com", true, true)] });
-    await waitFor(() => expect(document.querySelector(".user-list")?.textContent).toContain("ops@example.com"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "停用" })).toBeTruthy());
+    const deactivate = screen.getByRole("button", { name: "停用" });
+    expect(deactivate.hasAttribute("disabled")).toBe(true);
 
-    const input = screen.getByLabelText("搜索邮箱");
-    fireEvent.change(input, { target: { value: "alice" } });
-    await waitFor(() => expect(pending).toHaveLength(2), { timeout: 2000 });
-    fireEvent.change(input, { target: { value: "bob" } });
-    expect(screen.getByRole("button", { name: "停用" }).hasAttribute("disabled")).toBe(true);
-    await waitFor(() => expect(pending).toHaveLength(3), { timeout: 2000 });
-    expect(pending[1]?.query).toBe("alice");
-    expect(pending[2]?.query).toBe("bob");
-
-    pending[2].resolve({ total: 1, items: [adminUser("u2", "bob@example.com", true)] });
-    await waitFor(() => expect(document.querySelector(".user-list")?.textContent).toContain("bob@example.com"));
-    expect(screen.getByRole("button", { name: "停用" }).hasAttribute("disabled")).toBe(false);
-    pending[1].resolve({ total: 1, items: [adminUser("u3", "alice@example.com", true)] });
-    await act(async () => { await Promise.resolve(); });
-    expect(document.querySelector(".user-list")?.textContent).toContain("bob@example.com");
-    expect(document.querySelector(".user-list")?.textContent).not.toContain("alice@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "详情" }));
+    await waitFor(() => expect(document.querySelector(".user-detail-card")).toBeTruthy());
+    const detailActions = screen.getAllByRole("button", { name: "停用" });
+    expect(detailActions[detailActions.length - 1]?.hasAttribute("disabled")).toBe(true);
   });
 
-  it("publishes an announcement and renders it in the list", async () => {
+  it("resets an account password after confirming target and entering a new password", async () => {
+    stubFetch(
+      adminRoutes({
+        "/v1/users": {
+          total: 2,
+          items: [adminUser("u1", "ops@example.com", true, true), adminUser("u2", "teammate@example.com", true)],
+        },
+        "POST /v1/users/u2/password": { status: 204 },
+      }),
+    );
+
+    renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+    await openAdminConsole();
+    await waitFor(() => expect(screen.getAllByRole<HTMLButtonElement>("button", { name: "重置密码" })[1]?.disabled).toBe(false));
+    await userEvent.click(screen.getAllByRole("button", { name: "重置密码" })[1]);
+
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    await userEvent.type(screen.getByLabelText("新密码（至少 12 位）"), "  fresh-password-12 ");
+    await userEvent.click(screen.getByRole("button", { name: "确认重置" }));
+
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith("/v1/users/u2/password") && init?.method === "POST");
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ password: "  fresh-password-12 " });
+    });
+  });
+
+  it("publishes an announcement from a separate form with a stable retry key", async () => {
     const published: unknown[] = [];
     stubFetch(
       adminRoutes({
@@ -809,15 +931,59 @@ describe("management console", () => {
 
     renderWorkbench(new ResceneClient("https://api.example", "token-1"));
     await openAdminConsole();
-    await userEvent.click(screen.getByRole("tab", { name: "公告" }));
+    await userEvent.click(screen.getByRole("tab", { name: "公告管理" }));
+    await userEvent.click(screen.getByRole("button", { name: "发布公告" }));
     await userEvent.type(screen.getByLabelText("标题"), "维护公告");
     await userEvent.type(screen.getByLabelText("正文"), "今晚 23:00 起维护一小时。");
-    await userEvent.click(screen.getByRole("button", { name: "发布公告" }));
+    await userEvent.selectOptions(screen.getByLabelText("级别"), "warning");
+    await userEvent.click(screen.getByRole("button", { name: "预览并发布" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "确认发布" })).toBeTruthy());
+    await userEvent.click(screen.getByRole("button", { name: "确认发布" }));
 
     await waitFor(() => expect(screen.getByText("维护公告")).toBeTruthy());
     const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith("/v1/announcements") && init?.method === "POST");
     expect(call).toBeTruthy();
-    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ title: "维护公告", body: "今晚 23:00 起维护一小时。", level: "info" });
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ title: "维护公告", body: "今晚 23:00 起维护一小时。", level: "warning" });
+    expect((call?.[1]?.headers as Record<string, string> | undefined)?.["Idempotency-Key"]).toBeTruthy();
+  });
+
+  it("retracts an announcement after warning that mail cannot be recalled", async () => {
+    stubFetch(
+      adminRoutes({
+        "/v1/announcements": [
+          {
+            id: "an1",
+            title: "维护公告",
+            body: "今晚停机维护。",
+            level: "warning",
+            created_by: "u1",
+            created_at: "2026-01-01T00:00:00Z",
+            recipient_count: 3,
+            read_count: 1,
+            mail_pending: 0,
+            mail_accepted: 2,
+            mail_failed: 0,
+            mail_unknown: 0,
+          },
+        ],
+        "DELETE /v1/announcements/an1": { status: 204 },
+      }),
+    );
+
+    renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+    await openAdminConsole();
+    await userEvent.click(screen.getByRole("tab", { name: "公告管理" }));
+    await waitFor(() => expect(screen.getByText("维护公告")).toBeTruthy());
+    await userEvent.click(screen.getByRole("button", { name: "撤回公告" }));
+
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("dialog").textContent).toContain("已发出的邮件不可追回");
+    await userEvent.click(screen.getByRole("button", { name: "确认撤回" }));
+
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith("/v1/announcements/an1") && init?.method === "DELETE");
+      expect(call).toBeTruthy();
+    });
   });
 
   it("filters the global audit log and downloads the CSV", async () => {
@@ -832,6 +998,7 @@ describe("management console", () => {
             {
               id: "l1",
               actor_email: "ops@example.com",
+              actor_username: null,
               action: "project.rename",
               target_type: "project",
               target_id: "p1",
@@ -848,7 +1015,7 @@ describe("management console", () => {
 
     renderWorkbench(new ResceneClient("https://api.example", "token-1"));
     await openAdminConsole();
-    await userEvent.click(screen.getByRole("tab", { name: "操作日志" }));
+    await userEvent.click(screen.getByRole("tab", { name: "审计日志" }));
     await userEvent.type(screen.getByLabelText("操作者"), "ops@example.com");
     await userEvent.click(screen.getByRole("button", { name: "查询" }));
 
@@ -856,6 +1023,24 @@ describe("management console", () => {
     await userEvent.click(screen.getByRole("button", { name: "下载 CSV" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/v1/audit.csv"))).toBe(true));
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:audit");
+  });
+
+  it("warns about reversed local audit time range before querying", async () => {
+    stubFetch(adminRoutes());
+    renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+    await openAdminConsole();
+    await userEvent.click(screen.getByRole("tab", { name: "审计日志" }));
+
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/v1/audit?"))).toBe(true));
+    const calls = vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes("/v1/audit?"));
+    expect(calls.length).toBe(1);
+
+    fireEvent.change(screen.getByLabelText("起始时间"), { target: { value: "2026-01-02T00:00" } });
+    fireEvent.change(screen.getByLabelText("结束时间"), { target: { value: "2026-01-01T00:00" } });
+    await userEvent.click(screen.getByRole("button", { name: "查询" }));
+
+    const newCalls = vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes("/v1/audit?"));
+    expect(newCalls.length).toBe(1);
   });
 
   it("toggles the mobile navigation drawer", async () => {
@@ -871,18 +1056,131 @@ describe("management console", () => {
 });
 
 describe("appearance", () => {
-  it("persists an explicit theme without discarding the login form", async () => {
+  const savedDisplay = JSON.stringify({ colorway: "ink", primary: "#28536B", fontSize: "large", surface: "solid" });
+
+  function storeSavedAppearance() {
+    localStorage.setItem("rescene-theme", "dark");
+    localStorage.setItem("rescene-display", savedDisplay);
+  }
+
+  it("keeps every anonymous auth screen on the system default without touch on saved preferences", async () => {
     stubFetch(routeTable());
+    let systemListener: ((event: { matches: boolean }) => void) | undefined;
+    vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: (_event: string, listener: (event: { matches: boolean }) => void) => {
+        if (query.includes("prefers-color-scheme")) systemListener = listener;
+      },
+      removeEventListener: vi.fn(),
+    })));
+    storeSavedAppearance();
+    document.documentElement.dataset.theme = "dark";
+    document.documentElement.dataset.colorway = "ink";
+
     renderWorkbench();
-    await userEvent.type(screen.getByLabelText("邮箱"), "retained@example.com");
-    await userEvent.click(screen.getByRole("button", { name: "外观" }));
-    await userEvent.selectOptions(screen.getByLabelText("外观主题"), "dark");
-    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(await screen.findByRole("heading", { name: "登录" })).toBeTruthy();
+    expect(document.documentElement.dataset.themePreference).toBe("system");
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(document.documentElement.dataset.colorway).toBe("ultramarine");
+    expect(document.documentElement.dataset.fontSize).toBe("standard");
+    expect(screen.queryByRole("button", { name: "外观" })).toBeNull();
     expect(localStorage.getItem("rescene-theme")).toBe("dark");
+    expect(localStorage.getItem("rescene-display")).toBe(savedDisplay);
+
+    act(() => systemListener?.({ matches: true }));
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(document.documentElement.dataset.colorway).toBe("ultramarine");
+
+    await userEvent.click(screen.getByRole("button", { name: "使用邮箱验证码登录" }));
+    expect(screen.getByRole("heading", { name: "验证码登录" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "外观" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "使用密码登录" }));
+    await userEvent.click(screen.getByRole("button", { name: "忘记密码" }));
+    expect(screen.getByRole("heading", { name: "重置密码" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "外观" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "返回登录" }));
+    await userEvent.click(screen.getByRole("button", { name: "注册账号" }));
+    expect(screen.getByRole("heading", { name: "注册" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "外观" })).toBeNull();
+  });
+
+  it("restores saved appearance only after /auth/me verifies, even when projects fail", async () => {
+    stubFetch(routeTable({ "/v1/projects": { status: 500, body: { detail: "offline" } } }));
+    storeSavedAppearance();
+    const client = new ResceneClient("https://api.example", "token-1");
+    const pendingMe = Promise.withResolvers<User>();
+    const getMe = vi.spyOn(client, "getMe").mockReturnValue(pendingMe.promise);
+
+    renderWorkbench(client);
+    await waitFor(() => expect(getMe).toHaveBeenCalled());
+    expect(document.documentElement.dataset.themePreference).toBe("system");
+    expect(document.documentElement.dataset.colorway).toBe("ultramarine");
+    expect(localStorage.getItem("rescene-theme")).toBe("dark");
+
+    await act(async () => {
+      pendingMe.resolve({ id: "u1", email: "ops@example.com", is_admin: false } as User);
+      await pendingMe.promise;
+    });
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+    expect(document.documentElement.dataset.themePreference).toBe("dark");
+    expect(document.documentElement.dataset.colorway).toBe("ink");
+    expect(document.documentElement.dataset.fontSize).toBe("large");
+    expect(document.documentElement.dataset.surface).toBe("solid");
+    expect(await screen.findByRole("heading", { name: "无法加载项目" })).toBeTruthy();
+    expect(localStorage.getItem("rescene-theme")).toBe("dark");
+  });
+
+  it("clears the effective palette on sign-out without erasing saved preferences and ignores late /auth/me", async () => {
+    stubFetch(routeTable({ "POST /v1/auth/logout": { status: 204 } }));
+    storeSavedAppearance();
+    const client = new ResceneClient("https://api.example", "token-1");
+    const lateMe = Promise.withResolvers<User>();
+    const getMe = vi.spyOn(client, "getMe")
+      .mockResolvedValueOnce({ id: "u1", email: "ops@example.com", is_admin: false } as User)
+      .mockReturnValueOnce(lateMe.promise);
+    renderWorkbench(client);
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+
+    await userEvent.click(await screen.findByRole("button", { name: "Kitchen" }));
+    await waitFor(() => expect(getMe).toHaveBeenCalledTimes(2));
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    await userEvent.click(await screen.findByRole("button", { name: "退出登录" }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "登录" })).toBeTruthy());
+    expect(document.documentElement.dataset.themePreference).toBe("system");
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(document.documentElement.dataset.colorway).toBe("ultramarine");
+    expect(document.documentElement.dataset.fontSize).toBe("standard");
+    expect(localStorage.getItem("rescene-theme")).toBe("dark");
+    expect(localStorage.getItem("rescene-display")).toBe(savedDisplay);
+
+    await act(async () => {
+      lateMe.resolve({ id: "u1", email: "ops@example.com", is_admin: false } as User);
+      await lateMe.promise;
+    });
+    expect(screen.getByRole("heading", { name: "登录" })).toBeTruthy();
+    expect(document.documentElement.dataset.themePreference).toBe("system");
+    expect(document.documentElement.dataset.colorway).toBe("ultramarine");
+    expect(localStorage.getItem("rescene-theme")).toBe("dark");
+  });
+
+  it("persists an explicit appearance from settings and updates the effective palette", async () => {
+    stubFetch(routeTable());
+    renderWorkbench(new ResceneClient("https://api.example", "token-1"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "设置" })).toBeTruthy());
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    await userEvent.click(screen.getByRole("button", { name: "外观" }));
+    expect(screen.getByRole("heading", { name: "外观" })).toBeTruthy();
+
+    await userEvent.selectOptions(screen.getByLabelText("外观主题"), "dark");
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+    expect(localStorage.getItem("rescene-theme")).toBe("dark");
+    await userEvent.selectOptions(screen.getByLabelText("字体大小"), "large");
+    await waitFor(() => expect(document.documentElement.dataset.fontSize).toBe("large"));
+    const stored = JSON.parse(localStorage.getItem("rescene-display") ?? "{}") as { fontSize?: string };
+    expect(stored.fontSize).toBe("large");
     await userEvent.selectOptions(screen.getByLabelText("外观主题"), "light");
     expect(document.documentElement.dataset.theme).toBe("light");
-    await userEvent.click(screen.getByRole("button", { name: "返回登录" }));
-    expect((screen.getByLabelText("邮箱") as HTMLInputElement).value).toBe("retained@example.com");
   });
 });
 
@@ -991,7 +1289,7 @@ describe("job status reconciliation", () => {
 });
 
 describe("job log paging", () => {
-  const log = (id: number, message: string): JobLog => ({ id, level: "info", message, created_at: "2026-01-01T00:00:00Z" });
+  const log = (id: number, message: string, overrides: Partial<JobLog> = {}): JobLog => ({ id, level: "info", message, attempt: null, created_at: "2026-01-01T00:00:00Z", ...overrides });
   const job = (id: string) => ({
     id, project_id: "p1", profile: "balanced", status: "SUCCEEDED", progress: 1, attempt: 1,
     cancel_requested: false, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", reconstruction_id: null,
@@ -1032,6 +1330,48 @@ describe("job log paging", () => {
 
     expect(screen.queryByText(/j1 old page/)).toBeNull();
     expect(screen.getByText(/j2 latest/)).toBeTruthy();
+  });
+
+  it("shows the attempt round for each log line", async () => {
+    const client = new ResceneClient("https://api.example", "token-1");
+    vi.spyOn(client, "listJobLogs").mockResolvedValue([
+      log(1, "first", { attempt: 1 }),
+      log(2, "second", { attempt: null }),
+    ]);
+    stubFetch(routeTable({
+      "/v1/projects/p1": { ...projectDetail("owner"), jobs: [job("j1")] },
+    }));
+    renderWorkbench(client);
+    await userEvent.click(await screen.findByRole("button", { name: "Kitchen" }));
+    await userEvent.click(screen.getByRole("button", { name: "任务" }));
+    await userEvent.click(await screen.findByRole("button", { name: /均衡重建/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /查看运行日志/ }));
+    await waitFor(() => expect(screen.getByText(/第 1 轮/)).toBeTruthy());
+    expect(screen.getByText(/轮次未知/)).toBeTruthy();
+  });
+
+  it("switches the level filter and resets the list", async () => {
+    const client = new ResceneClient("https://api.example", "token-1");
+    const calls: { jobId: string; level?: string }[] = [];
+    vi.spyOn(client, "listJobLogs").mockImplementation((jobId, params) => {
+      calls.push({ jobId, level: params?.level });
+      return Promise.resolve([
+        log(1, params?.level ?? "all", { level: (params?.level as JobLog["level"]) ?? "info" }),
+      ]);
+    });
+    stubFetch(routeTable({
+      "/v1/projects/p1": { ...projectDetail("owner"), jobs: [job("j1")] },
+    }));
+    renderWorkbench(client);
+    await userEvent.click(await screen.findByRole("button", { name: "Kitchen" }));
+    await userEvent.click(screen.getByRole("button", { name: "任务" }));
+    await userEvent.click(await screen.findByRole("button", { name: /均衡重建/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /查看运行日志/ }));
+    await waitFor(() => expect(screen.getByText(/all/)).toBeTruthy());
+
+    await userEvent.selectOptions(screen.getByLabelText("级别"), "debug");
+    await waitFor(() => expect(screen.getByText(/debug/)).toBeTruthy());
+    expect(calls.some((call) => call.level === "debug")).toBe(true);
   });
 });
 
@@ -1079,15 +1419,16 @@ describe("project-scoped uploads", () => {
 });
 
 describe("notification pagination", () => {
-  function notice(id: string, index: number): AppNotification {
+  function notice(id: string, index: number, kind: AppNotification["kind"] = "announcement"): AppNotification {
     return {
       id,
-      kind: "announcement",
+      kind,
       title: `通知 ${index}`,
       body: null,
       project_id: null,
       job_id: null,
-      announcement_id: "a1",
+      announcement_id: kind === "announcement" ? "a1" : null,
+      announcement_level: kind === "announcement" ? "info" : null,
       read_at: null,
       created_at: "2026-01-01T00:00:00Z",
     };
@@ -1148,6 +1489,32 @@ describe("notification pagination", () => {
     await waitFor(() => expect(screen.getByText("通知 1")).toBeTruthy());
 
     await act(async () => { resolveUnread([notice("stale", 99)]); });
+    expect(screen.queryByText("通知 99")).toBeNull();
+  });
+
+  it("drops a stale kind page after switching back", async () => {
+    const client = new ResceneClient("https://api.example", "token-1");
+    let resolveKind: (value: AppNotification[]) => void = () => {};
+    vi.spyOn(client, "listNotifications").mockImplementation((_unread, _limit, _offset, kind) => {
+      if (kind === "job.succeeded") {
+        const { promise, resolve } = Promise.withResolvers<AppNotification[]>();
+        resolveKind = resolve;
+        return promise;
+      }
+      return Promise.resolve([notice("n1", 1, (kind as AppNotification["kind"] | undefined) ?? "announcement")]);
+    });
+    stubFetch(routeTable({ "/v1/notifications/count": { unread: 2 } }));
+    renderWorkbench(client);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "通知（2）" })).toBeTruthy());
+    await userEvent.click(screen.getByRole("button", { name: "通知（2）" }));
+    await waitFor(() => expect(screen.getByText("通知 1")).toBeTruthy());
+
+    await userEvent.click(screen.getByRole("tab", { name: "任务成功" }));
+    await userEvent.click(screen.getByRole("tab", { name: "所有类型" }));
+    await waitFor(() => expect(screen.getByText("通知 1")).toBeTruthy());
+
+    await act(async () => { resolveKind([notice("stale", 99, "job.succeeded")]); });
     expect(screen.queryByText("通知 99")).toBeNull();
   });
 

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { legalDocuments, type LegalDocumentId } from "@rescene/schemas";
+import { useCallback, useEffect, useState, type PropsWithChildren } from "react";
 import {
   AccessibilityInfo,
   AppState,
@@ -26,14 +27,25 @@ import { JobScreen } from "./screens/Job";
 import { LoginScreen, type AuthMode } from "./screens/Login";
 import { ProjectScreen, type ProjectDraft } from "./screens/Project";
 import { ProjectsScreen } from "./screens/Projects";
+import {
+  AccountSettingsScreen,
+  LegalDocumentScreen,
+  LegalScreen,
+  NotificationSettingsScreen,
+  PasswordSettingsScreen,
+  SettingsScreen,
+  type SettingsCategory,
+} from "./screens/Settings";
 import { ViewerScreen } from "./screens/ViewerScreen";
-import { useAppearance } from "./appearance";
-import { AppearanceScreen, Busy, Button, ErrorText, ScaledText as Text, Screen } from "./ui";
+import { AppearanceProvider, useAppearance } from "./appearance";
+import { AppearanceScreen, Busy, Button, ErrorText, ScaledText as Text, Screen, useTextStyles } from "./ui";
 
-type RootPage = "projects" | "new-project" | "claim-invite" | "notifications" | "settings" | "account" | "password";
+type RootPage = "projects" | "new-project" | "claim-invite" | "notifications";
+type SettingsPage = "settings" | "settings-account" | "settings-password" | "settings-notifications" | "settings-appearance" | "settings-legal";
 type JobPage = "job-logs" | "result" | "downloads" | "shares";
 type Route =
-  | { name: RootPage | "appearance" | "configure" | "project-management" | JobPage }
+  | { name: RootPage | SettingsPage | "configure" | "project-management" | JobPage }
+  | { name: "settings-legal-document"; documentId: LegalDocumentId }
   | { name: "project"; id: string; label: string; draft?: ProjectDraft }
   | { name: "job"; id: string; entry: "job" | "result" }
   | { name: "viewer"; reconstructionId: string }
@@ -50,9 +62,11 @@ const ROUTE_TITLES: Record<string, string> = {
   "claim-invite": "领取邀请",
   notifications: "通知",
   settings: "设置",
-  appearance: "外观",
-  account: "账户",
-  password: "修改密码",
+  "settings-account": "账户与安全",
+  "settings-password": "修改密码",
+  "settings-notifications": "通知偏好",
+  "settings-appearance": "外观",
+  "settings-legal": "协议与许可",
   configure: "配置重建",
   "project-management": "项目管理",
   job: "任务详情",
@@ -64,13 +78,46 @@ const ROUTE_TITLES: Record<string, string> = {
   admin: "管理控制台",
 };
 
+const SETTINGS_ROUTES: Record<SettingsCategory, SettingsPage> = {
+  account: "settings-account",
+  notifications: "settings-notifications",
+  appearance: "settings-appearance",
+  legal: "settings-legal",
+};
+
 function routeTitle(route: Route): string {
   if (route.name === "project") return route.label;
+  if (route.name === "settings-legal-document") {
+    return legalDocuments.find((document) => document.id === route.documentId)?.title ?? "协议与许可";
+  }
   return ROUTE_TITLES[route.name] ?? "ReScene";
 }
 
-export function AppRoot() {
+function OfflineSession({ notice, onRetry, onForget }: { notice: string; onRetry: () => void; onForget: () => void }) {
+  const textStyles = useTextStyles();
+  return (
+    <Screen title="无法验证会话">
+      <ErrorText>{notice || "无法连接服务器，请检查网络后重试。"}</ErrorText>
+      <Text style={textStyles.muted}>服务器地址：{apiBaseUrl}</Text>
+      <Button label="重试" onPress={onRetry} />
+      <Button label="清除本地会话" onPress={onForget} tone="ghost" />
+    </Screen>
+  );
+}
+
+function AppearanceFrame({ children }: PropsWithChildren) {
   const { theme, dark } = useAppearance();
+  return (
+    <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }}>
+      <StatusBar barStyle={dark ? "light-content" : "dark-content"} />
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
+        <View style={{ backgroundColor: theme.bg, flex: 1 }}>{children}</View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+export function AppRoot() {
   const [session, setSession] = useState<Session>("loading");
   const [routes, setRoutes] = useState<Route[]>([{ name: "projects" }]);
   const [authMode, setAuthMode] = useState<AuthMode>("login");
@@ -162,10 +209,11 @@ export function AppRoot() {
         if (!cancelled) resetToLogin("会话已过期，请重新登录。");
         return;
       }
+      const retryIn = expiry === null ? RETRY_AFTER_MS : Math.min(RETRY_AFTER_MS, Math.max(0, expiry - Date.now()));
       timer = setTimeout(() => {
         timer = null;
         void tick();
-      }, RETRY_AFTER_MS);
+      }, retryIn);
     };
 
     schedule();
@@ -256,22 +304,18 @@ export function AppRoot() {
       </Screen>
     );
   } else if (session === "offline") {
-    content = route.name === "appearance" ? <AppearanceScreen onBack={back} /> : (
-      <Screen title="无法验证会话">
-        <ErrorText>{notice || "无法连接服务器，请检查网络后重试。"}</ErrorText>
-        <Text style={{ color: theme.muted }}>服务器地址：{apiBaseUrl}</Text>
-        <Button label="重试" onPress={() => void bootstrap()} />
-        <Button label="外观" onPress={() => push({ name: "appearance" })} tone="ghost" />
-        <Button label="清除本地会话" onPress={() => void forgetLocalSession()} tone="ghost" />
-      </Screen>
+    content = (
+      <OfflineSession
+        notice={notice}
+        onForget={() => void forgetLocalSession()}
+        onRetry={() => void bootstrap()}
+      />
     );
   } else if (session === "signed-out") {
-    content = <>
+    content = (
       <LoginScreen
-        active={route.name !== "appearance"}
         mode={authMode}
         onModeChange={setAuthMode}
-        onAppearance={() => push({ name: "appearance" })}
         notice={notice}
         onSignedIn={() => {
           setNotice("");
@@ -279,16 +323,16 @@ export function AppRoot() {
           setSession("signed-in");
         }}
       />
-      {route.name === "appearance" && <AppearanceScreen onBack={back} />}
-    </>;
+    );
   } else {
     const project = [...routes].reverse().find((item): item is Extract<Route, { name: "project" }> => item.name === "project");
     const job = [...routes].reverse().find((item): item is Extract<Route, { name: "job" }> => item.name === "job");
-    const rootPage: RootPage | null = route.name === "projects" || route.name === "new-project" || route.name === "claim-invite" || route.name === "notifications" || route.name === "settings" || route.name === "account" || route.name === "password" ? route.name : null;
+    const rootPage: RootPage | null = route.name === "projects" || route.name === "new-project" || route.name === "claim-invite" || route.name === "notifications" ? route.name : null;
     const projectPage = route.name === "project" || route.name === "configure" || route.name === "project-management" ? route.name : null;
     const jobPage = route.name === "job" ? route.entry : route.name === "job-logs" || route.name === "result" || route.name === "downloads" || route.name === "shares" ? route.name : null;
     const previousRoute = routes[routes.length - 2];
     const projectBackLabel = previousRoute?.name === "notifications" ? "返回通知" : "返回项目列表";
+    const settingsBackLabel = project ? "返回项目" : previousRoute?.name === "notifications" ? "返回通知" : "返回";
     const viewerBackLabel = previousRoute?.name === "result" ? "返回结果" : previousRoute?.name === "downloads" ? "返回下载" : "返回任务";
     const jobBackLabel = previousRoute === undefined
       ? "返回"
@@ -305,11 +349,10 @@ export function AppRoot() {
         returnToProject={Boolean(project)}
         onReturnToProject={backToProject}
         onNavigate={(name) => name === "projects" ? setRoutes([{ name: "projects" }]) : push({ name })}
+        onSettings={() => push({ name: "settings" })}
         onBack={back}
-        onAdmin={() => push({ name: "admin" })}
         onJob={(id) => push({ name: "job", id, entry: "job" })}
         onOpen={(item) => setRoutes((current) => [...(current.at(-1)?.name === "new-project" ? current.slice(0, -1) : current), { name: "project", id: item.id, label: item.name }])}
-        onSignOut={() => void signOut()}
       />
       {project && <ProjectScreen
         key={project.id}
@@ -346,18 +389,39 @@ export function AppRoot() {
         }}
         onOpenScene={(reconstructionId) => push({ name: "viewer", reconstructionId })}
       />}
-      {route.name === "appearance" && <AppearanceScreen onBack={back} />}
+      {route.name === "settings" && <SettingsScreen
+        backLabel={settingsBackLabel}
+        onBack={project ? backToProject : back}
+        onAdmin={() => push({ name: "admin" })}
+        onOpen={(page) => push({ name: SETTINGS_ROUTES[page] })}
+      />}
+      {route.name === "settings-account" && <AccountSettingsScreen
+        backLabel="返回设置"
+        onBack={back}
+        onChangePassword={() => push({ name: "settings-password" })}
+        onSignOut={() => void signOut()}
+      />}
+      {route.name === "settings-password" && <PasswordSettingsScreen backLabel="返回账户与安全" onBack={back} />}
+      {route.name === "settings-notifications" && <NotificationSettingsScreen backLabel="返回设置" onBack={back} />}
+      {route.name === "settings-appearance" && <AppearanceScreen backLabel="返回设置" onBack={back} />}
+      {route.name === "settings-legal" && <LegalScreen
+        backLabel="返回设置"
+        onBack={back}
+        onOpen={(documentId) => push({ name: "settings-legal-document", documentId })}
+      />}
+      {route.name === "settings-legal-document" && <LegalDocumentScreen
+        backLabel="返回协议与许可"
+        documentId={route.documentId}
+        onBack={back}
+      />}
       {route.name === "admin" && <AdminScreen onBack={back} />}
       {route.name === "viewer" && <ViewerScreen backLabel={viewerBackLabel} onBack={back} reconstructionId={route.reconstructionId} />}
     </>;
   }
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }}>
-      <StatusBar barStyle={dark ? "light-content" : "dark-content"} />
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
-        <View style={{ backgroundColor: theme.bg, flex: 1 }}>{content}</View>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+    <AppearanceProvider active={session === "signed-in"}>
+      <AppearanceFrame>{content}</AppearanceFrame>
+    </AppearanceProvider>
   );
 }

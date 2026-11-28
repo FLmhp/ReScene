@@ -159,6 +159,9 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
     try { await Taro.navigateTo({ url: focusUrl(view, jobId) }); return true; }
     catch { void Taro.showToast({ title: "无法打开页面，请重试", icon: "none" }); return false; }
   }
+  function openSettings() {
+    void Taro.navigateTo({ url: "/pages/settings/index" }).catch(() => Taro.showToast({ title: "无法打开页面，请重试", icon: "none" }));
+  }
   const loadWorker = useCallback(async () => {
     try { const value = await client.getWorkerStatus(); if (alive.current) setWorker(value); }
     catch { if (alive.current) setWorker(null); }
@@ -378,7 +381,7 @@ function ProjectWorkspace({ params }: { params: Record<string, string | undefine
       <Text className="title">{detail?.name ?? "项目"}</Text>
       <View className="project-nav">
         <Button className="button ghost compact" onClick={() => void openFocus("notifications")}>通知</Button>
-        <Button className="button ghost compact" onClick={() => void openFocus("settings")}>设置</Button>
+        <Button className="button ghost compact" onClick={openSettings}>设置</Button>
       </View>
     </View>
     {detail ? <>

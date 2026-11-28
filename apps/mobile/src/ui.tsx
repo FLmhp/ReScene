@@ -262,7 +262,7 @@ export function Segmented<T extends string>({
   );
 }
 
-export function AppearanceScreen({ onBack }: { onBack: () => void }) {
+export function AppearanceScreen({ onBack, backLabel = "返回" }: { onBack: () => void; backLabel?: string }) {
   const { theme, dark, preference, display, saveError, setPreference, setDisplay, resetAppearance } = useAppearance();
   const [draft, setDraft] = useState(display.primary);
   const [invalid, setInvalid] = useState(false);
@@ -277,8 +277,9 @@ export function AppearanceScreen({ onBack }: { onBack: () => void }) {
   const preview = normalizePrimary(draft) ?? display.primary;
   const lightPreview = resolvePalette("custom", false, preview);
   const darkPreview = resolvePalette("custom", true, preview);
-  return <Screen title="外观" scroll onBack={onBack}>
+  return <Screen title="外观" scroll onBack={onBack} backLabel={backLabel}>
     <View style={{ width: "100%", maxWidth: 560, alignSelf: "center", gap: spacing.lg }}>
+      <Text style={{ color: theme.muted, fontSize: 14, lineHeight: 20 }}>仅此设备 · 外观不会同步到其他设备。</Text>
       {saveError ? <Text accessibilityLiveRegion="polite" accessibilityRole="alert" style={{ color: theme.danger, fontSize: 16 }}>{saveError}</Text> : null}
       <View style={{ gap: spacing.sm }}>
         <Text accessibilityRole="header" style={{ color: theme.fg, fontSize: 18, fontWeight: "600" }}>外观主题</Text>

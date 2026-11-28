@@ -31,7 +31,7 @@ export default function ViewerPage() {
   const [src, setSrc] = useState("");
   const [phase, setPhase] = useState<Phase>("loading");
   const [error, setError] = useState("");
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [renewal, setRenewal] = useState(0);
@@ -162,12 +162,16 @@ export default function ViewerPage() {
     setError("");
     try {
       const client = new ResceneClient(API);
-      const result = await client.login(email, password);
+      const result = await client.login(identifier, password);
       window.localStorage.setItem(TOKEN_KEY, result.access_token);
       setPassword("");
       await loadBrowser(reconstructionId);
     } catch (reason) {
-      setError(messageOf(reason));
+      if (reason instanceof ResceneApiError && (reason.status === 401 || reason.status === 403)) {
+        setError("邮箱、用户名或密码不正确。");
+      } else {
+        setError(messageOf(reason));
+      }
       setPhase("login");
     } finally {
       setBusy(false);
@@ -187,16 +191,18 @@ export default function ViewerPage() {
           {phase === "login" ? (
             <>
               <h2>使用 ReScene 账号查看</h2>
-              <p>该场景属于私有重建，请使用邮箱和密码登录。</p>
+              <p>该场景属于私有重建，请使用邮箱或用户名和密码登录。</p>
               <form onSubmit={signIn}>
                 <label>
-                  邮箱
+                  邮箱或用户名
                   <input
-                    type="email"
-                    autoComplete="email"
+                    type="text"
+                    autoComplete="username"
+                    autoCapitalize="off"
+                    autoCorrect="off"
                     required
-                    value={email}
-                    onChange={(event) => setEmail(event.target.value)}
+                    value={identifier}
+                    onChange={(event) => setIdentifier(event.target.value)}
                   />
                 </label>
                 <label>

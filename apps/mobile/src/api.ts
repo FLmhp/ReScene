@@ -91,13 +91,16 @@ export function discardSession(): Promise<void> {
   return write;
 }
 
-export async function authenticate(mode: "login" | "register", email: string, password: string): Promise<boolean> {
+export async function authenticate(mode: "login" | "register", identifier: string, password: string): Promise<boolean> {
   const clearing = discardSession();
   const expected = session.snapshot();
   await clearing;
   if (!session.matches(expected)) return false;
   const auth = new ResceneClient(apiBaseUrl);
-  const { access_token: token } = await auth[mode](email, password);
+  const address = identifier.trim();
+  const { access_token: token } = mode === "login"
+    ? await auth.login(address, password)
+    : await auth.register(address, password);
   if (!session.matches(expected)) return false;
   const user = await auth.getMe();
   return persistCredential(expected, { token, owner: user.id });

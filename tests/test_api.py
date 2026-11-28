@@ -1,7 +1,11 @@
+import asyncio
 import base64
+import csv
 import hashlib
 import hmac
+import io
 import json
+import os
 import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -10,6 +14,7 @@ import oss2
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from PIL import Image, ImageDraw
 from sqlalchemy import delete, event, func, select, update
 
 from rescene_api import main
@@ -22,19 +27,52 @@ from rescene_api.models import (
     AssetCleanup,
     AuditLog,
     EmailAuthCode,
+    JobLog,
     JobStage,
     Notification,
+    NotificationEmailOutbox,
     Project,
     ProjectInvitation,
     ProjectMember,
     Reconstruction,
     ReconstructionJob,
+    ReservedLoginKey,
     User,
     now,
 )
+from rescene_api.notification_outbox import drain_outbox
 from rescene_api.ratelimit import limiter
 from rescene_api.schemas import ChangePasswordRequest
 from rescene_api.storage import OssStorage, TemporaryCredentials
+from tests.notification_outbox import SmtpSink, decode_captured_message
+
+
+@pytest.fixture
+def disable_outbox_daemon(monkeypatch):
+    """Prevent the async outbox daemon from racing with controlled drains."""
+
+    async def _noop(_sessions):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(main, "run_outbox", _noop)
+
+
+@pytest.fixture
+def smtp_sink(monkeypatch, disable_outbox_daemon):
+    """Yield a running loopback SMTP sink and configure the app to use it."""
+    monkeypatch.setenv("RESCENE_SMTP_SECURITY", "none")
+    monkeypatch.setenv("RESCENE_SMTP_HOST", "127.0.0.1")
+    monkeypatch.setenv("RESCENE_SMTP_FROM", "notify@example.test")
+    main.settings.cache_clear()
+    sink = SmtpSink("127.0.0.1", 0)
+    sink.start()
+    try:
+        monkeypatch.setenv("RESCENE_SMTP_PORT", str(sink.port))
+        main.settings.cache_clear()
+        yield sink
+    finally:
+        sink.stop()
+        main.settings.cache_clear()
 
 
 def test_login_project_and_worker_status(monkeypatch) -> None:
@@ -286,6 +324,446 @@ def test_registration_rejects_invalid_input() -> None:
         assert malformed.status_code == 422
     with SessionLocal() as db:
         assert db.query(User).count() == 0
+
+
+def test_username_historical_nonstandard_email_login_precedence() -> None:
+    """Legacy accounts whose email lacks '@' keep exact legacy login and also resolve through identifier."""
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            legacy = User(email="legacyid", password_hash=hash_password("correct-horse"))
+            db.add(legacy)
+            db.commit()
+
+        legacy_format = client.post("/v1/auth/login", json={"email": "legacyid", "password": "correct-horse"})
+        assert legacy_format.status_code == 200
+
+        new_format = client.post("/v1/auth/login", json={"identifier": "legacyid", "password": "correct-horse"})
+        assert new_format.status_code == 200
+
+        legacy_me = client.get(
+            "/v1/auth/me",
+            headers={"Authorization": f"Bearer {legacy_format.json()['access_token']}"},
+        )
+        new_me = client.get(
+            "/v1/auth/me",
+            headers={"Authorization": f"Bearer {new_format.json()['access_token']}"},
+        )
+        assert legacy_me.json()["id"] == new_me.json()["id"]
+        assert legacy_me.json()["username"] is None
+        assert legacy_me.json()["avatar_revision"] is None
+
+        # Login requests must carry exactly one of email or identifier.
+        both = client.post(
+            "/v1/auth/login",
+            json={"email": "legacyid", "identifier": "legacyid", "password": "correct-horse"},
+        )
+        assert both.status_code == 422
+        neither = client.post("/v1/auth/login", json={"password": "correct-horse"})
+        assert neither.status_code == 422
+
+
+def test_username_reserved_namespace_blocks_claims() -> None:
+    """reserved_login_keys entries block username claims even when no account currently uses them."""
+    with TestClient(app) as client:
+        created = client.post("/v1/auth/register", json={"email": "claimer@example.com", "password": "correct-horse"})
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+
+        with SessionLocal() as db:
+            db.add(ReservedLoginKey(key="legacyid"))
+            db.commit()
+
+        blocked = client.patch("/v1/auth/me", headers=headers, json={"username": "legacyid"})
+        assert blocked.status_code == 409
+        assert blocked.headers["x-error-code"] == "auth.username_taken"
+
+        # A non-reserved name still works.
+        assert client.patch("/v1/auth/me", headers=headers, json={"username": "AllowedName"}).status_code == 200
+
+
+def test_username_uniqueness_includes_inactive_and_nfkc() -> None:
+    """Username namespace is shared by active and inactive accounts; NFKC and ASCII case fold collide."""
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            admin = User(email="root@example.com", password_hash=hash_password("correct-horse"), is_admin=True)
+            db.add(admin)
+            db.commit()
+        root = client.post("/v1/auth/login", json={"email": "root@example.com", "password": "correct-horse"})
+        admin_headers = {"Authorization": f"Bearer {root.json()['access_token']}"}
+
+        first = client.post("/v1/auth/register", json={"email": "first@example.com", "password": "correct-horse"})
+        assert first.status_code == 201
+        first_headers = {"Authorization": f"Bearer {first.json()['access_token']}"}
+        assert client.patch("/v1/auth/me", headers=first_headers, json={"username": "AlphaUser"}).status_code == 200
+
+        second = client.post("/v1/auth/register", json={"email": "second@example.com", "password": "correct-horse"})
+        second_headers = {"Authorization": f"Bearer {second.json()['access_token']}"}
+
+        # Case-fold collision.
+        conflict_case = client.patch("/v1/auth/me", headers=second_headers, json={"username": "alphauser"})
+        assert conflict_case.status_code == 409
+        assert conflict_case.headers["x-error-code"] == "auth.username_taken"
+
+        # NFKC fullwidth collision.
+        conflict_nfkc = client.patch("/v1/auth/me", headers=second_headers, json={"username": "ＡｌｐｈａＵｓｅｒ"})
+        assert conflict_nfkc.status_code == 409
+        assert conflict_nfkc.headers["x-error-code"] == "auth.username_taken"
+
+        # Deactivate the first account; the name is still reserved across the whole namespace.
+        first_id = client.get("/v1/auth/me", headers=first_headers).json()["id"]
+        assert client.patch(f"/v1/users/{first_id}", headers=admin_headers, json={"active": False}).status_code == 200
+        still_taken = client.patch("/v1/auth/me", headers=second_headers, json={"username": "ALPHAUSER"})
+        assert still_taken.status_code == 409
+        assert still_taken.headers["x-error-code"] == "auth.username_taken"
+
+        # A brand new account also cannot claim the name.
+        third = client.post("/v1/auth/register", json={"email": "third@example.com", "password": "correct-horse"})
+        third_headers = {"Authorization": f"Bearer {third.json()['access_token']}"}
+        assert client.patch("/v1/auth/me", headers=third_headers, json={"username": "alphauser"}).status_code == 409
+
+
+def test_username_rename_frees_old_and_preserves_session() -> None:
+    """Renaming frees the old identifier, binds the new one, and preserves the current session and email login."""
+    with TestClient(app) as client:
+        first = client.post("/v1/auth/register", json={"email": "first@example.com", "password": "correct-horse"})
+        first_headers = {"Authorization": f"Bearer {first.json()['access_token']}"}
+        assert client.patch("/v1/auth/me", headers=first_headers, json={"username": "OriginalName"}).status_code == 200
+
+        second = client.post("/v1/auth/register", json={"email": "second@example.com", "password": "correct-horse"})
+        second_headers = {"Authorization": f"Bearer {second.json()['access_token']}"}
+
+        renamed = client.patch("/v1/auth/me", headers=first_headers, json={"username": "NewName"})
+        assert renamed.status_code == 200
+        assert renamed.json()["username"] == "NewName"
+
+        # Old identifier no longer works.
+        assert (
+            client.post("/v1/auth/login", json={"identifier": "originalname", "password": "correct-horse"}).status_code
+            == 401
+        )
+
+        # New identifier works.
+        assert (
+            client.post("/v1/auth/login", json={"identifier": "newname", "password": "correct-horse"}).status_code
+            == 200
+        )
+
+        # The old name is now available to another account.
+        assert client.patch("/v1/auth/me", headers=second_headers, json={"username": "OriginalName"}).status_code == 200
+
+        # The renaming account's session is still valid.
+        me = client.get("/v1/auth/me", headers=first_headers)
+        assert me.status_code == 200
+        assert me.json()["username"] == "NewName"
+
+        # Email login keeps working after rename.
+        assert (
+            client.post("/v1/auth/login", json={"email": "first@example.com", "password": "correct-horse"}).status_code
+            == 200
+        )
+
+
+def test_patch_me_username_validation() -> None:
+    """PATCH /v1/auth/me only accepts a username and rejects invalid values."""
+    with TestClient(app) as client:
+        created = client.post("/v1/auth/register", json={"email": "valid@example.com", "password": "correct-horse"})
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+
+        # Valid usernames: ASCII letters/digits/_/- and CJK Unified Ideographs.
+        assert client.patch("/v1/auth/me", headers=headers, json={"username": "Valid_Name-123"}).status_code == 200
+        assert client.patch("/v1/auth/me", headers=headers, json={"username": "  山景_A  "}).status_code == 200
+        updated = client.patch("/v1/auth/me", headers=headers, json={"username": "FinalName"})
+        assert updated.status_code == 200
+        assert updated.json()["username"] == "FinalName"
+        assert updated.json()["avatar_revision"] is None
+
+        # Blank and whitespace-only.
+        assert client.patch("/v1/auth/me", headers=headers, json={"username": ""}).status_code == 422
+        assert client.patch("/v1/auth/me", headers=headers, json={"username": "   "}).status_code == 422
+
+        # Too short / too long.
+        assert client.patch("/v1/auth/me", headers=headers, json={"username": "ab"}).status_code == 422
+        assert client.patch("/v1/auth/me", headers=headers, json={"username": "a" * 33}).status_code == 422
+
+        # Disallowed characters and content.
+        assert client.patch("/v1/auth/me", headers=headers, json={"username": "a@b"}).status_code == 422
+        assert client.patch("/v1/auth/me", headers=headers, json={"username": "no spaces"}).status_code == 422
+        assert client.patch("/v1/auth/me", headers=headers, json={"username": "___"}).status_code == 422
+
+        # Extra fields are refused.
+        assert (
+            client.patch("/v1/auth/me", headers=headers, json={"username": "GoodName", "email": "x@y.com"}).status_code
+            == 422
+        )
+
+
+def _encode_image(image: Image.Image, fmt: str, **kwargs: object) -> str:
+    buf = io.BytesIO()
+    image.save(buf, format=fmt, **kwargs)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _jpeg_base64(
+    width: int,
+    height: int,
+    *,
+    orientation: int | None = None,
+    center_color: tuple[int, int, int] | None = None,
+) -> str:
+    image = Image.new("RGB", (width, height), "white")
+    if center_color is not None:
+        draw = ImageDraw.Draw(image)
+        square = min(width, height) // 3
+        left = (width - square) // 2
+        top = (height - square) // 2
+        draw.rectangle([left, top, left + square, top + square], fill=center_color)
+    if orientation is not None:
+        exif = Image.Exif()
+        exif[0x0112] = orientation
+        return _encode_image(image, "JPEG", quality=85, exif=exif.tobytes())
+    return _encode_image(image, "JPEG", quality=85)
+
+
+def _png_base64(width: int, height: int, color: tuple[int, int, int, int]) -> str:
+    return _encode_image(Image.new("RGBA", (width, height), color), "PNG")
+
+
+def _large_jpeg_base64() -> str:
+    # 25 million pixels, well under 1 MiB when encoded, to test the pixel limit.
+    return _encode_image(Image.new("RGB", (5000, 5000), "gray"), "JPEG", quality=10)
+
+
+def _animated_webp_base64() -> str:
+    frames = [Image.new("RGB", (100, 100), color) for color in ("red", "blue")]
+    buf = io.BytesIO()
+    frames[0].save(buf, format="WEBP", save_all=True, append_images=frames[1:], duration=100)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def test_avatar_upload_valid_jpeg_exif_orientation_and_center_crop() -> None:
+    """A non-square JPEG with EXIF orientation is cropped to a centered 192x192 square."""
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/auth/register", json={"email": "avatarowner@example.com", "password": "correct-horse"}
+        )
+        assert created.status_code == 201
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+
+        me = client.get("/v1/auth/me", headers=headers)
+        user_id = me.json()["id"]
+
+        image_b64 = _jpeg_base64(600, 400, orientation=6, center_color=(255, 0, 0))
+        uploaded = client.post("/v1/auth/me/avatar", headers=headers, json={"image_base64": image_b64})
+        assert uploaded.status_code == 200
+        body = uploaded.json()
+        assert body["avatar_revision"]
+        assert "image_base64" not in body
+        assert "jpeg_bytes" not in body
+
+        fetched = client.get(f"/v1/users/{user_id}/avatar", headers=headers)
+        assert fetched.status_code == 200
+        assert fetched.headers["cache-control"] == "private, no-store"
+        fetched_body = fetched.json()
+        assert fetched_body["revision"] == body["avatar_revision"]
+
+        out = Image.open(io.BytesIO(base64.b64decode(fetched_body["image_base64"])))
+        assert out.size == (192, 192)
+        assert out.mode == "RGB"
+        assert out.getexif().get(0x0112) is None
+        r, g, b = out.getpixel((96, 96))[:3]
+        assert r > 200 and g < 50 and b < 50
+
+        with SessionLocal() as db:
+            assert db.scalar(select(AuditLog).where(AuditLog.action == "user.avatar.update")) is not None
+
+
+def test_avatar_upload_transparent_png_composites_white() -> None:
+    """A fully transparent PNG is composited onto white before encoding."""
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/auth/register", json={"email": "transparentowner@example.com", "password": "correct-horse"}
+        )
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+
+        me = client.get("/v1/auth/me", headers=headers)
+        user_id = me.json()["id"]
+
+        uploaded = client.post(
+            "/v1/auth/me/avatar", headers=headers, json={"image_base64": _png_base64(200, 200, (0, 0, 0, 0))}
+        )
+        assert uploaded.status_code == 200
+
+        fetched = client.get(f"/v1/users/{user_id}/avatar", headers=headers)
+        out = Image.open(io.BytesIO(base64.b64decode(fetched.json()["image_base64"])))
+        assert out.size == (192, 192)
+        assert out.mode == "RGB"
+        assert out.getpixel((0, 0)) == (255, 255, 255)
+        assert out.getpixel((191, 191)) == (255, 255, 255)
+
+
+def test_avatar_upload_invalid_does_not_replace_existing_avatar() -> None:
+    """Invalid bytes, byte limit, pixel limit and animation do not overwrite the stored avatar."""
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/auth/register", json={"email": "replaceowner@example.com", "password": "correct-horse"}
+        )
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+        user_id = client.get("/v1/auth/me", headers=headers).json()["id"]
+
+        valid_b64 = _jpeg_base64(300, 300, center_color=(0, 128, 0))
+        uploaded = client.post("/v1/auth/me/avatar", headers=headers, json={"image_base64": valid_b64})
+        assert uploaded.status_code == 200
+        original_revision = uploaded.json()["avatar_revision"]
+        original_bytes = base64.b64decode(
+            client.get(f"/v1/users/{user_id}/avatar", headers=headers).json()["image_base64"]
+        )
+
+        invalid = client.post(
+            "/v1/auth/me/avatar",
+            headers=headers,
+            json={"image_base64": base64.b64encode(b"not an image").decode("ascii")},
+        )
+        assert invalid.status_code == 422
+
+        too_many_bytes = client.post(
+            "/v1/auth/me/avatar",
+            headers=headers,
+            json={"image_base64": base64.b64encode(os.urandom(1024 * 1024 + 1)).decode("ascii")},
+        )
+        assert too_many_bytes.status_code == 413
+
+        too_many_pixels = client.post(
+            "/v1/auth/me/avatar", headers=headers, json={"image_base64": _large_jpeg_base64()}
+        )
+        assert too_many_pixels.status_code == 413
+
+        animated = client.post("/v1/auth/me/avatar", headers=headers, json={"image_base64": _animated_webp_base64()})
+        assert animated.status_code == 422
+
+        current = client.get(f"/v1/users/{user_id}/avatar", headers=headers)
+        assert current.status_code == 200
+        assert current.json()["revision"] == original_revision
+        assert base64.b64decode(current.json()["image_base64"]) == original_bytes
+
+
+def test_avatar_visibility_owner_admin_other() -> None:
+    """Only the owner or a platform administrator can read a user's avatar."""
+    with TestClient(app) as client:
+        owner = client.post(
+            "/v1/auth/register", json={"email": "owner_avatar@example.com", "password": "correct-horse"}
+        )
+        owner_headers = {"Authorization": f"Bearer {owner.json()['access_token']}"}
+        uploaded = client.post(
+            "/v1/auth/me/avatar", headers=owner_headers, json={"image_base64": _jpeg_base64(200, 200)}
+        )
+        assert uploaded.status_code == 200
+        user_id = client.get("/v1/auth/me", headers=owner_headers).json()["id"]
+
+        assert client.get(f"/v1/users/{user_id}/avatar", headers=owner_headers).status_code == 200
+
+        other = client.post(
+            "/v1/auth/register", json={"email": "other_avatar@example.com", "password": "correct-horse"}
+        )
+        other_headers = {"Authorization": f"Bearer {other.json()['access_token']}"}
+        assert client.get(f"/v1/users/{user_id}/avatar", headers=other_headers).status_code == 403
+
+        with SessionLocal() as db:
+            admin = User(
+                email="admin_avatar@example.com",
+                password_hash=hash_password("correct-horse"),
+                is_admin=True,
+            )
+            db.add(admin)
+            db.commit()
+        admin_login = client.post(
+            "/v1/auth/login", json={"email": "admin_avatar@example.com", "password": "correct-horse"}
+        )
+        admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+        assert client.get(f"/v1/users/{user_id}/avatar", headers=admin_headers).status_code == 200
+
+
+def test_avatar_remove_is_idempotent() -> None:
+    """Removing an avatar clears it; repeated removals stay successful."""
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/auth/register", json={"email": "removeowner@example.com", "password": "correct-horse"}
+        )
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+        user_id = client.get("/v1/auth/me", headers=headers).json()["id"]
+
+        client.post("/v1/auth/me/avatar", headers=headers, json={"image_base64": _jpeg_base64(200, 200)})
+        first = client.delete("/v1/auth/me/avatar", headers=headers)
+        assert first.status_code == 200
+        assert first.json()["avatar_revision"] is None
+        assert "image_base64" not in first.json()
+
+        second = client.delete("/v1/auth/me/avatar", headers=headers)
+        assert second.status_code == 200
+        assert second.json()["avatar_revision"] is None
+
+        assert client.get(f"/v1/users/{user_id}/avatar", headers=headers).status_code == 404
+
+        with SessionLocal() as db:
+            assert db.scalar(select(AuditLog).where(AuditLog.action == "user.avatar.remove")) is not None
+
+
+def test_avatar_absent_returns_404() -> None:
+    """Reading an avatar that was never set returns 404, not 403."""
+    with TestClient(app) as client:
+        created = client.post("/v1/auth/register", json={"email": "noavatar@example.com", "password": "correct-horse"})
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+        user_id = client.get("/v1/auth/me", headers=headers).json()["id"]
+        assert client.get(f"/v1/users/{user_id}/avatar", headers=headers).status_code == 404
+
+
+def test_avatar_endpoints_return_user_without_jpeg_bytes() -> None:
+    """POST and DELETE /v1/auth/me/avatar return the User view, never the raw image."""
+    with TestClient(app) as client:
+        created = client.post("/v1/auth/register", json={"email": "bodyshape@example.com", "password": "correct-horse"})
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+
+        uploaded = client.post("/v1/auth/me/avatar", headers=headers, json={"image_base64": _jpeg_base64(200, 200)})
+        assert uploaded.status_code == 200
+        assert set(uploaded.json()) == {"id", "email", "username", "avatar_revision", "is_admin"}
+
+        removed = client.delete("/v1/auth/me/avatar", headers=headers)
+        assert removed.status_code == 200
+        assert set(removed.json()) == {"id", "email", "username", "avatar_revision", "is_admin"}
+        assert removed.json()["avatar_revision"] is None
+
+
+def test_user_directory_wildcard_escaping() -> None:
+    """Admin directory search escapes SQL LIKE wildcards in both email and username fragments."""
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            admin = User(email="root@example.com", password_hash=hash_password("correct-horse"), is_admin=True)
+            db.add(admin)
+            db.commit()
+        root = client.post("/v1/auth/login", json={"email": "root@example.com", "password": "correct-horse"})
+        admin_headers = {"Authorization": f"Bearer {root.json()['access_token']}"}
+
+        for email in ("a_b@example.com", "abc@example.com", "xy%z@example.com"):
+            created = client.post(
+                "/v1/users", headers=admin_headers, json={"email": email, "password": "correct-horse"}
+            )
+            assert created.status_code == 201
+
+        # '_' should not match a single arbitrary character.
+        underscore = client.get("/v1/users?query=a_b", headers=admin_headers).json()
+        assert [item["email"] for item in underscore["items"]] == ["a_b@example.com"]
+
+        # '%' should not match an arbitrary substring.
+        percent = client.get("/v1/users?query=xy%z", headers=admin_headers).json()
+        assert [item["email"] for item in percent["items"]] == ["xy%z@example.com"]
+
+        # Directory responses carry the new profile fields.
+        assert all({"username", "avatar_revision"} <= set(item) for item in underscore["items"])
+
+        # Searching by username also escapes wildcards.
+        user = client.post("/v1/auth/login", json={"email": "a_b@example.com", "password": "correct-horse"})
+        user_headers = {"Authorization": f"Bearer {user.json()['access_token']}"}
+        assert client.patch("/v1/auth/me", headers=user_headers, json={"username": "x_y"}).status_code == 200
+        by_username = client.get("/v1/users?query=x_y", headers=admin_headers).json()
+        assert [item["email"] for item in by_username["items"]] == ["a_b@example.com"]
 
 
 class RecordingStore:
@@ -1165,7 +1643,9 @@ def test_job_stages_and_notifications(monkeypatch) -> None:
             assert completed.status_code == 200
 
             unread = client.get("/v1/notifications?unread=1", headers=headers).json()
-            assert [(item["kind"], item["job_id"]) for item in unread] == [("job.succeeded", job_id)]
+            assert [(item["kind"], item["job_id"], item["announcement_level"]) for item in unread] == [
+                ("job.succeeded", job_id, None)
+            ]
             assert client.post("/v1/notifications/read", headers=headers, json={}).json() == {"updated": 1}
             assert client.get("/v1/notifications?unread=1", headers=headers).json() == []
             assert [item["kind"] for item in client.get("/v1/notifications", headers=headers).json()] == [
@@ -1595,9 +2075,9 @@ def test_announcement_fanout_and_delete() -> None:
         assert [item["id"] for item in client.get("/v1/announcements", headers=admin).json()] == [announcement["id"]]
         assert client.get("/v1/notifications/count", headers=one_headers).json() == {"unread": 1}
         notices = client.get("/v1/notifications", headers=one_headers).json()
-        assert [(item["kind"], item["announcement_id"], item["title"]) for item in notices] == [
-            ("announcement", announcement["id"], "维护通知")
-        ]
+        assert [
+            (item["kind"], item["announcement_id"], item["title"], item["announcement_level"]) for item in notices
+        ] == [("announcement", announcement["id"], "维护通知", "warning")]
         with SessionLocal() as db:
             broadcast = db.scalars(select(Notification).where(Notification.announcement_id == announcement["id"])).all()
             retired_notices = db.scalars(select(Notification).where(Notification.user_id == retired_id)).all()
@@ -1667,6 +2147,8 @@ def test_notifications_follow_current_project_access() -> None:
         second_page = client.get("/v1/notifications?limit=1&offset=1", headers=member_headers).json()
         assert len(first_page) == len(second_page) == 1
         assert {first_page[0]["id"], second_page[0]["id"]} == {announcement_id, notice_id}
+        for page in (first_page, second_page):
+            assert "announcement_level" in page[0]
 
         with SessionLocal() as db:
             db.execute(
@@ -1704,6 +2186,479 @@ def test_notifications_follow_current_project_access() -> None:
         assert len(client.get("/v1/notifications?limit=1", headers=member_headers).json()) == 1
 
 
+def test_notification_preferences_and_email_verification(monkeypatch, smtp_sink) -> None:
+    monkeypatch.setattr(main, "generate_email_code", lambda: "654321")
+    with TestClient(app) as client:
+        created = client.post("/v1/auth/register", json={"email": "prefs@example.com", "password": "correct-horse"})
+        assert created.status_code == 201
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+
+        assert client.get("/v1/auth/me/notification-preferences", headers=headers).json() == {
+            "email_verified": False,
+            "email_critical_announcements": False,
+            "email_job_results": False,
+        }
+
+        denied = client.patch("/v1/auth/me/notification-preferences", headers=headers, json={"email_job_results": True})
+        assert denied.status_code == 409
+        assert denied.headers["x-error-code"] == "notifications.email_unverified"
+
+        invalid_address = client.post(
+            "/v1/auth/me/email-verification", headers=headers, json={"email": "other@example.test"}
+        )
+        assert invalid_address.status_code == 422
+        asked = client.post("/v1/auth/me/email-verification", headers=headers)
+        assert asked.status_code == 202
+        assert asked.json() == {"status": "accepted"}
+        assert len(smtp_sink.messages) == 1
+        assert smtp_sink.messages[0]["to"] == "prefs@example.com"
+        assert "654321" in decode_captured_message(smtp_sink.messages[0]["data"])[1]
+
+        bad = client.post("/v1/auth/me/email-verification/confirm", headers=headers, json={"code": "000000"})
+        assert bad.status_code == 422
+        assert bad.headers["x-error-code"] == "auth.invalid_code"
+
+        confirmed = client.post("/v1/auth/me/email-verification/confirm", headers=headers, json={"code": "654321"})
+        assert confirmed.status_code == 200
+        assert confirmed.json()["email_verified"] is True
+
+        enabled = client.patch(
+            "/v1/auth/me/notification-preferences", headers=headers, json={"email_job_results": True}
+        )
+        assert enabled.status_code == 200
+        assert enabled.json() == {
+            "email_verified": True,
+            "email_critical_announcements": False,
+            "email_job_results": True,
+        }
+
+
+def test_notification_email_verification_smtp_unavailable(monkeypatch) -> None:
+    monkeypatch.delenv("RESCENE_SMTP_HOST", raising=False)
+    main.settings.cache_clear()
+    with TestClient(app) as client:
+        created = client.post("/v1/auth/register", json={"email": "nosmtp@example.com", "password": "correct-horse"})
+        headers = {"Authorization": f"Bearer {created.json()['access_token']}"}
+        resp = client.post("/v1/auth/me/email-verification", headers=headers)
+        assert resp.status_code == 503
+        assert resp.headers["x-error-code"] == "notifications.smtp_unavailable"
+
+
+def test_announcement_idempotent_and_delivery_counts(smtp_sink) -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            admin = User(email="admin@example.com", password_hash=hash_password("correct-horse"), is_admin=True)
+            subscriber = User(
+                email="sub@example.com",
+                password_hash=hash_password("correct-horse"),
+                email_verified_at=now(),
+                email_critical_announcements=True,
+            )
+            non_subscriber = User(
+                email="nosub@example.com",
+                password_hash=hash_password("correct-horse"),
+                email_verified_at=now(),
+            )
+            unverified = User(
+                email="unverified@example.com",
+                password_hash=hash_password("correct-horse"),
+                email_critical_announcements=True,
+            )
+            inactive = User(
+                email="inactive@example.com",
+                password_hash=hash_password("correct-horse"),
+                active=False,
+                email_verified_at=now(),
+                email_critical_announcements=True,
+            )
+            db.add_all([admin, subscriber, non_subscriber, unverified, inactive])
+            db.commit()
+            subscriber_id = subscriber.id
+
+        admin_login = client.post("/v1/auth/login", json={"email": "admin@example.com", "password": "correct-horse"})
+        admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+
+        info = client.post(
+            "/v1/announcements",
+            headers={**admin_headers, "Idempotency-Key": "info-key"},
+            json={"title": "Info", "body": "info body", "level": "info"},
+        )
+        assert info.status_code == 201
+        info_id = info.json()["id"]
+
+        listed = client.get("/v1/announcements", headers=admin_headers).json()
+        info_item = next(item for item in listed if item["id"] == info_id)
+        assert info_item["recipient_count"] == 4
+        assert info_item["read_count"] == 0
+        assert info_item["mail_pending"] == 0
+        assert info_item["mail_accepted"] == 0
+        assert info_item["mail_failed"] == 0
+
+        critical = client.post(
+            "/v1/announcements",
+            headers={**admin_headers, "Idempotency-Key": "critical-key"},
+            json={"title": "Critical", "body": "critical body", "level": "critical"},
+        )
+        assert critical.status_code == 201
+        critical_id = critical.json()["id"]
+
+        with SessionLocal() as db:
+            pending = db.scalars(
+                select(NotificationEmailOutbox).where(NotificationEmailOutbox.state == "pending")
+            ).all()
+            assert len(pending) == 1
+            notification = db.get(Notification, pending[0].notification_id)
+            assert notification.user_id == subscriber_id
+
+        listed = client.get("/v1/announcements", headers=admin_headers).json()
+        critical_item = next(item for item in listed if item["id"] == critical_id)
+        assert critical_item["recipient_count"] == 4
+        assert critical_item["read_count"] == 0
+        assert critical_item["mail_pending"] == 1
+        assert critical_item["mail_accepted"] == 0
+
+        sub_login = client.post("/v1/auth/login", json={"email": "sub@example.com", "password": "correct-horse"})
+        sub_headers = {"Authorization": f"Bearer {sub_login.json()['access_token']}"}
+        notices = client.get("/v1/notifications", headers=sub_headers).json()
+        sub_notice = next(item for item in notices if item["announcement_id"] == critical_id)
+        client.post("/v1/notifications/read", headers=sub_headers, json={"ids": [sub_notice["id"]]})
+
+        listed = client.get("/v1/announcements", headers=admin_headers).json()
+        critical_item = next(item for item in listed if item["id"] == critical_id)
+        assert critical_item["read_count"] == 1
+        assert critical_item["mail_pending"] == 1
+
+        assert drain_outbox(SessionLocal) == 1
+        assert len(smtp_sink.messages) == 1
+        subject, body = decode_captured_message(smtp_sink.messages[0]["data"])
+        assert "Critical" in subject or "Critical" in body
+        assert "通知偏好" in body
+        assert smtp_sink.messages[0]["to"] == "sub@example.com"
+        assert client.get("/v1/notifications/count", headers=sub_headers).json() == {"unread": 1}
+
+        with SessionLocal() as db:
+            row = db.get(NotificationEmailOutbox, pending[0].notification_id)
+            assert row.state == "accepted"
+
+        listed = client.get("/v1/announcements", headers=admin_headers).json()
+        critical_item = next(item for item in listed if item["id"] == critical_id)
+        assert critical_item["mail_pending"] == 0
+        assert critical_item["mail_accepted"] == 1
+        assert critical_item["read_count"] == 1
+
+        retry = client.post(
+            "/v1/announcements",
+            headers={**admin_headers, "Idempotency-Key": "critical-key"},
+            json={"title": "Critical", "body": "critical body", "level": "critical"},
+        )
+        assert retry.status_code == 201
+        assert retry.json()["id"] == critical_id
+        with SessionLocal() as db:
+            assert (
+                db.scalar(
+                    select(func.count()).select_from(Notification).where(Notification.announcement_id == critical_id)
+                )
+                == 4
+            )
+            assert db.scalar(select(func.count()).select_from(NotificationEmailOutbox)) == 1
+
+
+def test_outbox_respects_verified_opt_in_and_active(smtp_sink) -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            admin = User(email="admin2@example.com", password_hash=hash_password("correct-horse"), is_admin=True)
+            verified_subscriber = User(
+                email="verified-sub@example.com",
+                password_hash=hash_password("correct-horse"),
+                email_verified_at=now(),
+                email_critical_announcements=True,
+            )
+            verified_no_optin = User(
+                email="verified-no@example.com",
+                password_hash=hash_password("correct-horse"),
+                email_verified_at=now(),
+            )
+            unverified_subscriber = User(
+                email="unverified-sub@example.com",
+                password_hash=hash_password("correct-horse"),
+                email_critical_announcements=True,
+            )
+            inactive_subscriber = User(
+                email="inactive-sub@example.com",
+                password_hash=hash_password("correct-horse"),
+                active=False,
+                email_verified_at=now(),
+                email_critical_announcements=True,
+            )
+            db.add_all([admin, verified_subscriber, verified_no_optin, unverified_subscriber, inactive_subscriber])
+            db.commit()
+            subscriber_id = verified_subscriber.id
+
+        admin_login = client.post("/v1/auth/login", json={"email": "admin2@example.com", "password": "correct-horse"})
+        admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+        client.post(
+            "/v1/announcements",
+            headers=admin_headers,
+            json={"title": "Critical", "body": "body", "level": "critical"},
+        )
+
+        with SessionLocal() as db:
+            rows = db.scalars(select(NotificationEmailOutbox)).all()
+            assert len(rows) == 1
+            notification = db.get(Notification, rows[0].notification_id)
+            assert notification.user_id == subscriber_id
+
+
+def test_outbox_smtp_failure_ambiguous_and_expired_lease(smtp_sink) -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            admin = User(email="admin3@example.com", password_hash=hash_password("correct-horse"), is_admin=True)
+            subscriber = User(
+                email="sub3@example.com",
+                password_hash=hash_password("correct-horse"),
+                email_verified_at=now(),
+                email_critical_announcements=True,
+            )
+            db.add_all([admin, subscriber])
+            db.commit()
+            subscriber_id = subscriber.id
+
+        admin_login = client.post("/v1/auth/login", json={"email": "admin3@example.com", "password": "correct-horse"})
+        admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+
+        rejected = client.post(
+            "/v1/announcements",
+            headers=admin_headers,
+            json={"title": "Rejected", "body": "body", "level": "critical"},
+        ).json()["id"]
+        smtp_sink.rcpt_status = 550
+        assert drain_outbox(SessionLocal) == 1
+        smtp_sink.rcpt_status = 250
+        with SessionLocal() as db:
+            row = db.scalars(
+                select(NotificationEmailOutbox).join(Notification).where(Notification.announcement_id == rejected)
+            ).one()
+            assert row.state == "failed"
+            assert row.error_code == "smtp_rcpt_550"
+
+        ambiguous = client.post(
+            "/v1/announcements",
+            headers=admin_headers,
+            json={"title": "Ambiguous", "body": "body", "level": "critical"},
+        ).json()["id"]
+        smtp_sink.disconnect_after_data = True
+        assert drain_outbox(SessionLocal) == 1
+        smtp_sink.disconnect_after_data = False
+        with SessionLocal() as db:
+            row = db.scalars(
+                select(NotificationEmailOutbox).join(Notification).where(Notification.announcement_id == ambiguous)
+            ).one()
+            assert row.state == "unknown"
+            assert row.error_code == "smtp_disconnect_after_data"
+        assert drain_outbox(SessionLocal) == 0
+        assert len(smtp_sink.messages) == 1, "the sink stored the message even though it did not reply"
+
+        recovered = client.post(
+            "/v1/announcements",
+            headers=admin_headers,
+            json={"title": "Recovered", "body": "body", "level": "critical"},
+        ).json()["id"]
+        abandoned = client.post(
+            "/v1/announcements",
+            headers=admin_headers,
+            json={"title": "Abandoned", "body": "body", "level": "critical"},
+        ).json()["id"]
+        with SessionLocal() as db:
+            ids = {}
+            for announcement_id, state in ((recovered, "leased"), (abandoned, "sending")):
+                notification_id = db.scalar(
+                    select(Notification.id).where(
+                        Notification.announcement_id == announcement_id, Notification.user_id == subscriber_id
+                    )
+                )
+                ids[announcement_id] = notification_id
+                row = db.get(NotificationEmailOutbox, notification_id)
+                row.state = state
+                row.lease_id = f"expired-{state}"
+                row.lease_until = now() - timedelta(seconds=1)
+            db.commit()
+        assert drain_outbox(SessionLocal) == 2
+        with SessionLocal() as db:
+            assert db.get(NotificationEmailOutbox, ids[recovered]).state == "accepted"
+            assert db.get(NotificationEmailOutbox, ids[abandoned]).state == "unknown"
+        assert len(smtp_sink.messages) == 2
+
+        transient = client.post(
+            "/v1/announcements",
+            headers=admin_headers,
+            json={"title": "Delayed", "body": "body", "level": "critical"},
+        ).json()["id"]
+        smtp_sink.rcpt_status = 450
+        for attempt, minutes in ((1, 1), (2, 5), (3, 0)):
+            started = now()
+            assert drain_outbox(SessionLocal) == 1
+            assert drain_outbox(SessionLocal) == 0
+            with SessionLocal() as db:
+                row = db.scalars(
+                    select(NotificationEmailOutbox).join(Notification).where(Notification.announcement_id == transient)
+                ).one()
+                assert row.attempts == attempt
+                assert row.error_code == "smtp_rcpt_450"
+                if minutes:
+                    assert row.state == "pending"
+                    delay = row.next_attempt_at.replace(tzinfo=UTC) - started
+                    assert timedelta(minutes=minutes) <= delay < timedelta(minutes=minutes, seconds=5)
+                    row.next_attempt_at = started - timedelta(seconds=1)
+                    db.commit()
+                else:
+                    assert row.state == "failed"
+        assert len(smtp_sink.messages) == 2
+
+
+def test_job_result_notification_email_only_on_final_state(monkeypatch, smtp_sink) -> None:
+    monkeypatch.setenv("RESCENE_WORKER_TOKEN", "worker-test-token")
+    main.settings.cache_clear()
+    grant = TemporaryCredentials("id", "secret", "token", "later")
+    monkeypatch.setattr(main, "storage", lambda: SimpleNamespace(worker_credentials=lambda *_: grant))
+    try:
+        with TestClient(app) as client:
+            with SessionLocal() as db:
+                user = User(
+                    email="jobmail@example.com",
+                    password_hash=hash_password("correct-horse"),
+                    email_verified_at=now(),
+                    email_job_results=True,
+                )
+                db.add(user)
+                db.commit()
+
+            login = client.post("/v1/auth/login", json={"email": "jobmail@example.com", "password": "correct-horse"})
+            headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+            worker = {"Authorization": "Bearer worker-test-token", "X-Worker-Id": "job-worker"}
+            project_id = client.post("/v1/projects", headers=headers, json={"name": "JobMail"}).json()["id"]
+            with SessionLocal() as db:
+                asset = Asset(
+                    project_id=project_id,
+                    object_key="photo",
+                    filename="photo.jpg",
+                    size=10,
+                    content_type="image/jpeg",
+                    status="READY",
+                    sha256="a" * 64,
+                )
+                db.add(asset)
+                db.commit()
+                asset_id = asset.id
+
+            job_id = client.post(
+                f"/v1/projects/{project_id}/jobs", headers=headers, json={"asset_ids": [asset_id]}
+            ).json()["id"]
+            leased = client.post("/v1/worker/lease", headers=worker).json()["job"]
+            retry_fail = client.post(
+                f"/v1/worker/jobs/{job_id}/fail",
+                headers={**worker, "X-Lease-Attempt": str(leased["attempt"])},
+                json={"error_code": "E_RETRY", "error_message": "retry", "retryable": True},
+            )
+            assert retry_fail.json()["status"] == "QUEUED"
+            with SessionLocal() as db:
+                assert db.scalar(select(func.count()).select_from(NotificationEmailOutbox)) == 0
+
+            leased2 = client.post("/v1/worker/lease", headers=worker).json()["job"]
+            assert leased2["job_id"] == job_id
+            final_fail = client.post(
+                f"/v1/worker/jobs/{job_id}/fail",
+                headers={**worker, "X-Lease-Attempt": str(leased2["attempt"])},
+                json={"error_code": "E_FINAL", "error_message": "final", "retryable": False},
+            )
+            assert final_fail.json()["status"] == "FAILED"
+            with SessionLocal() as db:
+                outbox = db.scalars(select(NotificationEmailOutbox)).all()
+                assert len(outbox) == 1
+                notification = db.get(Notification, outbox[0].notification_id)
+                assert notification.kind == "job.failed"
+
+            assert drain_outbox(SessionLocal) == 1
+            assert len(smtp_sink.messages) == 1
+            _, body = decode_captured_message(smtp_sink.messages[0]["data"])
+            assert "任务失败" in body or "失败" in body
+
+            job2_id = client.post(
+                f"/v1/projects/{project_id}/jobs", headers=headers, json={"asset_ids": [asset_id]}
+            ).json()["id"]
+            leased3 = client.post("/v1/worker/lease", headers=worker).json()["job"]
+            completion = {
+                "artifacts": [
+                    {
+                        "kind": kind,
+                        "object_key": f"{leased3['output_prefix']}artifacts/{kind}/result",
+                        "sha256": "a" * 64,
+                        "size": 10,
+                        "content_type": "application/octet-stream",
+                    }
+                    for kind in ("spz", "ply", "metrics", "report")
+                ]
+            }
+            complete = client.post(
+                f"/v1/worker/jobs/{job2_id}/complete",
+                headers={**worker, "X-Lease-Attempt": str(leased3["attempt"])},
+                json=completion,
+            )
+            assert complete.status_code == 200
+            with SessionLocal() as db:
+                outbox = db.scalars(select(NotificationEmailOutbox)).all()
+                success_rows = [
+                    row for row in outbox if db.get(Notification, row.notification_id).kind == "job.succeeded"
+                ]
+                assert len(success_rows) == 1
+
+            before = len(smtp_sink.messages)
+            assert drain_outbox(SessionLocal) == 1
+            assert len(smtp_sink.messages) == before + 1
+            _, body = decode_captured_message(smtp_sink.messages[-1]["data"])
+            assert "任务成功" in body or "成功" in body
+    finally:
+        main.settings.cache_clear()
+
+
+def test_outbox_skips_when_subscription_revoked(smtp_sink) -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            admin = User(email="admin4@example.com", password_hash=hash_password("correct-horse"), is_admin=True)
+            subscriber = User(
+                email="sub4@example.com",
+                password_hash=hash_password("correct-horse"),
+                email_verified_at=now(),
+                email_critical_announcements=True,
+            )
+            db.add_all([admin, subscriber])
+            db.commit()
+
+        admin_login = client.post("/v1/auth/login", json={"email": "admin4@example.com", "password": "correct-horse"})
+        admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+        sub_login = client.post("/v1/auth/login", json={"email": "sub4@example.com", "password": "correct-horse"})
+        sub_headers = {"Authorization": f"Bearer {sub_login.json()['access_token']}"}
+
+        client.post(
+            "/v1/announcements",
+            headers=admin_headers,
+            json={"title": "Revoked", "body": "body", "level": "critical"},
+        )
+
+        revoked = client.patch(
+            "/v1/auth/me/notification-preferences",
+            headers=sub_headers,
+            json={"email_critical_announcements": False},
+        )
+        assert revoked.status_code == 200
+
+        assert drain_outbox(SessionLocal) == 1
+        assert len(smtp_sink.messages) == 0
+        with SessionLocal() as db:
+            row = db.scalars(select(NotificationEmailOutbox)).one()
+            assert row.state == "skipped"
+            assert row.error_code == "skipped_ineligible"
+
+
 def test_global_audit_filters_and_csv() -> None:
     with TestClient(app) as client:
         with SessionLocal() as db:
@@ -1722,10 +2677,11 @@ def test_global_audit_filters_and_csv() -> None:
             client.post("/v1/announcements", headers=admin, json={"title": "公告", "body": "内容"}).status_code == 201
         )
         target = client.get("/v1/users?query=owner", headers=admin).json()["items"][0]["id"]
-        assert client.patch(f"/v1/users/{target}", headers=admin, json={"is_admin": False}).status_code == 200
+        assert client.patch(f"/v1/users/{target}", headers=admin, json={"is_admin": True}).status_code == 200
 
         everything = client.get("/v1/audit?limit=100", headers=admin).json()
         assert everything["total"] == len(everything["items"])
+        assert all("actor_username" in item for item in everything["items"])
         assert {item["action"] for item in everything["items"]} >= {
             "user.register",
             "project.create",
@@ -1762,9 +2718,100 @@ def test_global_audit_filters_and_csv() -> None:
         assert rows[0] == "time,actor,action,target_type,target_id,project_id,project_name,metadata"
         assert len(rows) - 1 == client.get("/v1/audit?action=project.", headers=admin).json()["total"]
 
+        assert client.patch(f"/v1/users/{target}", headers=admin, json={"is_admin": False}).status_code == 200
         assert client.get("/v1/audit", headers=owner_headers).status_code == 403
         assert client.get("/v1/audit.csv", headers=owner_headers).status_code == 403
         assert client.get("/v1/audit/actions", headers=owner_headers).status_code == 403
+
+
+def test_audit_username_filter_reversed_bounds_redaction_and_csv_safety() -> None:
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            db.add(User(email="root@example.com", password_hash=hash_password("correct-horse"), is_admin=True))
+            db.commit()
+        root = client.post("/v1/auth/login", json={"email": "root@example.com", "password": "correct-horse"})
+        admin = {"Authorization": f"Bearer {root.json()['access_token']}"}
+        root_id = client.get("/v1/auth/me", headers=admin).json()["id"]
+
+        scout = client.post("/v1/auth/register", json={"email": "scout@example.com", "password": "correct-horse"})
+        scout_headers = {"Authorization": f"Bearer {scout.json()['access_token']}"}
+        assert client.patch("/v1/auth/me", headers=scout_headers, json={"username": "scout_user"}).status_code == 200
+
+        owner = client.post("/v1/auth/register", json={"email": "owner@example.com", "password": "correct-horse"})
+        owner_headers = {"Authorization": f"Bearer {owner.json()['access_token']}"}
+        assert client.patch("/v1/auth/me", headers=owner_headers, json={"username": "owner_user"}).status_code == 200
+        assert client.post("/v1/projects", headers=owner_headers, json={"name": "=SUM(A1:A9)"}).status_code == 201
+
+        by_username = client.get("/v1/audit?actor=scout_user", headers=admin)
+        assert by_username.status_code == 200
+        assert by_username.json()["total"] >= 1
+        assert {item["actor_username"] for item in by_username.json()["items"]} == {"scout_user"}
+        assert {item["actor_email"] for item in by_username.json()["items"]} == {"scout@example.com"}
+
+        later = (now() + timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+        earlier = (now() - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+        bad_json = client.get(f"/v1/audit?since={later}&until={earlier}", headers=admin)
+        assert bad_json.status_code == 422
+        assert bad_json.headers["x-error-code"] == "audit.invalid_time"
+        bad_csv = client.get(f"/v1/audit.csv?since={later}&until={earlier}", headers=admin)
+        assert bad_csv.status_code == 422
+        assert bad_csv.headers["x-error-code"] == "audit.invalid_time"
+
+        with SessionLocal() as db:
+            db.add(
+                AuditLog(
+                    actor_id=root_id,
+                    action="test.sensitive_metadata",
+                    target_type="test",
+                    target_id="sensitive-1",
+                    metadata_json={
+                        "password": "hunter2",
+                        "nested": {"code": "123456", "token": "secret-token"},
+                        "signature": "0xdeadbeef",
+                        "safe_note": "visible",
+                    },
+                )
+            )
+            db.commit()
+
+        sensitive = client.get("/v1/audit?action=test.sensitive_metadata", headers=admin).json()
+        assert sensitive["total"] == 1
+        meta = sensitive["items"][0]["metadata"]
+        meta_text = str(meta)
+        assert "hunter2" not in meta_text
+        assert "123456" not in meta_text
+        assert "secret-token" not in meta_text
+        assert "0xdeadbeef" not in meta_text
+        assert meta.get("safe_note") == "visible"
+
+        exported = client.get("/v1/audit.csv?action=test.sensitive_metadata", headers=admin)
+        assert exported.status_code == 200
+        assert exported.text.startswith("\ufeff")
+        csv_text = exported.text.lstrip("\ufeff")
+        assert "hunter2" not in csv_text
+        assert "123456" not in csv_text
+        assert "secret-token" not in csv_text
+        assert "0xdeadbeef" not in csv_text
+        rows = list(csv.reader(io.StringIO(csv_text)))
+        assert rows[0] == [
+            "time",
+            "actor",
+            "action",
+            "target_type",
+            "target_id",
+            "project_id",
+            "project_name",
+            "metadata",
+        ]
+
+        project_csv = client.get("/v1/audit.csv?action=project.", headers=admin)
+        assert project_csv.text.startswith("\ufeff")
+        project_rows = list(csv.reader(io.StringIO(project_csv.text.lstrip("\ufeff"))))
+        project_cells = [row[6] for row in project_rows[1:]]
+        assert any(cell.startswith("'=SUM") for cell in project_cells)
+
+        assert client.get("/v1/audit?action=test.sensitive_metadata", headers=scout_headers).status_code == 403
+        assert client.get("/v1/audit.csv?action=test.sensitive_metadata", headers=scout_headers).status_code == 403
 
 
 def test_job_logs_append_read_and_retention(monkeypatch) -> None:
@@ -1808,6 +2855,8 @@ def test_job_logs_append_read_and_retention(monkeypatch) -> None:
             logs = client.get(f"/v1/jobs/{job_id}/logs", headers=headers).json()["items"]
             assert [item["message"] for item in logs] == [line["message"] for line in lines]
             assert [item["level"] for item in logs] == ["info", "warning", "error"]
+            assert all("attempt" in item and isinstance(item["attempt"], int) for item in logs)
+            assert {item["attempt"] for item in logs} == {leased["attempt"]}
             assert logs[0]["created_at"] and logs[0]["id"] < logs[1]["id"] < logs[2]["id"]
 
             tail = client.get(f"/v1/jobs/{job_id}/logs?after_id={logs[0]['id']}", headers=headers).json()["items"]
@@ -1825,6 +2874,20 @@ def test_job_logs_append_read_and_retention(monkeypatch) -> None:
             )
             outsider_headers = {"Authorization": f"Bearer {outsider.json()['access_token']}"}
             assert client.get(f"/v1/jobs/{job_id}/logs", headers=outsider_headers).status_code == 403
+
+            with SessionLocal() as db:
+                db.add(
+                    JobLog(
+                        job_id=job_id,
+                        attempt=leased["attempt"] + 1,
+                        level="debug",
+                        message="retry debug line",
+                    )
+                )
+                db.commit()
+            multi_attempt = client.get(f"/v1/jobs/{job_id}/logs", headers=headers).json()["items"]
+            assert len(multi_attempt) == 4
+            assert {item["attempt"] for item in multi_attempt} == {leased["attempt"], leased["attempt"] + 1}
 
             monkeypatch.setenv("RESCENE_JOB_LOG_LIMIT", "2")
             main.settings.cache_clear()
@@ -1878,6 +2941,9 @@ def test_email_code_login_spends_the_mailed_code_once(monkeypatch) -> None:
         replayed = client.post("/v1/auth/email-code/login", json={"email": recipient, "code": code})
         assert replayed.status_code == 401
         with SessionLocal() as db:
+            user = db.scalar(select(User).where(User.email == recipient))
+            assert user is not None
+            assert user.email_verified_at is not None, "successful email code login should record verification time"
             assert db.scalar(select(AuditLog.action).where(AuditLog.action == "auth.email_code_login"))
 
 
@@ -1917,6 +2983,9 @@ def test_password_reset_code_replaces_the_password_and_retires_sessions(monkeypa
             == 200
         )
         with SessionLocal() as db:
+            user = db.scalar(select(User).where(User.email == "reset@example.com"))
+            assert user is not None
+            assert user.email_verified_at is not None, "successful reset should record verification time"
             assert db.scalar(select(AuditLog.action).where(AuditLog.action == "auth.password_reset"))
 
 

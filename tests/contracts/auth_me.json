@@ -1,5 +1,7 @@
 {
+  "avatar_revision": null,
   "email": "owner@example.com",
   "id": "11111111-1111-4111-8111-111111111111",
-  "is_admin": false
+  "is_admin": false,
+  "username": null
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import csv
 import hashlib
 import hmac
@@ -33,6 +34,7 @@ from sqlalchemy.orm import Session, aliased
 
 from rescene.preprocess import IMAGE_SUFFIXES, VIDEO_SUFFIXES
 from rescene_api.access_logging import LOGGING_CONFIG
+from rescene_api.audit_data import redact_audit_metadata, safe_csv_cell
 from rescene_api.auth import (
     decode_token,
     generate_email_code,
@@ -41,10 +43,11 @@ from rescene_api.auth import (
     issue_token,
     verify_password,
 )
+from rescene_api.avatar import AvatarTooLarge, InvalidAvatar, normalize_avatar
 from rescene_api.bodylimit import RequestBodyLimitMiddleware
 from rescene_api.config import settings
 from rescene_api.db import SessionLocal, init_db
-from rescene_api.email import deliver_email_code
+from rescene_api.email import deliver_email_code, smtp_configured
 from rescene_api.models import (
     Announcement,
     Artifact,
@@ -56,20 +59,31 @@ from rescene_api.models import (
     JobLog,
     JobStage,
     Notification,
+    NotificationEmailOutbox,
     Project,
     ProjectInvitation,
     ProjectMember,
     Reconstruction,
     ReconstructionJob,
+    ReservedLoginKey,
     Share,
     User,
+    UserAvatar,
     WorkerNode,
     now,
+)
+from rescene_api.notification_outbox import run_outbox
+from rescene_api.notifications import (
+    announcement_counts,
+    notification_scope,
+    notify,
+    publish_announcement_notifications,
 )
 from rescene_api.ratelimit import limiter
 from rescene_api.schemas import (
     AcceptInvitationRequest,
     AddMemberRequest,
+    AvatarUploadRequest,
     ChangePasswordRequest,
     CompleteAssetRequest,
     CompleteJobRequest,
@@ -85,15 +99,20 @@ from rescene_api.schemas import (
     HeartbeatRequest,
     LoginRequest,
     MarkNotificationsRequest,
+    NotificationEmailConfirmation,
+    NotificationEmailRequest,
+    NotificationPreferencesPatch,
     RegisterRequest,
     ResetPasswordRequest,
     StageUpdate,
     UpdateMemberRequest,
+    UpdateProfileRequest,
     UpdateUserRequest,
     UploadSessionRequest,
     WorkerLogsRequest,
 )
 from rescene_api.storage import POST_OBJECT_LIMIT, POST_OBJECT_TTL_SECONDS, OssStorage, credentials_dict
+from rescene_api.username import UsernameValidationError, escape_like, legacy_email_key, normalize_username
 
 bearer = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
@@ -239,11 +258,19 @@ def project_view(
     }
 
 
-def admin_user_view(user: User) -> dict[str, object]:
+def user_view(user: User) -> dict[str, object]:
     return {
         "id": user.id,
         "email": user.email,
+        "username": user.username,
+        "avatar_revision": user.avatar_revision,
         "is_admin": user.is_admin,
+    }
+
+
+def admin_user_view(user: User) -> dict[str, object]:
+    return {
+        **user_view(user),
         "active": user.active,
         "created_at": user.created_at,
     }
@@ -273,7 +300,7 @@ def audit(
             action=action,
             target_type=target_type,
             target_id=target_id,
-            metadata_json=metadata,
+            metadata_json=redact_audit_metadata(metadata),
         )
     )
 
@@ -300,13 +327,15 @@ def bootstrap_admin() -> None:
 async def lifespan(_: FastAPI):
     init_db()
     bootstrap_admin()
-    reaper = asyncio.create_task(reap_expired_leases())
+    tasks = (asyncio.create_task(reap_expired_leases()), asyncio.create_task(run_outbox(SessionLocal)))
     try:
         yield
     finally:
-        reaper.cancel()
-        with suppress(asyncio.CancelledError):
-            await reaper
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(title="ReScene API", version=package_version("rescene"), lifespan=lifespan)
@@ -374,9 +403,28 @@ def change_password(
     return {"access_token": issue_token(user.id, user.token_version), "token_type": "bearer"}
 
 
+def _user_by_login_identifier(db: Session, identifier: str) -> User | None:
+    """Resolve a login identifier without revealing whether it is an email or username."""
+    email_key = legacy_email_key(identifier)
+    user = db.scalar(select(User).where(User.email == email_key))
+    if user is not None:
+        return user
+    if "@" in email_key:
+        return None
+    try:
+        _, username_key = normalize_username(identifier)
+    except UsernameValidationError:
+        return None
+    return db.scalar(select(User).where(User.username_key == username_key))
+
+
 @app.post("/v1/auth/login")
 def login(payload: LoginRequest, db: Db, _: Annotated[None, Depends(rate_limit)] = None) -> dict[str, str]:
-    user = db.scalar(select(User).where(User.email == payload.email))
+    if payload.email is not None:
+        user = db.scalar(select(User).where(User.email == payload.email))
+    else:
+        assert payload.identifier is not None
+        user = _user_by_login_identifier(db, payload.identifier)
     if not user or not verify_password(payload.password, user.password_hash) or not user.active:
         fail(status.HTTP_401_UNAUTHORIZED, "Invalid credentials", "auth.invalid_credentials")
     return {"access_token": issue_token(user.id, user.token_version), "token_type": "bearer"}
@@ -396,6 +444,9 @@ def email_code_user(db: Session, email: str) -> User | None:
 def consume_email_code(db: Session, user: User, purpose: str, code: str) -> None:
     """Spend one live code and count the attempt; the caller commits the result."""
     config = settings()
+    invalid_status = (
+        status.HTTP_422_UNPROCESSABLE_ENTITY if purpose == "notification_verify" else status.HTTP_401_UNAUTHORIZED
+    )
     record = db.scalar(
         select(EmailAuthCode)
         .where(
@@ -408,7 +459,7 @@ def consume_email_code(db: Session, user: User, purpose: str, code: str) -> None
     )
     current_time = now()
     if record is None or utc(record.expires_at) <= current_time:
-        fail(status.HTTP_401_UNAUTHORIZED, "Verification code is invalid or expired", "auth.invalid_code")
+        fail(invalid_status, "Verification code is invalid or expired", "auth.invalid_code")
     if record.attempts >= config.email_code_max_attempts:
         fail(status.HTTP_429_TOO_MANY_REQUESTS, "Too many code attempts", "auth.rate_limited")
     matched = hmac.compare_digest(record.code_hash, hash_email_code(user.id, purpose, code))
@@ -429,7 +480,53 @@ def consume_email_code(db: Session, user: User, purpose: str, code: str) -> None
     if not matched:
         db.commit()
     if not matched or result.rowcount != 1:
-        fail(status.HTTP_401_UNAUTHORIZED, "Verification code is invalid or expired", "auth.invalid_code")
+        fail(invalid_status, "Verification code is invalid or expired", "auth.invalid_code")
+
+
+def issue_email_code(db: Session, user: User, purpose: str) -> str | None:
+    """Replace a code after enforcing the per-account cooldown and hourly cap."""
+    config = settings()
+    issued = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailAuthCode)
+            .where(
+                EmailAuthCode.user_id == user.id,
+                EmailAuthCode.purpose == purpose,
+                EmailAuthCode.created_at >= now() - timedelta(hours=1),
+            )
+        )
+        or 0
+    )
+    latest = db.scalar(
+        select(EmailAuthCode.created_at)
+        .where(EmailAuthCode.user_id == user.id, EmailAuthCode.purpose == purpose)
+        .order_by(EmailAuthCode.created_at.desc())
+        .limit(1)
+    )
+    cooling = latest is not None and utc(latest) > now() - timedelta(seconds=config.email_code_cooldown_seconds)
+    if issued >= config.email_code_hourly_limit or cooling:
+        return None
+    code = generate_email_code()
+    db.execute(
+        update(EmailAuthCode)
+        .where(
+            EmailAuthCode.user_id == user.id,
+            EmailAuthCode.purpose == purpose,
+            EmailAuthCode.consumed_at.is_(None),
+        )
+        .values(consumed_at=now())
+        .execution_options(synchronize_session=False)
+    )
+    db.add(
+        EmailAuthCode(
+            user_id=user.id,
+            purpose=purpose,
+            code_hash=hash_email_code(user.id, purpose, code),
+            expires_at=now() + timedelta(minutes=config.email_code_ttl_minutes),
+        )
+    )
+    return code
 
 
 @app.post("/v1/auth/email-code", status_code=status.HTTP_202_ACCEPTED)
@@ -441,49 +538,11 @@ def request_email_code(
 ) -> dict[str, str]:
     """Mail a login or reset code, answering identically for every address."""
     user = email_code_user(db, payload.email)
-    if user is None:
+    if user is None or not lock_account(db, user, signed_in=False):
         return {"status": "accepted"}
-    config = settings()
-    issued = (
-        db.scalar(
-            select(func.count())
-            .select_from(EmailAuthCode)
-            .where(
-                EmailAuthCode.user_id == user.id,
-                EmailAuthCode.purpose == payload.purpose,
-                EmailAuthCode.created_at >= now() - timedelta(hours=1),
-            )
-        )
-        or 0
-    )
-    latest = db.scalar(
-        select(EmailAuthCode.created_at)
-        .where(EmailAuthCode.user_id == user.id, EmailAuthCode.purpose == payload.purpose)
-        .order_by(EmailAuthCode.created_at.desc())
-        .limit(1)
-    )
-    cooling = latest is not None and utc(latest) > now() - timedelta(seconds=config.email_code_cooldown_seconds)
-    if issued >= config.email_code_hourly_limit or cooling:
+    code = issue_email_code(db, user, payload.purpose)
+    if code is None:
         return {"status": "accepted"}
-    code = generate_email_code()
-    db.execute(
-        update(EmailAuthCode)
-        .where(
-            EmailAuthCode.user_id == user.id,
-            EmailAuthCode.purpose == payload.purpose,
-            EmailAuthCode.consumed_at.is_(None),
-        )
-        .values(consumed_at=now())
-        .execution_options(synchronize_session=False)
-    )
-    db.add(
-        EmailAuthCode(
-            user_id=user.id,
-            purpose=payload.purpose,
-            code_hash=hash_email_code(user.id, payload.purpose, code),
-            expires_at=now() + timedelta(minutes=config.email_code_ttl_minutes),
-        )
-    )
     db.commit()
     background.add_task(deliver_email_code, user.email, code, payload.purpose)
     return {"status": "accepted"}
@@ -495,9 +554,10 @@ def login_with_email_code(
 ) -> dict[str, str]:
     """Exchange a live login code for a session; other sessions stay valid."""
     user = email_code_user(db, payload.email)
-    if user is None:
+    if user is None or not lock_account(db, user, signed_in=False):
         fail(status.HTTP_401_UNAUTHORIZED, "Verification code is invalid or expired", "auth.invalid_code")
     consume_email_code(db, user, "login", payload.code)
+    user.email_verified_at = now()
     audit(db, user.id, "auth.email_code_login", "user", user.id)
     db.commit()
     return {"access_token": issue_token(user.id, user.token_version), "token_type": "bearer"}
@@ -509,7 +569,7 @@ def reset_password_with_email_code(
 ) -> dict[str, str]:
     """Set a new password once a reset code checks out, retiring every old session."""
     user = email_code_user(db, payload.email)
-    if user is None:
+    if user is None or not lock_account(db, user, signed_in=False):
         fail(status.HTTP_401_UNAUTHORIZED, "Verification code is invalid or expired", "auth.invalid_code")
     consume_email_code(db, user, "reset", payload.code)
     # Every outstanding code dies with the old password, so a leaked login code
@@ -523,7 +583,11 @@ def reset_password_with_email_code(
     rotated = db.execute(
         update(User)
         .where(User.id == user.id, User.active.is_(True), User.password_hash == user.password_hash)
-        .values(password_hash=hash_password(payload.new_password), token_version=User.token_version + 1)
+        .values(
+            password_hash=hash_password(payload.new_password),
+            token_version=User.token_version + 1,
+            email_verified_at=now(),
+        )
     )
     if rotated.rowcount != 1:
         db.rollback()
@@ -536,7 +600,141 @@ def reset_password_with_email_code(
 
 @app.get("/v1/auth/me")
 def get_me(user: UserDep) -> dict[str, object]:
-    return {"id": user.id, "email": user.email, "is_admin": user.is_admin}
+    return user_view(user)
+
+
+@app.patch("/v1/auth/me")
+def update_profile(payload: UpdateProfileRequest, db: Db, user: UserDep) -> dict[str, object]:
+    """Set or change the signed-in account's username."""
+    try:
+        display, key = normalize_username(payload.username)
+    except UsernameValidationError as error:
+        fail(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error), error.code)
+
+    if db.get(ReservedLoginKey, key) is not None:
+        fail(status.HTTP_409_CONFLICT, "Username is already taken", "auth.username_taken")
+
+    user.username = display
+    user.username_key = key
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        fail(status.HTTP_409_CONFLICT, "Username is already taken", "auth.username_taken")
+    audit(db, user.id, "user.username.update", "user", user.id, username=display)
+    db.commit()
+    db.refresh(user)
+    return user_view(user)
+
+
+def lock_account(db: Session, user: User, *, signed_in: bool = True) -> bool:
+    """Lock the user before touching codes or profile data across both databases."""
+    identity = User.token_version == user.token_version if signed_in else User.email == user.email
+    valid_session = (User.id == user.id, User.active.is_(True), identity)
+    if db.get_bind().dialect.name == "sqlite":
+        found = db.execute(update(User).where(*valid_session).values(token_version=User.token_version)).rowcount == 1
+    else:
+        found = db.scalar(select(User.id).where(*valid_session).with_for_update()) is not None
+    if not found:
+        if not signed_in:
+            return False
+        fail(status.HTTP_401_UNAUTHORIZED, "Session is no longer valid", "auth.session_stale")
+    db.refresh(user)
+    return True
+
+
+@app.post("/v1/auth/me/avatar")
+def set_avatar(payload: AvatarUploadRequest, db: Db, user: UserDep) -> dict[str, object]:
+    """Store only a small, normalized avatar for the signed-in account."""
+    try:
+        jpeg = normalize_avatar(payload.image_base64)
+    except AvatarTooLarge as error:
+        fail(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, str(error), "avatar.too_large")
+    except InvalidAvatar as error:
+        fail(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error), "avatar.invalid_image")
+    revision = hashlib.sha256(jpeg).hexdigest()
+    lock_account(db, user)
+    avatar = db.get(UserAvatar, user.id)
+    if avatar is None:
+        db.add(UserAvatar(user_id=user.id, jpeg_bytes=jpeg, revision=revision))
+    elif avatar.revision != revision:
+        avatar.jpeg_bytes = jpeg
+        avatar.revision = revision
+    audit(db, user.id, "user.avatar.update", "user", user.id)
+    db.commit()
+    return {**user_view(user), "avatar_revision": revision}
+
+
+@app.delete("/v1/auth/me/avatar")
+def remove_avatar(db: Db, user: UserDep) -> dict[str, object]:
+    """Delete the account's avatar if one exists."""
+    lock_account(db, user)
+    deleted = db.execute(delete(UserAvatar).where(UserAvatar.user_id == user.id))
+    if deleted.rowcount:
+        audit(db, user.id, "user.avatar.remove", "user", user.id)
+    db.commit()
+    return {**user_view(user), "avatar_revision": None}
+
+
+def notification_preferences_view(user: User) -> dict[str, bool]:
+    return {
+        "email_verified": user.email_verified_at is not None,
+        "email_critical_announcements": user.email_critical_announcements,
+        "email_job_results": user.email_job_results,
+    }
+
+
+@app.get("/v1/auth/me/notification-preferences")
+def get_notification_preferences(user: UserDep) -> dict[str, bool]:
+    return notification_preferences_view(user)
+
+
+@app.patch("/v1/auth/me/notification-preferences")
+def update_notification_preferences(payload: NotificationPreferencesPatch, db: Db, user: UserDep) -> dict[str, bool]:
+    values = payload.model_dump(exclude_unset=True)
+    lock_account(db, user)
+    if user.email_verified_at is None and any(values.values()):
+        fail(status.HTTP_409_CONFLICT, "Verify your email before subscribing", "notifications.email_unverified")
+    changed = {key: value for key, value in values.items() if getattr(user, key) != value}
+    for key, value in changed.items():
+        setattr(user, key, value)
+    if changed:
+        audit(db, user.id, "user.notification_preferences.update", "user", user.id, **changed)
+    db.commit()
+    return notification_preferences_view(user)
+
+
+@app.post("/v1/auth/me/email-verification", status_code=status.HTTP_202_ACCEPTED)
+def request_notification_email_verification(
+    db: Db,
+    user: UserDep,
+    background: BackgroundTasks,
+    payload: NotificationEmailRequest | None = None,
+    _: Annotated[None, Depends(rate_limit)] = None,
+) -> dict[str, str]:
+    if not smtp_configured(settings()):
+        fail(status.HTTP_503_SERVICE_UNAVAILABLE, "Email verification is unavailable", "notifications.smtp_unavailable")
+    lock_account(db, user)
+    code = issue_email_code(db, user, "notification_verify")
+    db.commit()
+    if code is not None:
+        background.add_task(deliver_email_code, user.email, code, "notification_verify")
+    return {"status": "accepted"}
+
+
+@app.post("/v1/auth/me/email-verification/confirm")
+def confirm_notification_email_verification(
+    payload: NotificationEmailConfirmation,
+    db: Db,
+    user: UserDep,
+    _: Annotated[None, Depends(rate_limit)] = None,
+) -> dict[str, bool]:
+    lock_account(db, user)
+    consume_email_code(db, user, "notification_verify", payload.code)
+    user.email_verified_at = now()
+    audit(db, user.id, "user.email.verify", "user", user.id)
+    db.commit()
+    return notification_preferences_view(user)
 
 
 @app.post("/v1/auth/refresh")
@@ -553,15 +751,21 @@ def logout(user: UserDep, db: Db) -> None:
 
 @app.post("/v1/users", status_code=201)
 def create_user(payload: CreateUserRequest, db: Db, admin: AdminDep) -> dict[str, object]:
+    lock_governance_target(db, admin, admin.id)
     email = payload.email
     if db.scalar(select(User).where(User.email == email)):
-        raise HTTPException(status.HTTP_409_CONFLICT, "User already exists")
+        fail(status.HTTP_409_CONFLICT, "Email already registered", "auth.email_taken")
     user = User(email=email, password_hash=hash_password(payload.password), is_admin=payload.is_admin)
     db.add(user)
-    db.flush()
-    audit(db, admin.id, "user.create", "user", user.id, email=email)
-    db.commit()
-    return {"id": user.id, "email": user.email, "is_admin": user.is_admin}
+    try:
+        db.flush()
+        audit(db, admin.id, "user.create", "user", user.id, email=email, is_admin=user.is_admin)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        fail(status.HTTP_409_CONFLICT, "Email already registered", "auth.email_taken")
+    db.refresh(user)
+    return user_view(user)
 
 
 @app.get("/v1/users")
@@ -574,8 +778,17 @@ def list_users(
     offset: int = 0,
     limit: int = 50,
 ) -> dict[str, object]:
-    """Administrator account directory; matches a case-insensitive email fragment."""
-    filters = [User.email.ilike(f"%{query.strip().lower()}%")] if query.strip() else []
+    """Administrator account directory; matches username or email fragments."""
+    if query.strip():
+        term = f"%{escape_like(query.strip().lower())}%"
+        filters = [
+            or_(
+                User.email.ilike(term, escape="\\"),
+                User.username.ilike(term, escape="\\"),
+            )
+        ]
+    else:
+        filters = []
     if active is not None:
         filters.append(User.active.is_(active))
     if is_admin is not None:
@@ -606,20 +819,60 @@ def user_detail(user_id: str, db: Db, admin: AdminDep) -> dict[str, object]:
     return {**admin_user_view(target), "memberships": list(memberships.values())}
 
 
+@app.get("/v1/users/{user_id}/avatar")
+def get_avatar(user_id: str, db: Db, user: UserDep, response: Response) -> dict[str, str]:
+    """Return a private thumbnail only to its owner or a platform administrator."""
+    if user.id != user_id and not user.is_admin:
+        fail(status.HTTP_403_FORBIDDEN, "Avatar access denied", "avatar.forbidden")
+    image = db.execute(
+        select(UserAvatar.jpeg_bytes, UserAvatar.revision).where(UserAvatar.user_id == user_id)
+    ).one_or_none()
+    if image is None:
+        fail(status.HTTP_404_NOT_FOUND, "Avatar not found", "avatar.not_found")
+    response.headers["Cache-Control"] = "private, no-store"
+    return {"image_base64": base64.b64encode(image.jpeg_bytes).decode("ascii"), "revision": image.revision}
+
+
+def lock_governance_target(db: Session, admin: User, target_id: str) -> User:
+    """Recheck authorization while locking both participants in a stable order."""
+    expected_version = admin.token_version
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
+    users = {
+        row.id: row
+        for row in db.scalars(
+            select(User)
+            .where(User.id.in_({admin.id, target_id}))
+            .order_by(User.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    }
+    actor = users.get(admin.id)
+    if actor is None or not actor.active or actor.token_version != expected_version:
+        fail(status.HTTP_401_UNAUTHORIZED, "Session is no longer valid", "auth.session_stale")
+    if not actor.is_admin:
+        fail(status.HTTP_403_FORBIDDEN, "Administrator access required", "admin.forbidden")
+    target = users.get(target_id)
+    if target is None:
+        fail(status.HTTP_404_NOT_FOUND, "User not found", "user.not_found")
+    return target
+
+
 @app.patch("/v1/users/{user_id}")
 def update_user(user_id: str, payload: UpdateUserRequest, db: Db, admin: AdminDep) -> dict[str, object]:
-    target = db.get(User, user_id)
-    if not target:
-        fail(status.HTTP_404_NOT_FOUND, "User not found", "user.not_found")
+    target = lock_governance_target(db, admin, user_id)
     if target.id == admin.id and (payload.active is False or payload.is_admin is False):
         fail(status.HTTP_409_CONFLICT, "Cannot lock the signed-in administrator", "admin.self_locked")
-    if payload.active is not None:
-        target.active = payload.active
-        if not payload.active:
-            db.execute(update(User).where(User.id == target.id).values(token_version=User.token_version + 1))
-    if payload.is_admin is not None:
-        target.is_admin = payload.is_admin
-    audit(db, admin.id, "user.update", "user", target.id, active=target.active, is_admin=target.is_admin)
+    changed = {}
+    if payload.active is not None and payload.active != target.active:
+        target.active = changed["active"] = payload.active
+        if not target.active:
+            target.token_version += 1
+    if payload.is_admin is not None and payload.is_admin != target.is_admin:
+        target.is_admin = changed["is_admin"] = payload.is_admin
+    if changed:
+        audit(db, admin.id, "user.update", "user", target.id, **changed)
     db.commit()
     return admin_user_view(target)
 
@@ -627,17 +880,9 @@ def update_user(user_id: str, payload: UpdateUserRequest, db: Db, admin: AdminDe
 @app.post("/v1/users/{user_id}/password", status_code=204)
 def reset_user_password(user_id: str, payload: ResetPasswordRequest, db: Db, admin: AdminDep) -> None:
     """Set a new initial password and revoke every session the account holds."""
-    target = db.get(User, user_id)
-    if not target:
-        fail(status.HTTP_404_NOT_FOUND, "User not found", "user.not_found")
-    reset = db.execute(
-        update(User)
-        .where(User.id == target.id, User.password_hash == target.password_hash)
-        .values(password_hash=hash_password(payload.password), token_version=User.token_version + 1)
-    )
-    if reset.rowcount != 1:
-        db.rollback()
-        fail(status.HTTP_409_CONFLICT, "Account password changed concurrently; retry", "user.concurrent_change")
+    target = lock_governance_target(db, admin, user_id)
+    target.password_hash = hash_password(payload.password)
+    target.token_version += 1
     audit(db, admin.id, "user.password.reset", "user", target.id)
     db.commit()
 
@@ -1194,40 +1439,47 @@ def revoke_invitation(project_id: str, invitation_id: str, db: Db, user: UserDep
 def parse_audit_time(value: str, name: str) -> datetime:
     """Parse an ISO-8601 filter bound and normalize it to UTC so SQLite rows compare correctly."""
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        fail(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Invalid {name} time", "audit.invalid_time")
-    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).astimezone(UTC)
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).astimezone(UTC)
+    except (ValueError, OverflowError):
+        fail(422, f"Invalid {name} time", "audit.invalid_time")
 
 
 def audit_filters(actor: str, action: str, project_id: str, since: str, until: str) -> list:
     """Translate the console's filter inputs into reusable WHERE clauses."""
     clauses = []
     if actor.strip():
-        clauses.append(User.email.ilike(f"%{actor.strip().lower()}%"))
-    if action.strip():
-        clauses.append(
-            AuditLog.action.like(f"{action.strip()}%") if action.endswith(".") else AuditLog.action == action
-        )
+        term = f"%{escape_like(actor.strip().lower())}%"
+        clauses.append(or_(User.email.ilike(term, escape="\\"), User.username_key.like(term, escape="\\")))
+    action = action.strip()
+    if action.endswith("."):
+        clauses.append(AuditLog.action.like(f"{escape_like(action)}%", escape="\\"))
+    elif action:
+        clauses.append(AuditLog.action == action)
     if project_id.strip():
-        clauses.append(AuditLog.project_id == project_id)
-    if since:
-        clauses.append(AuditLog.created_at >= parse_audit_time(since, "since"))
-    if until:
-        clauses.append(AuditLog.created_at <= parse_audit_time(until, "until"))
+        clauses.append(AuditLog.project_id == project_id.strip())
+    start = parse_audit_time(since, "since") if since else None
+    end = parse_audit_time(until, "until") if until else None
+    if start is not None:
+        clauses.append(AuditLog.created_at >= start)
+    if end is not None:
+        clauses.append(AuditLog.created_at <= end)
+    if start is not None and end is not None and end < start:
+        fail(422, "End time precedes start time", "audit.invalid_time")
     return clauses
 
 
-def audit_view(log: AuditLog, email: str | None, project_name: str | None) -> dict[str, object]:
+def audit_view(log: AuditLog, email: str | None, username: str | None, project_name: str | None) -> dict[str, object]:
     return {
         "id": log.id,
         "actor_email": email,
+        "actor_username": username,
         "action": log.action,
         "target_type": log.target_type,
         "target_id": log.target_id,
         "project_id": log.project_id,
         "project_name": project_name,
-        "metadata": log.metadata_json,
+        "metadata": redact_audit_metadata(log.metadata_json),
         "created_at": log.created_at,
     }
 
@@ -1253,7 +1505,7 @@ def global_audit(
         or 0
     )
     rows = db.execute(
-        select(AuditLog, User.email, Project.name)
+        select(AuditLog, User.email, User.username, Project.name)
         .outerjoin(User, User.id == AuditLog.actor_id)
         .outerjoin(Project, Project.id == AuditLog.project_id)
         .where(*clauses)
@@ -1261,7 +1513,7 @@ def global_audit(
         .offset(max(0, offset))
         .limit(max(1, min(limit, 100)))
     ).all()
-    return {"total": total, "items": [audit_view(log, email, name) for log, email, name in rows]}
+    return {"total": total, "items": [audit_view(log, email, username, name) for log, email, username, name in rows]}
 
 
 @app.get("/v1/audit/actions")
@@ -1295,7 +1547,8 @@ def audit_csv(
     writer.writerow(["time", "actor", "action", "target_type", "target_id", "project_id", "project_name", "metadata"])
     for log, email, name in rows:
         writer.writerow(
-            [
+            safe_csv_cell(cell)
+            for cell in (
                 log.created_at.isoformat() if log.created_at else "",
                 email or "",
                 log.action,
@@ -1303,8 +1556,8 @@ def audit_csv(
                 log.target_id,
                 log.project_id or "",
                 name or "",
-                json.dumps(log.metadata_json, ensure_ascii=False, sort_keys=True),
-            ]
+                json.dumps(redact_audit_metadata(log.metadata_json), ensure_ascii=False, sort_keys=True),
+            )
         )
     return Response(
         content="\ufeff" + buffer.getvalue(),
@@ -1328,14 +1581,14 @@ def project_audit(
         or 0
     )
     rows = db.execute(
-        select(AuditLog, User.email)
+        select(AuditLog, User.email, User.username)
         .outerjoin(User, User.id == AuditLog.actor_id)
         .where(*clauses)
         .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
         .offset(max(0, offset))
         .limit(max(1, min(limit, 100)))
     ).all()
-    return {"total": total, "items": [audit_view(log, email, project.name) for log, email in rows]}
+    return {"total": total, "items": [audit_view(log, email, username, project.name) for log, email, username in rows]}
 
 
 @app.delete("/v1/projects/{project_id}", status_code=204)
@@ -1569,29 +1822,19 @@ def job_view(job: ReconstructionJob, reconstruction_id: str | None = None) -> di
     }
 
 
-def notify(
-    db: Session,
-    recipients: set[str | None],
-    *,
-    kind: str,
-    title: str,
-    body: str,
-    project_id: str | None = None,
-    job_id: str | None = None,
-) -> None:
-    """Queue one notification per distinct recipient; anonymous actors are skipped."""
-    for user_id in recipients:
-        if user_id:
-            db.add(
-                Notification(
-                    user_id=user_id,
-                    kind=kind,
-                    title=title,
-                    body=body,
-                    project_id=project_id,
-                    job_id=job_id,
-                )
-            )
+def notify_job_result(db: Session, job: ReconstructionJob) -> None:
+    """Record a result only in the transaction that reaches a terminal state."""
+    project = db.get(Project, job.project_id)
+    succeeded = job.status == "SUCCEEDED"
+    notify(
+        db,
+        {job.created_by, project.owner_id},
+        kind="job.succeeded" if succeeded else "job.failed",
+        title="重建已完成" if succeeded else "重建失败",
+        body=f"项目「{project.name}」的重建已完成" if succeeded else (job.error_message or "重建失败")[:500],
+        project_id=project.id,
+        job_id=job.id,
+    )
 
 
 @app.get("/v1/jobs/{job_id}")
@@ -1628,7 +1871,7 @@ def job_stages(job_id: str, db: Db, user: UserDep) -> list[dict[str, object]]:
     ]
 
 
-def announcement_view(row: Announcement) -> dict[str, object]:
+def announcement_view(row: Announcement, counts: dict[str, int]) -> dict[str, object]:
     return {
         "id": row.id,
         "title": row.title,
@@ -1636,38 +1879,54 @@ def announcement_view(row: Announcement) -> dict[str, object]:
         "level": row.level,
         "created_by": row.created_by,
         "created_at": row.created_at,
+        "recipient_count": counts.get("recipient_count", 0),
+        "read_count": counts.get("read_count", 0),
+        "mail_pending": counts.get("mail_pending", 0),
+        "mail_accepted": counts.get("mail_accepted", 0),
+        "mail_failed": counts.get("mail_failed", 0),
+        "mail_unknown": counts.get("mail_unknown", 0),
     }
 
 
 @app.post("/v1/announcements", status_code=201)
-def create_announcement(payload: CreateAnnouncementRequest, db: Db, admin: AdminDep) -> dict[str, object]:
+def create_announcement(
+    payload: CreateAnnouncementRequest,
+    db: Db,
+    admin: AdminDep,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> dict[str, object]:
     """Publish an announcement and fan it out as one notification per active account."""
-    row = Announcement(title=payload.title.strip(), body=payload.body.strip(), level=payload.level, created_by=admin.id)
-    db.add(row)
-    db.flush()
-    recipients = db.scalars(select(User.id).where(User.active.is_(True))).all()
-    for user_id in recipients:
-        db.add(
-            Notification(
-                user_id=user_id,
-                kind="announcement",
-                title=row.title,
-                body=row.body,
-                announcement_id=row.id,
-            )
-        )
-    audit(db, admin.id, "announcement.publish", "announcement", row.id, recipients=len(recipients))
-    db.commit()
-    return announcement_view(row)
+
+    def build() -> dict[str, object]:
+        row = Announcement(title=payload.title, body=payload.body, level=payload.level, created_by=admin.id)
+        db.add(row)
+        db.flush()
+        recipients, pending = publish_announcement_notifications(db, row)
+        audit(db, admin.id, "announcement.publish", "announcement", row.id, recipients=recipients)
+        return announcement_view(row, {"recipient_count": recipients, "mail_pending": pending})
+
+    return idempotent_create(
+        db,
+        admin,
+        operation="announcement.publish",
+        scope="",
+        key=idempotency_key,
+        request=payload.model_dump(),
+        build=build,
+    )
 
 
 @app.get("/v1/announcements")
-def list_announcements(db: Db, admin: AdminDep, limit: int = 50) -> list[dict[str, object]]:
+def list_announcements(db: Db, admin: AdminDep, limit: int = 50, offset: int = 0) -> list[dict[str, object]]:
     """Published announcements, newest first."""
     rows = db.scalars(
-        select(Announcement).order_by(Announcement.created_at.desc()).limit(max(1, min(limit, 100)))
+        select(Announcement)
+        .order_by(Announcement.created_at.desc(), Announcement.id.desc())
+        .offset(max(0, offset))
+        .limit(max(1, min(limit, 100)))
     ).all()
-    return [announcement_view(item) for item in rows]
+    counts = announcement_counts(db, [item.id for item in rows])
+    return [announcement_view(item, counts.get(item.id, {})) for item in rows]
 
 
 @app.delete("/v1/announcements/{announcement_id}", status_code=204)
@@ -1676,6 +1935,15 @@ def delete_announcement(announcement_id: str, db: Db, admin: AdminDep) -> None:
     row = db.get(Announcement, announcement_id)
     if not row:
         fail(status.HTTP_404_NOT_FOUND, "Announcement not found", "announcement.not_found")
+    if db.get_bind().dialect.name == "sqlite":
+        # SQLite development installations do not enforce foreign keys by default.
+        db.execute(
+            delete(NotificationEmailOutbox).where(
+                NotificationEmailOutbox.notification_id.in_(
+                    select(Notification.id).where(Notification.announcement_id == announcement_id)
+                )
+            )
+        )
     db.execute(delete(Notification).where(Notification.announcement_id == announcement_id))
     db.delete(row)
     audit(db, admin.id, "announcement.delete", "announcement", announcement_id)
@@ -1709,26 +1977,16 @@ def job_logs(
         rows = list(reversed(db.scalars(query.order_by(JobLog.id.desc()).limit(size)).all()))
     return {
         "items": [
-            {"id": row.id, "level": row.level, "message": row.message, "created_at": row.created_at} for row in rows
+            {
+                "id": row.id,
+                "attempt": row.attempt,
+                "level": row.level,
+                "message": row.message,
+                "created_at": row.created_at,
+            }
+            for row in rows
         ]
     }
-
-
-def notification_scope(user: User):
-    """Notifications are the recipient's own, and project ones need live access.
-
-    The project condition is a subquery, so list, badge and read updates agree
-    before pagination and after a membership is revoked or a project is deleted.
-    """
-    membership = select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)
-    projects = select(Project.id).where(
-        Project.deleted_at.is_(None),
-        or_(Project.id.in_(membership), Project.owner_id == user.id),
-    )
-    visible = Notification.project_id.is_(None)
-    if user.is_admin:
-        visible = or_(visible, Notification.project_id.in_(select(Project.id).where(Project.deleted_at.is_(None))))
-    return and_(Notification.user_id == user.id, or_(visible, Notification.project_id.in_(projects)))
 
 
 @app.get("/v1/notifications")
@@ -1736,13 +1994,19 @@ def list_notifications(
     db: Db, user: UserDep, unread: int = 0, kind: str = "", offset: int = 0, limit: int = 50
 ) -> list[dict[str, object]]:
     """Newest notifications for the signed-in account, optionally unread or type filtered."""
-    query = select(Notification).where(notification_scope(user))
+    query = (
+        select(Notification, Announcement.level)
+        .outerjoin(Announcement, Announcement.id == Notification.announcement_id)
+        .where(notification_scope(user))
+    )
     if unread:
         query = query.where(Notification.read_at.is_(None))
     if kind.strip():
         query = query.where(Notification.kind == kind.strip())
-    rows = db.scalars(
-        query.order_by(Notification.created_at.desc()).offset(max(0, offset)).limit(max(1, min(limit, 100)))
+    rows = db.execute(
+        query.order_by(Notification.created_at.desc(), Notification.id.desc())
+        .offset(max(0, offset))
+        .limit(max(1, min(limit, 100)))
     ).all()
     return [
         {
@@ -1753,10 +2017,11 @@ def list_notifications(
             "project_id": row.project_id,
             "job_id": row.job_id,
             "announcement_id": row.announcement_id,
+            "announcement_level": level if row.kind == "announcement" else None,
             "read_at": row.read_at,
             "created_at": row.created_at,
         }
-        for row in rows
+        for row, level in rows
     ]
 
 
@@ -1989,6 +2254,8 @@ def expire_stale_uploads(db: Session, project: Project) -> int:
 def recover_expired_leases(db: Session, current_time: datetime) -> None:
     if db.get_bind().dialect.name == "postgresql":
         db.execute(text("SELECT pg_advisory_xact_lock(52492371)"))
+    else:
+        db.execute(text("BEGIN IMMEDIATE"))
     expired = db.scalars(
         select(ReconstructionJob)
         .where(
@@ -2010,6 +2277,8 @@ def recover_expired_leases(db: Session, current_time: datetime) -> None:
         job.leased_by = None
         job.lease_expires_at = None
         job.updated_at = current_time
+        if job.status == "FAILED":
+            notify_job_result(db, job)
 
 
 CLEANUP_BATCH = 50
@@ -2117,6 +2386,7 @@ def lease_job(db: Db, worker_id: WorkerDep, gpu_name: Annotated[str | None, Head
         job.error_code = "INVALID_INPUT"
         job.error_message = "Job assets are no longer available"
         job.leased_by = None
+        notify_job_result(db, job)
         db.commit()
         return {"job": None}
     credentials = storage().worker_credentials(job.project_id, job.id, job.attempt)
@@ -2154,6 +2424,8 @@ def attempt_prefix(job: ReconstructionJob) -> str:
 
 def leased_job(db: Session, job_id: str, worker_id: str, attempt: int, *, completed: bool = False) -> ReconstructionJob:
     """Lock and verify ownership before changing any job state."""
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
     job = db.get(ReconstructionJob, job_id, with_for_update=True)
     if not job:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
@@ -2292,16 +2564,7 @@ def complete_job(
     job.current_stage = "complete"
     job.lease_expires_at = None
     audit(db, None, "job.complete", "job", job.id, project_id=job.project_id, worker_id=worker_id)
-    project = db.get(Project, job.project_id)
-    notify(
-        db,
-        {job.created_by, project.owner_id},
-        kind="job.succeeded",
-        title="重建已完成",
-        body=f"项目「{project.name}」的重建已完成",
-        project_id=project.id,
-        job_id=job.id,
-    )
+    notify_job_result(db, job)
     db.commit()
     return {"reconstruction_id": reconstruction.id}
 
@@ -2325,16 +2588,7 @@ def fail_job(
     job.lease_expires_at = None
     audit(db, None, "job.fail", "job", job.id, project_id=job.project_id, code=payload.error_code)
     if job.status == "FAILED":
-        project = db.get(Project, job.project_id)
-        notify(
-            db,
-            {job.created_by, project.owner_id},
-            kind="job.failed",
-            title="重建失败",
-            body=(payload.error_message or "重建失败")[:500],
-            project_id=project.id,
-            job_id=job.id,
-        )
+        notify_job_result(db, job)
     db.commit()
     return {"status": job.status, "retry": retry}
 

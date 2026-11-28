@@ -9,8 +9,9 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
+from fastapi import Request
 from fastapi.testclient import TestClient
-from sqlalchemy import MetaData, Table, create_engine, delete, event, inspect, select
+from sqlalchemy import MetaData, Table, create_engine, delete, event, func, inspect, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
@@ -18,20 +19,24 @@ from rescene_api import main
 from rescene_api.auth import hash_email_code, hash_password, issue_token, verify_password
 from rescene_api.config import settings
 from rescene_api.models import (
+    Announcement,
     Asset,
     AssetCleanup,
     AuditLog,
     EmailAuthCode,
     JobStage,
     Notification,
+    NotificationEmailOutbox,
     Project,
     ProjectInvitation,
     ProjectMember,
     ReconstructionJob,
     User,
 )
+from rescene_api.notification_outbox import drain_outbox
 from rescene_api.schemas import ChangePasswordRequest
 from rescene_api.storage import TemporaryCredentials
+from tests.notification_outbox import SmtpSink
 
 
 def migrate(connection, revision):
@@ -126,7 +131,7 @@ def test_postgres_reapers_fence_late_heartbeat(postgres_sessions):
 
 
 @pytest.mark.parametrize("correct", [True, False], ids=["code_redemption", "code_attempts"])
-def test_postgres_concurrent_email_code(postgres_sessions, monkeypatch, correct):
+def test_postgres_concurrent_email_code(postgres_sessions, correct):
     with postgres_sessions.begin() as db:
         owner = User(email="concurrent-code@example.com", password_hash=hash_password("correct-horse"))
         db.add(owner)
@@ -142,15 +147,14 @@ def test_postgres_concurrent_email_code(postgres_sessions, monkeypatch, correct)
         code_id = code.id
 
     barrier = Barrier(2)
-
-    def synchronized_hash(user_id, purpose, value):
-        barrier.wait(timeout=10)
-        return hash_email_code(user_id, purpose, value)
-
-    monkeypatch.setattr(main, "hash_email_code", synchronized_hash)
     payload = {"email": "concurrent-code@example.com", "code": "123456" if correct else "000000"}
+
+    def post_login():
+        barrier.wait(timeout=10)
+        return client.post("/v1/auth/email-code/login", json=payload)
+
     with TestClient(main.app) as client, ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(client.post, "/v1/auth/email-code/login", json=payload) for _ in range(2)]
+        futures = [pool.submit(post_login) for _ in range(2)]
         responses = [future.result(timeout=15) for future in futures]
         assert sorted(response.status_code for response in responses) == ([200, 401] if correct else [401, 401])
         for response in responses:
@@ -208,6 +212,91 @@ def test_postgres_concurrent_password_rotations_stay_monotonic(postgres_sessions
         assert len(applied) == 1, "the losing rotation must not overwrite the applied password"
 
 
+def test_postgres_concurrent_username_claim(postgres_sessions):
+    with postgres_sessions.begin() as db:
+        first = User(email="first@example.com", password_hash=hash_password("correct-horse"))
+        second = User(email="second@example.com", password_hash=hash_password("correct-horse"))
+        db.add_all([first, second])
+        db.flush()
+        first_token = issue_token(first.id, first.token_version)
+        second_token = issue_token(second.id, second.token_version)
+
+    barrier = Barrier(2)
+
+    with TestClient(main.app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+
+        def claim(token):
+            barrier.wait(timeout=10)
+            return client.patch(
+                "/v1/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"username": "ContestedName"},
+            )
+
+        futures = [
+            pool.submit(claim, first_token),
+            pool.submit(claim, second_token),
+        ]
+        responses = [future.result(timeout=15) for future in futures]
+
+    statuses = [response.status_code for response in responses]
+    assert statuses.count(200) == 1, statuses
+    assert statuses.count(409) == 1, statuses
+
+
+def test_postgres_admin_mutual_disable_demote_one_wins(postgres_sessions, monkeypatch):
+    with postgres_sessions.begin() as db:
+        alpha = User(
+            email="admin-alpha@example.com", password_hash=hash_password("correct-horse"), is_admin=True, active=True
+        )
+        beta = User(
+            email="admin-beta@example.com", password_hash=hash_password("correct-horse"), is_admin=True, active=True
+        )
+        db.add_all([alpha, beta])
+        db.flush()
+        alpha_token = issue_token(alpha.id, alpha.token_version)
+        beta_token = issue_token(beta.id, beta.token_version)
+        alpha_id, beta_id = alpha.id, beta.id
+
+    barrier = Barrier(2)
+
+    def overlapping_admin(request: Request, user: main.UserDep) -> User:
+        admin = main.require_admin(user)
+        if request.method == "PATCH":
+            barrier.wait(timeout=10)
+        return admin
+
+    monkeypatch.setitem(main.app.dependency_overrides, main.require_admin, overlapping_admin)
+
+    with TestClient(main.app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+
+        def demote(token: str, target_id: str):
+            return client.patch(
+                f"/v1/users/{target_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"active": False, "is_admin": False},
+            )
+
+        futures = [
+            pool.submit(demote, alpha_token, beta_id),
+            pool.submit(demote, beta_token, alpha_id),
+        ]
+        responses = [future.result(timeout=15) for future in futures]
+
+    statuses = [response.status_code for response in responses]
+    assert statuses.count(200) == 1, statuses
+    assert 500 not in statuses
+    loser = next(response for response in responses if response.status_code != 200)
+    assert loser.status_code in {401, 403, 409}
+    assert loser.headers["x-error-code"] in {"admin.forbidden", "auth.session_stale", "admin.self_locked"}
+
+    with postgres_sessions() as db:
+        root_count = (
+            db.scalar(select(func.count()).select_from(User).where(User.active.is_(True), User.is_admin.is_(True))) or 0
+        )
+        assert root_count == 1, "one administrator must remain active after a mutual demote race"
+
+
 def test_postgres_notifications_follow_committed_membership(postgres_sessions):
     with postgres_sessions.begin() as db:
         owner = User(email="owner@example.com", password_hash=hash_password("correct-horse"))
@@ -225,7 +314,9 @@ def test_postgres_notifications_follow_committed_membership(postgres_sessions):
     headers = {"Authorization": f"Bearer {issue_token(member_id)}"}
 
     with TestClient(main.app) as client, postgres_sessions() as removing:
-        assert [item["id"] for item in client.get("/v1/notifications", headers=headers).json()] == [notice_id]
+        items = client.get("/v1/notifications", headers=headers).json()
+        assert [item["id"] for item in items] == [notice_id]
+        assert items[0]["announcement_level"] is None
         removing.execute(
             delete(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == member_id)
         )
@@ -504,13 +595,30 @@ def test_postgres_invitation_rechecks_credential_after_project_lock(postgres_ses
 @pytest.mark.parametrize("postgres_sessions", ["0006"], indirect=True)
 def test_postgres_invitation_upgrade_preserves_inert_legacy_rows(postgres_sessions):
     with postgres_sessions.begin() as db:
-        owner = User(email="legacy-owner@example.com", password_hash="unused")
-        db.add(owner)
-        db.flush()
-        project = Project(owner_id=owner.id, name="Legacy project")
-        db.add(project)
-        db.flush()
         connection = db.connection()
+        users = Table("users", MetaData(), autoload_with=connection)
+        projects = Table("projects", MetaData(), autoload_with=connection)
+        owner_id = str(uuid4())
+        project_id = str(uuid4())
+        now = datetime.now(UTC)
+        db.execute(
+            users.insert().values(
+                id=owner_id,
+                email="legacy-owner@example.com",
+                password_hash="unused",
+                is_admin=False,
+                active=True,
+                created_at=now,
+            )
+        )
+        db.execute(
+            projects.insert().values(
+                id=project_id,
+                owner_id=owner_id,
+                name="Legacy project",
+                created_at=now,
+            )
+        )
         invitations = Table("project_invitations", MetaData(), autoload_with=connection)
         assert "claim_digest" not in invitations.c
         db.execute(
@@ -518,11 +626,11 @@ def test_postgres_invitation_upgrade_preserves_inert_legacy_rows(postgres_sessio
             [
                 {
                     "id": action,
-                    "project_id": project.id,
+                    "project_id": project_id,
                     "email": f"legacy-{action}@example.com",
                     "role": "viewer",
-                    "invited_by": owner.id,
-                    "created_at": datetime.now(UTC),
+                    "invited_by": owner_id,
+                    "created_at": now,
                 }
                 for action in ("reissue", "revoke")
             ],
@@ -532,8 +640,8 @@ def test_postgres_invitation_upgrade_preserves_inert_legacy_rows(postgres_sessio
     with postgres_sessions() as db:
         pending = db.scalars(select(ProjectInvitation)).all()
         assert len(pending) == 2 and all(row.claim_digest is None and row.expires_at is None for row in pending)
-    headers = {"Authorization": f"Bearer {issue_token(owner.id)}"}
-    route = f"/v1/projects/{project.id}"
+    headers = {"Authorization": f"Bearer {issue_token(owner_id)}"}
+    route = f"/v1/projects/{project_id}"
     with TestClient(main.app) as client:
         assert client.delete(f"{route}/invitations/revoke", headers=headers).status_code == 204
         reissued = client.post(f"{route}/members", headers=headers, json={"email": "legacy-reissue@example.com"})
@@ -789,3 +897,67 @@ def test_postgres_job_input_blocks_a_later_delete(postgres_sessions, stale_uploa
         assert db.get(Asset, asset_id) is not None
         assert db.scalars(select(AssetCleanup)).all() == []
     assert deleted == []
+
+
+def test_postgres_concurrent_outbox_leasing_sends_once(postgres_sessions, monkeypatch):
+    monkeypatch.setenv("RESCENE_SMTP_SECURITY", "none")
+    monkeypatch.setenv("RESCENE_SMTP_HOST", "127.0.0.1")
+    monkeypatch.setenv("RESCENE_SMTP_FROM", "notify@example.test")
+    main.settings.cache_clear()
+    sink = SmtpSink("127.0.0.1", 0)
+    sink.start()
+    monkeypatch.setenv("RESCENE_SMTP_PORT", str(sink.port))
+    main.settings.cache_clear()
+    try:
+        with postgres_sessions.begin() as db:
+            admin = User(email="admin@example.com", password_hash=hash_password("correct-horse"), is_admin=True)
+            subscriber = User(
+                email="sub@example.com",
+                password_hash=hash_password("correct-horse"),
+                email_verified_at=datetime.now(UTC),
+                email_critical_announcements=True,
+            )
+            db.add_all([admin, subscriber])
+            db.flush()
+            announcement = Announcement(title="Concurrent", body="body", level="critical", created_by=admin.id)
+            db.add(announcement)
+            db.flush()
+            notification = Notification(
+                id=str(uuid4()),
+                user_id=subscriber.id,
+                kind="announcement",
+                title="Concurrent",
+                body="body",
+                announcement_id=announcement.id,
+            )
+            db.add(notification)
+            db.flush()
+            db.add(
+                NotificationEmailOutbox(
+                    notification_id=notification.id,
+                    state="pending",
+                    attempts=0,
+                    next_attempt_at=datetime.now(UTC),
+                )
+            )
+            db.flush()
+            notification_id = notification.id
+
+        barrier = Barrier(2)
+
+        def drain_once():
+            barrier.wait(timeout=10)
+            return drain_outbox(postgres_sessions)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(drain_once) for _ in range(2)]
+            counts = [future.result(timeout=15) for future in futures]
+
+        assert sum(counts) == 1, "only one drain may process the single pending row"
+        assert len(sink.messages) == 1, "the notification must be sent exactly once"
+        with postgres_sessions() as db:
+            row = db.get(NotificationEmailOutbox, notification_id)
+            assert row.state == "accepted"
+    finally:
+        sink.stop()
+        main.settings.cache_clear()

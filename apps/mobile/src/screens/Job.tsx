@@ -4,18 +4,18 @@ import type { Artifact, Job, JobLog, ShareSummary } from "@rescene/schemas";
 import { useEffect, useRef, useState } from "react";
 import { Alert, Image, Linking, Share, View } from "react-native";
 
-import { client, webBaseUrl } from "../api";
+import { client, currentQueueOwner, isQueueOwnerCurrent, queueClient, webBaseUrl } from "../api";
 import { useAppearance } from "../appearance";
 import { Button, Card, ScaledText as Text, Screen, Segmented, useTextStyles } from "../ui";
 
 const ACTIVE: Record<string, true> = { QUEUED: true, LEASED: true, RUNNING: true };
 const LOG_POLL_MS = 3000;
 const LOG_PAGE_SIZE = 200;
-const LOG_KEEP = 2000;
 
-type LogLevel = "all" | "info" | "warning" | "error";
+type LogLevel = "all" | "debug" | "info" | "warning" | "error";
 const LOG_LEVELS: { value: LogLevel; label: string }[] = [
   { value: "all", label: "全部" },
+  { value: "debug", label: "调试" },
   { value: "info", label: "信息" },
   { value: "warning", label: "警告" },
   { value: "error", label: "错误" },
@@ -64,18 +64,21 @@ export function JobScreen({ jobId, page, backLabel = "返回", onNavigate, onOpe
   const [resultRevision, setResultRevision] = useState(0);
   const [logs, setLogs] = useState<JobLog[]>([]);
   const [logLevel, setLogLevel] = useState<LogLevel>("all");
-  const [logError, setLogError] = useState("");
+  const [logError, setLogError] = useState<{ message: string; direction: "initial" | "tail" | "earlier" } | null>(null);
   const [logRevision, setLogRevision] = useState(0);
+  const [tailRevision, setTailRevision] = useState(0);
+  const [logReady, setLogReady] = useState(false);
+  const [earlierBusy, setEarlierBusy] = useState(false);
   const [showMetrics, setShowMetrics] = useState(false);
   const [hasEarlier, setHasEarlier] = useState(false);
   const logTail = useRef(0);
-  const logReady = useRef(false);
+  const earlierPending = useRef<number | null>(null);
   const logGeneration = useRef(0);
 
   useEffect(() => {
     logGeneration.current += 1;
     return () => { logGeneration.current += 1; };
-  }, [jobId, page, logLevel]);
+  }, [jobId, page, logLevel, logRevision]);
 
   useEffect(() => {
     let active = true;
@@ -133,43 +136,62 @@ export function JobScreen({ jobId, page, backLabel = "返回", onNavigate, onOpe
   useEffect(() => {
     if (page !== "job-logs") return;
     let active = true;
-    setLogError("");
+    const generation = logGeneration.current;
+    const owner = currentQueueOwner();
+    setLogError(null);
     logTail.current = 0;
-    logReady.current = false;
+    setLogReady(false);
+    setEarlierBusy(false);
     setLogs([]);
     setHasEarlier(false);
+    if (!owner) return;
     const level = logLevel === "all" ? undefined : logLevel;
-    void client.listJobLogs(jobId, { limit: LOG_PAGE_SIZE, level }).then((rows) => {
-      if (!active) return;
-      logTail.current = rows.length ? rows[rows.length - 1]!.id : 0;
+    void queueClient(owner).listJobLogs(jobId, { limit: LOG_PAGE_SIZE, level }).then((rows) => {
+      if (!active || generation !== logGeneration.current || !isQueueOwnerCurrent(owner)) return;
+      logTail.current = rows.at(-1)?.id ?? 0;
       setLogs(rows);
       setHasEarlier(rows.length >= LOG_PAGE_SIZE);
-      logReady.current = true;
-    }).catch((reason: unknown) => { if (active) setLogError(explainError(reason, "加载运行日志失败")); });
+      setLogReady(true);
+    }).catch((reason: unknown) => {
+      if (active && generation === logGeneration.current && isQueueOwnerCurrent(owner)) {
+        setLogError({ message: explainError(reason, "加载运行日志失败"), direction: "initial" });
+      }
+    });
     return () => { active = false; };
   }, [jobId, logLevel, page, logRevision]);
 
   useEffect(() => {
-    if (page !== "job-logs" || !jobStatus || !ACTIVE[jobStatus]) return;
+    const owner = currentQueueOwner();
+    if (!owner || page !== "job-logs" || !jobStatus || !logReady) return;
     let active = true;
     let polling = false;
+    const generation = logGeneration.current;
     const level = logLevel === "all" ? undefined : logLevel;
-    const timer = setInterval(() => {
-      if (!active || !logReady.current || polling) return;
+    async function poll() {
+      if (!active || polling || !owner || !isQueueOwnerCurrent(owner)) return;
       polling = true;
-      void client.listJobLogs(jobId, { afterId: logTail.current, limit: LOG_PAGE_SIZE, level }).then((rows) => {
+      try {
+        const rows = await queueClient(owner).listJobLogs(jobId, { afterId: logTail.current, limit: LOG_PAGE_SIZE, level });
+        if (!active || generation !== logGeneration.current || !isQueueOwnerCurrent(owner)) return;
+        const tail = logTail.current;
+        const fresh = rows.filter((row) => row.id > tail);
+        if (fresh.length) {
+          logTail.current = fresh[fresh.length - 1]!.id;
+          setLogs((current) => [...current, ...fresh]);
+        }
+        setLogError((current) => current?.direction === "tail" ? null : current);
+      } catch (reason) {
+        if (active && generation === logGeneration.current && isQueueOwnerCurrent(owner)) {
+          setLogError({ message: explainError(reason, "更新运行日志失败"), direction: "tail" });
+        }
+      } finally {
         polling = false;
-        if (!active || rows.length === 0) return;
-        logTail.current = rows[rows.length - 1]!.id;
-        setLogs((current) => {
-          const seen = new Set(current.map((row) => row.id));
-          const fresh = rows.filter((row) => !seen.has(row.id));
-          return fresh.length > 0 ? [...current, ...fresh].slice(-LOG_KEEP) : current;
-        });
-      }).catch((reason: unknown) => { polling = false; if (active) setLogError(explainError(reason, "加载运行日志失败")); });
-    }, LOG_POLL_MS);
+      }
+    }
+    void poll();
+    const timer = ACTIVE[jobStatus] ? setInterval(() => void poll(), LOG_POLL_MS) : undefined;
     return () => { active = false; clearInterval(timer); };
-  }, [jobId, jobStatus, logLevel, page]);
+  }, [jobId, jobStatus, logLevel, page, logReady, tailRevision]);
 
   useEffect(() => {
     const id = job?.reconstruction_id;
@@ -196,17 +218,27 @@ export function JobScreen({ jobId, page, backLabel = "返回", onNavigate, onOpe
   }
   async function loadEarlier() {
     const oldest = logs[0]?.id;
-    if (!oldest) return;
-    const level = logLevel === "all" ? undefined : logLevel;
+    const owner = currentQueueOwner();
     const generation = logGeneration.current;
+    if (!oldest || !hasEarlier || !owner || earlierPending.current === generation) return;
+    earlierPending.current = generation;
+    setEarlierBusy(true);
     try {
-      const rows = await client.listJobLogs(jobId, { beforeId: oldest, limit: LOG_PAGE_SIZE, level });
-      if (generation !== logGeneration.current) return;
-      setLogError("");
+      const level = logLevel === "all" ? undefined : logLevel;
+      const rows = await queueClient(owner).listJobLogs(jobId, { beforeId: oldest, limit: LOG_PAGE_SIZE, level });
+      if (generation !== logGeneration.current || !isQueueOwnerCurrent(owner)) return;
+      setLogError((current) => current?.direction === "earlier" ? null : current);
       setHasEarlier(rows.length >= LOG_PAGE_SIZE);
-      if (rows.length > 0) setLogs((current) => [...rows, ...current]);
+      if (rows.length) setLogs((current) => [...rows, ...current]);
     } catch (reason) {
-      if (generation === logGeneration.current) setLogError(explainError(reason, "加载更早日志失败"));
+      if (generation === logGeneration.current && isQueueOwnerCurrent(owner)) {
+        setLogError({ message: explainError(reason, "加载更早日志失败"), direction: "earlier" });
+      }
+    } finally {
+      if (earlierPending.current === generation) {
+        earlierPending.current = null;
+        if (generation === logGeneration.current && isQueueOwnerCurrent(owner)) setEarlierBusy(false);
+      }
     }
   }
   async function createShare() {
@@ -305,11 +337,18 @@ export function JobScreen({ jobId, page, backLabel = "返回", onNavigate, onOpe
       </Card> : null}
       {page === "job-logs" ? <Card>
         <Segmented value={logLevel} onChange={setLogLevel} options={LOG_LEVELS} />
-        {logError ? <><Text accessibilityRole="alert" style={textStyles.error}>{logError}</Text><Button label="重试加载日志" onPress={() => setLogRevision((value) => value + 1)} /></> : null}
-        {!logError && logs.length === 0 ? <Text style={textStyles.muted}>{jobStatus && ACTIVE[jobStatus] ? "等待 Worker 输出…" : "暂无运行日志。"}</Text> : logs.map((row) => (
-          <Text key={row.id} selectable style={LOG_TEXT}>{new Date(row.created_at).toLocaleTimeString()} · {LOG_TAG[row.level]} · {row.message}</Text>
-        ))}
-        {hasEarlier ? <Button disabled={busy} label="加载更早" tone="ghost" onPress={() => void action(loadEarlier)} /> : null}
+        {logError ? <><Text accessibilityRole="alert" style={textStyles.error}>{logError.message}</Text><Button label="重试加载日志" disabled={earlierBusy} onPress={() => {
+          if (logError.direction === "earlier") void loadEarlier();
+          else if (logError.direction === "tail") setTailRevision((value) => value + 1);
+          else setLogRevision((value) => value + 1);
+        }} /></> : null}
+        {!logError && logs.length === 0 ? <Text style={textStyles.muted}>{!logReady ? "正在加载运行日志…" : jobStatus && ACTIVE[jobStatus] ? "等待 Worker 输出…" : "暂无运行日志。"}</Text> : logs.map((row) => {
+          const attemptText = row.attempt == null ? "轮次未知" : `第 ${row.attempt} 轮`;
+          return (
+            <Text key={row.id} selectable style={LOG_TEXT}>{new Date(row.created_at).toLocaleTimeString()} · {attemptText} · {LOG_TAG[row.level]} · {row.message}</Text>
+          );
+        })}
+        {hasEarlier ? <Button disabled={earlierBusy} label="加载更早" tone="ghost" onPress={() => void loadEarlier()} /> : null}
       </Card> : null}
       {error ? <Card>
         <Text accessibilityRole="alert" style={textStyles.error}>{error}</Text>
